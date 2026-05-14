@@ -1,0 +1,23 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: slack-default
+    receivers:
+      - uid: slack-default
+        type: slack
+        settings:
+          url: ${SLACK_WEBHOOK_URL}
+          text: |
+            [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}
+            {{ range .Alerts -}}
+            • {{ .Labels.alertname }} ({{ .Labels.severity }}) value={{ .ValueString }}
+            {{ end }}
+  - orgId: 1
+    name: telegram-default
+    receivers:
+      - uid: telegram-default
+        type: webhook
+        settings:
+          url: ${TELEGRAM_WEBHOOK_URL}
+          httpMethod: POST

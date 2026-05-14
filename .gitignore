@@ -1,0 +1,35 @@
+.venv/
+venv/
+ENV/
+env/
+.idea/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local environment files
+.env
+
+# Runtime artifacts
+logs/
+mlruns/
+*.db
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Local datasets
+data/
+
+# Machine learning models and weights
+models/
+exports/
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+*.ckpt

@@ -1,0 +1,33 @@
+Guidelines for using OCR and LLM providers in this repository.
+
+1. Prefer declarative configuration
+   - Do not hardcode model IDs, temperatures, or endpoints in code.
+   - Always read provider, model, and parameters from YAML profiles under:
+     - src/ocr_platform/config/pipelines/*.yaml
+
+2. OpenAI and cloud providers
+   - When using OpenAI models (including multimodal), keep in mind:
+     - Prompts and outputs may contain sensitive data.
+     - Log only anonymized or redacted examples to MLflow as artifacts.
+   - Use a single shared client abstraction under:
+     - src/ocr_platform/services/ocr_service.py
+     - src/ocr_platform/services/document_intel_service.py
+   - Do not call provider SDKs directly from API or orchestration layers.
+
+3. Local models (future work)
+   - Local OCR/LLM backends (e.g., Tesseract, ONNX-based models) should:
+     - be wrapped in adapter classes in services;
+     - expose the same interface as cloud providers;
+     - be selectable via YAML configuration.
+
+4. Observability and MLflow
+   - Every ML/LLM call that affects business logic must:
+     - log key parameters (model, prompt, version, profile_id, pipeline_run_id) to MLflow;
+     - log summary metrics (confidence scores, field coverage, errors).
+   - Do not log full raw documents or PII into external systems.
+
+5. Testing and evaluation
+   - For new providers or prompts:
+     - add evaluation data under tests/ and link to it from exec-plans;
+     - compare variants via MLflow runs before changing defaults.
+

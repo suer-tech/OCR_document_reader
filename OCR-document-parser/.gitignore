@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment files
+.env
+
+# Runtime artifacts
+logs/
+mlruns/
+*.db
+
+# Local datasets
+data/
+
+# Build metadata
+*.egg-info/

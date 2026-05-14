@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nlp-entity-extractor"
+version = "0.1.0"
+description = "Local-first backend for extracting structured entities from Base64 PDF documents"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.32,<1.0",
+  "pydantic>=2.9,<3.0",
+  "pypdf>=5.1,<6.0",
+  "pymorphy3>=2.0,<3.0"
+]
+
+[project.optional-dependencies]
+train = [
+  "datasets>=3.1,<4.0",
+  "seqeval>=1.2,<2.0",
+  "transformers>=4.46,<5.0",
+  "accelerate>=1.1,<2.0",
+  "torch>=2.4,<3.0"
+]
+test = [
+  "httpx>=0.28,<1.0",
+  "pytest>=8.3,<9.0"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

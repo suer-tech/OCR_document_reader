@@ -1,0 +1,35 @@
+profile_id: unknown
+applicable_sources:
+  - crm
+  - email
+  - portal
+  - external
+  - other
+
+document_type: unknown
+
+models:
+  ocr:
+    provider: openrouter
+    model: deepseek/deepseek-v3.2-speciale
+    fallback_models:
+      - qwen/qwen3-vl-235b-a22b-thinking
+      - qwen/qwen3-235b-a22b-2507
+
+thresholds:
+  technical_quality_min: 0.5
+  semantic_confidence_min: 0.5
+  overall_quality_min_auto_accept: 0.9
+  warnings_require_review: true
+
+fields: {}
+
+# OCR и извлечение текста выполняются на входе (до пайплайна) через extract_text_at_ingest.
+pipeline:
+  - name: store_original
+    type: storage
+  - name: compute_quality
+    type: quality
+  - name: route_to_human_review
+    type: routing
+

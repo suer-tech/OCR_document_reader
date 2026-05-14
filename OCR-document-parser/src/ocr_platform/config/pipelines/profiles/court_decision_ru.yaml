@@ -1,0 +1,133 @@
+profile_id: court_decision_ru
+# llm | nlp — способ извлечения полей. По умолчанию llm.
+extractor: nlp
+
+applicable_sources:
+  - crm
+  - email
+  - portal
+  - external
+  - other
+
+document_type: court_decision
+
+models:
+  ocr:
+    provider: openrouter
+    model: openai/gpt-oss-120b
+  # Единственное место настройки провайдера и модели для LLM-экстракции.
+  llm_extraction:
+    provider: openrouter
+    model: openai/gpt-oss-20b
+    fallback_models:
+      - openai/gpt-oss-120b
+      - x-ai/grok-4.1-fast
+    temperature: 0.0
+    timeout_seconds: 180.0
+  # Единственное место настройки модели для NLP-экстракции (extractor: nlp).
+  nlp:
+    model_dir: models/exports/bootstrap-russian-ner
+    max_batch_size: 12   # CPU: батч для pipeline (≈ число ядер)
+
+thresholds:
+  technical_quality_min: 0.6
+  semantic_confidence_min: 0.7
+  overall_quality_min_auto_accept: 0.75
+  warnings_require_review: false
+
+fields_llm:
+  debtor_full_name:
+    required: true
+    label_ru: "ФИО должника"
+    description_ru: "Полное ФИО должника в формате 'Фамилия Имя Отчество'. Ищите рядом с 'должник', 'заявитель'"
+
+  debtor_inn:
+    required: true
+    label_ru: "ИНН"
+    description_ru: "ИНН должника - 12-значный номер рядом с ФИО должника. Ищите после 'ИНН'"
+
+  case_number:
+    required: true
+    label_ru: "Номер дела"
+    description_ru: "Номер судебного дела в формате 'А05-6/2025' или 'Дело № А05-6/2025'. Ищите в шапке после 'Дело №' или в заголовке"
+
+  judge_full_name:
+    required: true
+    label_ru: "ФИО судьи"
+    description_ru: "'Судья', в самом конце документа. ФИО судьи в формате 'Фамилия И.О.'. Присвойте фамилие именительный падеж."
+
+  court_name:
+    required: true
+    label_ru: "Название суда"
+    description_ru: "Полное название суда в шапке документа. Ищите в самом верху документа большими буквами."
+
+  decision_date:
+    required: true
+    label_ru: "Дата решения"
+    description_ru: "Дата принятия решения в формате ДД.ММ.ГГГГ. Ищите после 'РЕШЕНИЕ', 'ДЕЛО' или 'Решение изготовлено'."
+
+  procedure_type:
+    required: false
+    label_ru: "Тип процедуры"
+    description_ru: "Процедура банкротства: 'реализация имущества', 'реструктуризация долгов'. Ищите в резолютивной части или обосновании."
+
+  procedure_end_date:
+    required: false
+    label_ru: "Дата окончания процедуры"
+    description_ru: "Срок процедуры банкротства. Ищите фразу 'на срок * месяцев' или точную дату окончания рядом с введением процедуры"
+
+fields_nlp:
+  debtor_full_name:
+    required: true
+    label_ru: "ФИО должника"
+    nlp_source: applicant_fio
+
+  debtor_inn:
+    required: true
+    label_ru: "ИНН"
+    nlp_source: inn
+
+  case_number:
+    required: true
+    label_ru: "Номер дела"
+    nlp_source: case_number
+
+  judge_full_name:
+    required: true
+    label_ru: "ФИО судьи"
+    nlp_source: judge_fio
+
+  court_name:
+    required: true
+    label_ru: "Название суда"
+    nlp_source: court_name
+
+  decision_date:
+    required: true
+    label_ru: "Дата решения"
+    nlp_source: decision_date
+
+  procedure_type:
+    required: false
+    label_ru: "Тип процедуры"
+    nlp_source: procedure_type
+
+  procedure_end_date:
+    required: false
+    label_ru: "Дата окончания процедуры"
+    nlp_source: procedure_end_date
+
+# OCR и извлечение текста выполняются на входе (до пайплайна) через extract_text_at_ingest.
+pipeline:
+  - name: store_original
+    type: storage
+  - name: detect_document_type
+    type: classifier
+  - name: extract_entities
+    type: extraction
+  - name: validate_entities
+    type: validation
+  - name: compute_quality
+    type: quality
+  - name: route_to_human_review
+    type: routing

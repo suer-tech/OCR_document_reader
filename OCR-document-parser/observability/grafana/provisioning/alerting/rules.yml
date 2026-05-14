@@ -1,0 +1,85 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: ocr-observability
+    folder: OCR
+    interval: 1m
+    rules:
+      - uid: ocr-error-rate-high
+        title: OCR Error Rate High
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: loki
+            model:
+              expr: sum(rate({service="ocr-document-parser",event="pipeline_failed"}[5m]))
+              queryType: range
+              refId: A
+          - refId: B
+            datasourceUid: loki
+            model:
+              expr: sum(rate({service="ocr-document-parser",event="ingest_started"}[5m]))
+              queryType: range
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              expression: 100 * $A / clamp_min($B, 1e-9)
+              type: math
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Pipeline error rate above 5% for 10 minutes.
+        labels:
+          severity: critical
+          service: ocr-document-parser
+        isPaused: false
+
+      - uid: ocr-p95-latency-high
+        title: OCR p95 Latency High
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: loki
+            model:
+              expr: quantile_over_time(0.95, ({service="ocr-document-parser",event="pipeline_completed"} | json | unwrap elapsed_seconds)[5m])
+              queryType: range
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: $A
+              type: math
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Pipeline p95 latency above 30s for 10 minutes.
+        labels:
+          severity: warning
+          service: ocr-document-parser
+        isPaused: false
+
+      - uid: ocr-llm-fail-rate-high
+        title: OCR LLM Fail Rate High
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: loki
+            model:
+              expr: sum(rate({service="ocr-document-parser",event=~"llm_call_failed|field_extraction_llm_failed|document_type_llm_unresolved"}[5m]))
+              queryType: range
+              refId: A
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: LLM-related failures are above threshold.
+        labels:
+          severity: warning
+          service: ocr-document-parser
+        isPaused: false

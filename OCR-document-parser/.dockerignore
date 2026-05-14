@@ -1,0 +1,17 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.git
+.gitignore
+logs
+data
+ocr.db
+mlflow.db
+agent-transcripts
+mcps
+

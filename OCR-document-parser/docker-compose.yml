@@ -1,0 +1,162 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocr-api
+    command: uvicorn ocr_platform.api.main:app --host 0.0.0.0 --port 8000
+    deploy:
+      resources:
+        limits:
+          cpus: '10.0'
+          memory: 20G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+    environment:
+      OCR_DATABASE_URL: sqlite:////app/data/ocr.db
+      OCR_STORAGE_DIR: /app/data/documents
+      OCR_LOG_LEVEL: INFO
+      OCR_LOG_FILE_PATH: /app/logs/app.json.log
+      OCR_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2F
+      OCR_RABBITMQ_INGEST_QUEUE: ocr.ingest
+      OCR_WORKER_MAX_RETRIES: 3
+      OCR_MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Set in local .env if needed:
+      OCR_OPENAI_API_KEY: ${OCR_OPENAI_API_KEY:-}
+      OCR_OPENROUTER_API_KEY: ${OCR_OPENROUTER_API_KEY:-}
+      OCR_OPENAI_BASE_URL: ${OCR_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OCR_OPENROUTER_BASE_URL: ${OCR_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OMP_NUM_THREADS: '10'
+      MKL_NUM_THREADS: '10'
+      TOKENIZERS_PARALLELISM: 'true'
+      PYTORCH_CUDA_ALLOC_CONF: ''     # CPU-only
+    shm_size: 2g                    # Shared memory для батчинга
+    volumes:
+      - app-data:/app/data
+      - app-logs:/app/logs
+    ports:
+      - "8000:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocr-worker
+    command: ocr-pipeline-worker
+    deploy:
+      resources:
+        limits:
+          cpus: '10.0'    # NLP инференс: больше ядер = быстрее (у вас 12)
+          memory: 20G
+        reservations:
+          cpus: '6.0'
+          memory: 4G
+    shm_size: 2g
+    environment:
+      OCR_DATABASE_URL: sqlite:////app/data/ocr.db
+      OCR_STORAGE_DIR: /app/data/documents
+      OCR_LOG_LEVEL: INFO
+      OCR_LOG_FILE_PATH: /app/logs/app.json.log
+      OCR_RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2F
+      OCR_RABBITMQ_INGEST_QUEUE: ocr.ingest
+      OCR_WORKER_MAX_RETRIES: 3
+      OCR_MLFLOW_TRACKING_URI: http://mlflow:5000
+      OCR_OPENAI_API_KEY: ${OCR_OPENAI_API_KEY:-}
+      OCR_OPENROUTER_API_KEY: ${OCR_OPENROUTER_API_KEY:-}
+      OCR_OPENAI_BASE_URL: ${OCR_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OCR_OPENROUTER_BASE_URL: ${OCR_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OMP_NUM_THREADS: '10'
+      MKL_NUM_THREADS: '10'
+      TOKENIZERS_PARALLELISM: 'true'
+    volumes:
+      - app-data:/app/data
+      - app-logs:/app/logs
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: ocr-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  mlflow:
+    image: python:3.11-slim
+    container_name: ocr-mlflow
+    command: >
+      sh -c "pip install --no-cache-dir mlflow &&
+      exec mlflow server --host 0.0.0.0 --port 5000 --allowed-hosts localhost,localhost:5000,127.0.0.1,127.0.0.1:5000,mlflow,mlflow:5000,ocr-mlflow,ocr-mlflow:5000 --backend-store-uri sqlite:////mlflow/data/mlflow.db --default-artifact-root mlflow-artifacts:/ --artifacts-destination /mlflow/artifacts"
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    volumes:
+      - mlflow-data:/mlflow/data
+      - mlflow-artifacts:/mlflow/artifacts
+
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: ocr-loki
+    command: -config.file=/etc/loki/config.yml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    container_name: ocr-promtail
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    volumes:
+      - ./observability/promtail/config.yml:/etc/promtail/config.yml:ro
+      - app-logs:/workspace/logs:ro
+
+  grafana:
+    image: grafana/grafana:11.1.4
+    container_name: ocr-grafana
+    depends_on:
+      - loki
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  app-data:
+  app-logs:
+  rabbitmq-data:
+  mlflow-data:
+  mlflow-artifacts:
+  loki-data:
+  grafana-data:
+

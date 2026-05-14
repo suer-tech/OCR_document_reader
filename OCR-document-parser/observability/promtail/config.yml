@@ -1,0 +1,35 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: ocr-app-json-logs
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: ocr-app
+          service: ocr-document-parser
+          env: local
+          __path__: /workspace/logs/*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            timestamp: timestamp
+            level: level
+            event: message
+            document_id: document_id
+            pipeline_run_id: pipeline_run_id
+            profile_id: profile_id
+            current_step: current_step
+            elapsed_seconds: elapsed_seconds
+            total_latency_ms: total_latency_ms
+            duration_ms: duration_ms
+      - labels:
+          level:
+          event:

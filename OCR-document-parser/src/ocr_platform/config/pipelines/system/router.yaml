@@ -1,0 +1,23 @@
+version: 1
+
+# Профиль по умолчанию, если тип документа неизвестен или не сопоставлен.
+default_profile: unknown
+unknown_document_type: unknown
+
+# Глобальная маршрутизация: тип документа -> профиль обработки.
+document_type_to_profile:
+  court_decision: court_decision_ru
+  unknown: unknown
+
+detection:
+  use_llm_when_missing_type: true
+  min_confidence: 0.7
+  llm:
+    provider: openrouter
+    model: openai/gpt-oss-20b
+    fallback_models:
+      - openai/gpt-oss-120b
+      - x-ai/grok-4.1-fast
+    temperature: 0.0
+    timeout_seconds: 180.0
+
