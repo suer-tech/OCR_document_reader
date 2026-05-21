@@ -29,40 +29,65 @@ from ocr_platform.storage import models, repository
 logger = get_logger(__name__)
 
 
-async def process_pipeline_run(pipeline_run_id: str) -> None:
-    with repository.get_session() as session:
-        run = session.get(models.PipelineRun, pipeline_run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="pipeline run not found")
-        if run.status == "done":
-            return
-
-        doc = session.get(models.Document, run.document_id)
-        if not doc:
-            raise HTTPException(status_code=404, detail="document not found")
-        file_rec = (
-            session.query(models.DocumentFile)
-            .filter(models.DocumentFile.document_id == doc.id)
-            .first()
+async def _trigger_webhook_safely(webhook_url: str | None, payload: dict) -> None:
+    if not webhook_url:
+        return
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.post(webhook_url, json=payload, timeout=10.0)
+            logger.info(
+                "webhook_sent",
+                webhook_url=webhook_url,
+                status_code=response.status_code,
+                pipeline_run_id=payload.get("pipeline_run_id"),
+            )
+    except Exception as exc:
+        logger.warning(
+            "webhook_send_failed",
+            webhook_url=webhook_url,
+            error=str(exc),
+            pipeline_run_id=payload.get("pipeline_run_id"),
         )
-        if not file_rec:
-            raise HTTPException(status_code=404, detail="file record not found")
 
-        run.status = "processing"
-        run.started_at = run.started_at or datetime.utcnow()
-        run.last_error = None
-        session.commit()
 
-        document_id = doc.id
-        source_type = doc.source_type
-        requested_document_type = doc.document_type
-        content_type = file_rec.file_type
-        storage_path = file_rec.storage_path
-
+async def process_pipeline_run(pipeline_run_id: str) -> None:
+    document_id = None
+    webhook_url = None
     profile_id = "unknown"
     current_step = "resolve_profile"
     start = perf_counter()
+
     try:
+        with repository.get_session() as session:
+            run = session.get(models.PipelineRun, pipeline_run_id)
+            if not run:
+                raise HTTPException(status_code=404, detail="pipeline run not found")
+            if run.status == "done":
+                return
+
+            webhook_url = run.webhook_url
+            doc = session.get(models.Document, run.document_id)
+            if not doc:
+                raise HTTPException(status_code=404, detail="document not found")
+            file_rec = (
+                session.query(models.DocumentFile)
+                .filter(models.DocumentFile.document_id == doc.id)
+                .first()
+            )
+            if not file_rec:
+                raise HTTPException(status_code=404, detail="file record not found")
+
+            run.status = "processing"
+            run.started_at = run.started_at or datetime.utcnow()
+            run.last_error = None
+            session.commit()
+
+            document_id = doc.id
+            source_type = doc.source_type
+            requested_document_type = doc.document_type
+            content_type = file_rec.file_type
+            storage_path = file_rec.storage_path
         # Извлечение текста: pdfplumber → pymupdf → OCR (для PDF без текстового слоя)
         extracted_text, ocr_was_used, ocr_latency_ms, text_source = ocr_service.extract_text_at_ingest(
             storage_path,
@@ -261,6 +286,51 @@ async def process_pipeline_run(pipeline_run_id: str) -> None:
             executed_steps=context.data.get("executed_steps", []),
             elapsed_seconds=elapsed,
         )
+
+        if webhook_url:
+            human_review_required = True
+            human_review_reason = "low_quality_or_missing_fields"
+            if overall is not None and overall >= 0.75:
+                human_review_required = False
+                human_review_reason = None
+
+            webhook_payload = {
+                "event": "pipeline_completed",
+                "document_id": document_id,
+                "pipeline_run_id": pipeline_run_id,
+                "status": "done",
+                "raw_text": text,
+                "fields": {
+                    name: (
+                        {
+                            "name": name,
+                            "value": val.get("value") if isinstance(val, dict) else val,
+                            "reasoning": val.get("reasoning") if isinstance(val, dict) else None,
+                            "confidence": val.get("confidence") if isinstance(val, dict) else None,
+                            "source": val.get("source") if isinstance(val, dict) else None,
+                        }
+                    )
+                    for name, val in fields.items()
+                },
+                "technical_quality_score": technical,
+                "semantic_confidence_score": semantic,
+                "overall_quality_score": overall,
+                "validation_status": validation_status,
+                "validation_issues": [
+                    {
+                        "code": issue.code,
+                        "message": issue.message,
+                        "field_name": issue.field_name,
+                        "severity": issue.severity,
+                    }
+                    for issue in validation_issues
+                ],
+                "human_review_required": human_review_required,
+                "human_review_reason": human_review_reason,
+                "finished_at": datetime.utcnow().isoformat(),
+            }
+            await _trigger_webhook_safely(webhook_url, webhook_payload)
+
     except Exception as exc:
         with repository.get_session() as session:
             run = session.get(models.PipelineRun, pipeline_run_id)
@@ -278,4 +348,14 @@ async def process_pipeline_run(pipeline_run_id: str) -> None:
             error_type=type(exc).__name__,
             error_message=str(exc),
         )
+        if webhook_url:
+            webhook_payload = {
+                "event": "pipeline_failed",
+                "document_id": document_id,
+                "pipeline_run_id": pipeline_run_id,
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "finished_at": datetime.utcnow().isoformat(),
+            }
+            await _trigger_webhook_safely(webhook_url, webhook_payload)
         raise

@@ -47,6 +47,7 @@ class PipelineRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    webhook_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
     document: Mapped[Document] = relationship(back_populates="pipeline_runs")
     events: Mapped[list["PipelineEvent"]] = relationship(back_populates="pipeline_run")

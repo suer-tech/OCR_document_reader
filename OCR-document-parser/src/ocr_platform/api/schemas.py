@@ -33,6 +33,10 @@ class IngestDocumentRequest(BaseModel):
         default=None,
         description="Внешний идентификатор документа в исходной системе.",
     )
+    webhook_url: Optional[str] = Field(
+        default=None,
+        description="URL-адрес для отправки асинхронного вебхука при завершении или ошибке обработки.",
+    )
     meta: Dict[str, Any] = Field(default_factory=dict, description="Произвольные метаданные о документе.")
 
 

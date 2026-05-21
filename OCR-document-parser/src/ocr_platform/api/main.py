@@ -125,6 +125,7 @@ def create_app() -> FastAPI:
                         profile_id="unknown",
                         status="queued",
                         idempotency_key=idempotency_key,
+                        webhook_url=request.webhook_url or request.meta.get("webhook_url"),
                     )
                 )
 
@@ -200,6 +201,7 @@ def create_app() -> FastAPI:
         document_type: str | None = Form(None, description="Тип документа (например court_decision)"),
         idempotency_key: str | None = Form(None, description="Ключ идемпотентности"),
         external_id: str | None = Form(None, description="Внешний идентификатор"),
+        webhook_url: str | None = Form(None, description="URL для отправки вебхука по готовности"),
     ) -> schemas.IngestDocumentResponse:
         inc_request("/documents/upload")
 
@@ -272,6 +274,7 @@ def create_app() -> FastAPI:
                         profile_id="unknown",
                         status="queued",
                         idempotency_key=idempotency_key,
+                        webhook_url=webhook_url,
                     )
                 )
                 session.add(
