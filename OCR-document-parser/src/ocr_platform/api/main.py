@@ -128,6 +128,7 @@ def create_app() -> FastAPI:
                         webhook_url=request.webhook_url or request.meta.get("webhook_url"),
                     )
                 )
+                session.flush()
 
                 session.add(
                     models.IngestRequest(
@@ -278,6 +279,8 @@ def create_app() -> FastAPI:
                         webhook_url=webhook_url,
                     )
                 )
+                session.flush()
+
                 session.add(
                     models.IngestRequest(
                         idempotency_key=idempotency_key,
