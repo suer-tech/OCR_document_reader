@@ -31,7 +31,11 @@ _NLP_FIELD_GETTERS = {
     "inn": lambda r: r.fields.inn,
     "decision_date": lambda r: r.fields.decision_date,
     "procedure_end_date": lambda r: r.fields.procedure_end_date,
+    "procedure_end_date_is_calculated": lambda r: r.fields.procedure_end_date_is_calculated,
     "procedure_type": lambda r: r.fields.procedure_type,
+    "early_report_deadline": lambda r: r.fields.early_report_deadline,
+    "motivating_part": lambda r: r.fields.motivating_part,
+    "resolutive_part": lambda r: r.fields.resolutive_part,
 }
 
 

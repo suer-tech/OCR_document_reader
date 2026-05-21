@@ -27,6 +27,7 @@ class ExtractResponse(BaseModel):
     decision_date: str | None = None
     procedure_end_date: str | None = None
     procedure_type: str | None = None
+    procedure_end_date_is_calculated: bool | None = None
     confidence: float = Field(..., ge=0.0, le=1.0)
     source_text_span: str | None = None
     source_text_preview: str | None = None

@@ -26,6 +26,10 @@ class CourtDecisionFields:
     decision_date: str | None
     procedure_end_date: str | None
     procedure_type: str | None
+    early_report_deadline: str | None = None
+    motivating_part: str | None = None
+    resolutive_part: str | None = None
+    procedure_end_date_is_calculated: bool | None = None
 
 
 @dataclass(slots=True)

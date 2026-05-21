@@ -41,6 +41,7 @@ class FioExtractionService:
             decision_date=fields.decision_date,
             procedure_end_date=fields.procedure_end_date,
             procedure_type=fields.procedure_type,
+            procedure_end_date_is_calculated=fields.procedure_end_date_is_calculated,
             confidence=prediction.confidence,
             source_text_span=prediction.source_text_span,
             source_text_preview=prediction.source_text_preview,

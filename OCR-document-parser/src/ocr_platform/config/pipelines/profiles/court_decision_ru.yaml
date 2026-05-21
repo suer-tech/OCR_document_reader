@@ -76,6 +76,26 @@ fields_llm:
     label_ru: "Дата окончания процедуры"
     description_ru: "Срок процедуры банкротства. Ищите фразу 'на срок * месяцев' или точную дату окончания рядом с введением процедуры"
 
+  procedure_end_date_is_calculated:
+    required: false
+    label_ru: "Является ли дата окончания вычисленной"
+    description_ru: "True, если дата окончания вычислена по сроку в месяцах, False, если точная дата была явно указана в решении."
+
+  early_report_deadline:
+    required: false
+    label_ru: "Заблаговременное предоставление отчета ФУ"
+    description_ru: "Дата, к которой финансовый управляющий обязан представить отчёт/документы суду. Ищите в резолютивной части после 'РЕШИЛ'. Формат ДД.ММ.ГГГГ."
+
+  motivating_part:
+    required: false
+    label_ru: "Мотивирующая часть"
+    description_ru: "Мотивирующая часть судебного решения (текст между словами 'УСТАНОВИЛ' и 'РЕШИЛ')."
+
+  resolutive_part:
+    required: false
+    label_ru: "Резолютивная часть"
+    description_ru: "Резолютивная часть судебного решения (текст после слова 'РЕШИЛ' и до фразы 'Электронная подпись действительна')."
+
 fields_nlp:
   debtor_full_name:
     required: true
@@ -116,6 +136,26 @@ fields_nlp:
     required: false
     label_ru: "Дата окончания процедуры"
     nlp_source: procedure_end_date
+
+  procedure_end_date_is_calculated:
+    required: false
+    label_ru: "Является ли дата окончания вычисленной"
+    nlp_source: procedure_end_date_is_calculated
+
+  early_report_deadline:
+    required: false
+    label_ru: "Заблаговременное предоставление отчета ФУ"
+    nlp_source: early_report_deadline
+
+  motivating_part:
+    required: false
+    label_ru: "Мотивирующая часть"
+    nlp_source: motivating_part
+
+  resolutive_part:
+    required: false
+    label_ru: "Резолютивная часть"
+    nlp_source: resolutive_part
 
 # OCR и извлечение текста выполняются на входе (до пайплайна) через extract_text_at_ingest.
 pipeline:

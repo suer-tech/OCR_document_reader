@@ -7,6 +7,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.ruff_cache/
 
 # Local environment files
 .env
@@ -33,3 +34,25 @@ exports/
 *.pt
 *.pth
 *.ckpt
+*.zip
+
+# PDF files (test documents, sample files)
+*.pdf
+
+# Text instruction files
+*.txt
+
+# Scratch / dev scripts (not for production)
+scratch/
+
+# Server deployment guide
+deployment_guide.md
+
+# MLflow tracking
+mlflow.db
+mlruns/
+
+# Editor & OS artifacts
+.DS_Store
+Thumbs.db
+

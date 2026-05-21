@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 
 # Local environment files
 .env
@@ -10,9 +11,30 @@ __pycache__/
 logs/
 mlruns/
 *.db
+ocr.db
 
 # Local datasets
 data/
 
 # Build metadata
 *.egg-info/
+
+# ML models and weights
+models/
+models.zip
+*.zip
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+
+# PDF files (test documents)
+*.pdf
+
+# Scratch / dev scripts
+scratch/
+
+# Editor & OS artifacts
+.DS_Store
+Thumbs.db

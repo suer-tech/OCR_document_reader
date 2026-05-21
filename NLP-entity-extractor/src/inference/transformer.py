@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from transformers import AutoModelForTokenClassification, AutoTokenizer, pipeline
+from transformers import AutoModelForSequenceClassification, AutoModelForTokenClassification, AutoTokenizer, pipeline
 
 from .contracts import CourtDecisionFields, FioComponents, PredictionResult
 from .postprocess import normalize_fio_components, normalize_whitespace
@@ -14,9 +14,12 @@ from .rules import (
     extract_case_number,
     extract_court_name,
     extract_decision_date,
+    extract_early_report_deadline,
     extract_inn,
-    extract_procedure_end_date,
+    extract_motivating_part,
+    extract_procedure_end_date_with_meta,
     extract_procedure_type,
+    extract_resolutive_part,
 )
 
 MODEL_ID = "Gherman/bert-base-NER-Russian"
@@ -114,6 +117,18 @@ class TransformerTokenClassifierExtractor:
         )
         self.model_version = model_path.name
 
+        self.cls_pipeline = None
+        cls_path = model_path.parent / "early-report-classifier"
+        if cls_path.exists():
+            cls_tokenizer = AutoTokenizer.from_pretrained(cls_path)
+            cls_model = AutoModelForSequenceClassification.from_pretrained(cls_path)
+            self.cls_pipeline = pipeline(
+                "text-classification",
+                model=cls_model,
+                tokenizer=cls_tokenizer,
+                device=-1,
+            )
+
     @classmethod
     def bootstrap_local_model(cls, output_dir: str | Path, model_id: str = MODEL_ID) -> "TransformerTokenClassifierExtractor":
         output_path = Path(output_dir)
@@ -156,6 +171,23 @@ class TransformerTokenClassifierExtractor:
         span = normalized_text[best_candidate.start:best_candidate.end] if best_candidate else None
         preview = normalized_text[max(0, best_candidate.start - 120): best_candidate.end + 120] if best_candidate else (normalized_text[:300] or None)
 
+        procedure_end_date, is_calculated = extract_procedure_end_date_with_meta(normalized_text)
+
+        # Determine early report deadline via sequence classifier if available
+        early_report_deadline = extract_early_report_deadline(normalized_text, procedure_end_date)
+        if self.cls_pipeline is not None and procedure_end_date:
+            import re
+            match = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", normalized_text, re.IGNORECASE)
+            search_text = normalized_text[match.start():] if match else normalized_text
+            
+            # Text-classification returns [{'label': 'REQUIRED', 'score': 0.99...}]
+            pred = self.cls_pipeline(search_text[:2000], truncation=True, max_length=256)[0]
+            if pred["label"] == "REQUIRED" and pred["score"] > 0.5:
+                from .rules import _subtract_days_from_date, DEFAULT_ADVANCE_DAYS
+                early_report_deadline = _subtract_days_from_date(procedure_end_date, DEFAULT_ADVANCE_DAYS)
+            else:
+                early_report_deadline = None
+
         return PredictionResult(
             fields=CourtDecisionFields(
                 applicant_fio=applicant_fio,
@@ -164,8 +196,12 @@ class TransformerTokenClassifierExtractor:
                 case_number=extract_case_number(normalized_text),
                 inn=extract_inn(normalized_text),
                 decision_date=extract_decision_date(normalized_text),
-                procedure_end_date=extract_procedure_end_date(normalized_text),
+                procedure_end_date=procedure_end_date,
                 procedure_type=extract_procedure_type(normalized_text),
+                early_report_deadline=early_report_deadline,
+                motivating_part=extract_motivating_part(normalized_text),
+                resolutive_part=extract_resolutive_part(normalized_text),
+                procedure_end_date_is_calculated=is_calculated,
             ),
             confidence=confidence,
             source_text_span=span,

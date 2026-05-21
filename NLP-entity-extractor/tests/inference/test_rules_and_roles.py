@@ -6,8 +6,11 @@ from inference.rules import (
     extract_court_name,
     extract_decision_date,
     extract_inn,
+    extract_motivating_part,
     extract_procedure_end_date,
+    extract_procedure_end_date_with_meta,
     extract_procedure_type,
+    extract_resolutive_part,
 )
 from inference.transformer import TransformerTokenClassifierExtractor
 
@@ -24,8 +27,8 @@ def test_extracts_court_fields_from_text() -> None:
     assert extract_court_name(text) == "АРБИТРАЖНЫЙ СУД РОСТОВСКОЙ ОБЛАСТИ"
     assert extract_case_number(text) == "А53-38537/2023"
     assert extract_inn(text) == "611600763369"
-    assert extract_decision_date(text) == "2023-12-19"
-    assert extract_procedure_end_date(text) == "2024-06-17"
+    assert extract_decision_date(text) == "19.12.2023"
+    assert extract_procedure_end_date(text) == "17.06.2024"
     assert extract_procedure_type(text) == "процедуру реализации имущества гражданина"
 
 
@@ -36,8 +39,30 @@ def test_derives_procedure_end_date_from_duration() -> None:
         "ввести процедуру реализации имущества гражданина на срок 6 месяцев."
     )
     assert extract_court_name(text) == "АРБИТРАЖНЫЙ СУД АРХАНГЕЛЬСКОЙ ОБЛАСТИ"
-    assert extract_decision_date(text) == "2025-02-17"
-    assert extract_procedure_end_date(text) == "2025-08-17"
+    assert extract_decision_date(text) == "17.02.2025"
+    assert extract_procedure_end_date(text) == "17.08.2025"
+
+    # Test word durations (various grammatical cases for months and number words)
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: сроком на три месяца") == "17.05.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: сроком на трех месяцев") == "17.05.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: сроком на четыре месяца") == "17.06.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: сроком на четырех месяцев") == "17.06.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: сроком на пять месяцев") == "17.07.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: сроком на пяти месяцев") == "17.07.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: сроком на 4 месяцев") == "17.06.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: сроком на 3 месяца") == "17.05.2025"
+
+    # Test explicit end dates with trailing г./г
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: до 17 августа 2025 г.") == "17.08.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: до 17 августа 2025 г") == "17.08.2025"
+    assert extract_procedure_end_date("17 февраля 2025 года РЕШИЛ: до 17 августа 2025 года") == "17.08.2025"
+
+    # Test metadata flag behavior
+    assert extract_procedure_end_date_with_meta("17 февраля 2025 года РЕШИЛ: сроком на 6 месяцев") == ("17.08.2025", True)
+    assert extract_procedure_end_date_with_meta("17 февраля 2025 года РЕШИЛ: сроком на три месяца") == ("17.05.2025", True)
+    assert extract_procedure_end_date_with_meta("17 февраля 2025 года РЕШИЛ: до 17 августа 2025 г.") == ("17.08.2025", False)
+    assert extract_procedure_end_date_with_meta("17 февраля 2025 года РЕШИЛ: назначить рассмотрение отчета на 17 августа 2025 года на 10 час. 00 мин.") == ("17 августа 2025 года на 10 час. 00 мин.", False)
+    assert extract_procedure_end_date_with_meta("Нет никаких дат") == (None, None)
 
 
 def test_model_extracts_fields_from_real_sample_pdf() -> None:
@@ -49,5 +74,52 @@ def test_model_extracts_fields_from_real_sample_pdf() -> None:
     assert result.fields.court_name == "АРБИТРАЖНЫЙ СУД РОСТОВСКОЙ ОБЛАСТИ"
     assert result.fields.case_number == "А53-38537/2023"
     assert result.fields.inn == "611600763369"
-    assert result.fields.decision_date == "2023-12-19"
-    assert result.fields.procedure_end_date == "2024-06-17"
+    assert result.fields.decision_date == "19.12.2023"
+    assert result.fields.procedure_end_date == "17.06.2024"
+    assert result.fields.motivating_part is not None
+    assert "установил" in result.fields.motivating_part.lower() or len(result.fields.motivating_part) > 100
+    assert result.fields.resolutive_part is not None
+    assert len(result.fields.resolutive_part) > 100
+    assert "электронная подпись действительна" not in result.fields.resolutive_part.lower()
+
+
+def test_extract_motivating_part() -> None:
+    # 1. Простой случай
+    text1 = "Некий текст. УСТАНОВИЛ: Важный текст мотивировки. РЕШИЛ: ввести процедуру."
+    assert extract_motivating_part(text1) == "Важный текст мотивировки."
+
+    # 2. Разрядка в буквах и разный регистр
+    text2 = "Суд у с т а н о в и л: текст мотивировки... Р Е Ш И Л : признать банкротом."
+    assert extract_motivating_part(text2) == "текст мотивировки..."
+
+    # 3. Лишние символы в начале (двоеточие, пробелы, тире)
+    text3 = "Суд УСТАНОВИЛ: - Вторая мотивировка. РЕШИЛ: утвердить."
+    assert extract_motivating_part(text3) == "Вторая мотивировка."
+
+    # 4. Отсутствие установления
+    text4 = "Суд решил: ввести процедуру."
+    assert extract_motivating_part(text4) is None
+
+    # 5. Отсутствие резолютивной части
+    text5 = "Суд установил: мотивировка без решения."
+    assert extract_motivating_part(text5) is None
+
+
+def test_extract_resolutive_part() -> None:
+    # 1. Простой случай с подписью
+    text1 = "Некий текст. РЕШИЛ: ввести процедуру. Электронная подпись действительна. Какой-то хвост."
+    assert extract_resolutive_part(text1) == "ввести процедуру."
+
+    # 2. Без подписи (до конца документа)
+    text2 = "Суд решил: ввести процедуру банкротства гражданина."
+    assert extract_resolutive_part(text2) == "ввести процедуру банкротства гражданина."
+
+    # 3. Разные регистры и пробелы в маркере
+    text3 = "Суд Р Е Ш И Л  :   - Вторая резолюция.   электронная   подпись   действительна   и так далее"
+    assert extract_resolutive_part(text3) == "Вторая резолюция."
+
+    # 4. Отсутствие слова РЕШИЛ
+    text4 = "Суд установил мотивировку."
+    assert extract_resolutive_part(text4) is None
+
+
