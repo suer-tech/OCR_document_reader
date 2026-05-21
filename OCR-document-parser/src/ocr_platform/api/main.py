@@ -148,6 +148,7 @@ def create_app() -> FastAPI:
                     .first()
                 )
                 if not existing:
+                    logger.exception("Unexpected IntegrityError during ingest_document")
                     raise HTTPException(status_code=409, detail="duplicate ingest detected")
                 run = session.get(models.PipelineRun, existing.pipeline_run_id)
                 status = run.status if run else "queued"
@@ -304,6 +305,7 @@ def create_app() -> FastAPI:
                         status=status,  # type: ignore[arg-type]
                         idempotency_key=idempotency_key,
                     )
+            logger.exception("Unexpected IntegrityError during upload_document")
             raise HTTPException(status_code=409, detail="duplicate ingest detected")
 
         try:
