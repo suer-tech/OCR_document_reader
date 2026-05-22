@@ -238,51 +238,8 @@ class TransformerTokenClassifierExtractor:
             # Text-classification returns [{'label': 'REQUIRED', 'score': 0.99...}]
             pred = self.cls_pipeline(search_text[:2000], truncation=True, max_length=512)[0]
             if pred["label"] == "REQUIRED" and pred["score"] > 0.5:
-                from .rules import (
-                    _subtract_days_from_date, 
-                    DEFAULT_ADVANCE_DAYS, 
-                    EARLY_REPORT_DAYS_BEFORE_RE, 
-                    EARLY_REPORT_EXPLICIT_DATE_RE, 
-                    EARLY_REPORT_SUBMIT_DEADLINE_RE, 
-                    WORD_TO_NUM_DAYS, 
-                    MONTHS
-                )
-                import re
-                
-                early_report_deadline = None
-                
-                # 1. Ищем ЯВНУЮ дату в предложении об отчете (например: "в срок до 30 сентября 2026 года")
-                explicit_match = EARLY_REPORT_EXPLICIT_DATE_RE.search(search_text) or EARLY_REPORT_SUBMIT_DEADLINE_RE.search(search_text)
-                if explicit_match:
-                    val = explicit_match.group(1)
-                    if re.match(r"\d{2}\.\d{2}\.\d{4}", val):
-                        early_report_deadline = val
-                    else:
-                        m = re.match(r"[«\"]?(\d{1,2})[»\"]?\s+([А-Яа-яЁё]+)\s+(\d{4})\s*(?:года|г\.?)", val, re.IGNORECASE)
-                        if m:
-                            day, month_name, year = m.groups()
-                            month_num = MONTHS.get(month_name.lower())
-                            if month_num:
-                                early_report_deadline = f"{int(day):02d}.{month_num}.{year}"
-
-                # 2. Если явной даты нет, ищем "за 3 дня" / "за 5 дней" до завершения процедуры
-                if not early_report_deadline:
-                    advance_days = None
-                    days_match = EARLY_REPORT_DAYS_BEFORE_RE.search(search_text)
-                    if days_match:
-                        num_str = days_match.group(1).lower()
-                        if num_str.isdigit():
-                            advance_days = int(num_str)
-                        elif num_str in WORD_TO_NUM_DAYS:
-                            advance_days = WORD_TO_NUM_DAYS[num_str]
-                    else:
-                        from .rules import EARLY_REPORT_ADVANCE_RE
-                        if EARLY_REPORT_ADVANCE_RE.search(search_text):
-                            advance_days = DEFAULT_ADVANCE_DAYS  # "заблаговременно" -> 10 дней
-                            
-                    if advance_days is not None and procedure_end_date:
-                        early_report_deadline = _subtract_days_from_date(procedure_end_date, advance_days)
-
+                from .rules import _subtract_days_from_date, DEFAULT_ADVANCE_DAYS
+                early_report_deadline = _subtract_days_from_date(procedure_end_date, DEFAULT_ADVANCE_DAYS)
                 early_report_deadline_source = "Модель классификации early-report-classifier"
             else:
                 early_report_deadline = None
