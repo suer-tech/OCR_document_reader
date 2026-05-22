@@ -166,7 +166,7 @@ EARLY_REPORT_DAYS_BEFORE_RE = re.compile(
 
 # Паттерн 3: «заблаговременно представить»
 EARLY_REPORT_ADVANCE_RE = re.compile(
-    r"(?:обязать\s+)?финансов\w+\s+управляющ\w+\s+заблаговременно\s+представить",
+    r"(?:обязать\s+)?финансов\w+\s+управляющ\w+\s+заблаговременно.{1,200}?представить",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -215,16 +215,16 @@ def _subtract_days_from_date(date_str: str, days: int) -> str | None:
     return result.strftime("%d.%m.%Y")
 
 
-def extract_early_report_deadline(text: str, procedure_end_date: str | None) -> str | None:
+def extract_early_report_deadline(text: str, procedure_end_date: str | None) -> tuple[str | None, str | None]:
     """Извлечь дату заблаговременного предоставления отчёта ФУ.
 
     Ищет только в блоке после «РЕШИЛ:».
     Если найден любой из паттернов, требующих заблаговременного предоставления,
-    возвращает procedure_end_date минус 10 дней (формат ДД.ММ.ГГГГ).
-    Если требования нет или нет даты завершения — возвращает None.
+    возвращает кортеж (дата_в_формате_ДД.ММ.ГГГГ, источник).
+    Если требования нет или нет даты завершения — возвращает (None, None).
     """
     if not procedure_end_date:
-        return None
+        return None, None
 
     match_reshil = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", text, re.IGNORECASE)
     search_text = text[match_reshil.start():] if match_reshil else text
@@ -237,9 +237,9 @@ def extract_early_report_deadline(text: str, procedure_end_date: str | None) -> 
     )
 
     if not has_requirement:
-        return None
+        return None, None
 
-    return _subtract_days_from_date(procedure_end_date, DEFAULT_ADVANCE_DAYS)
+    return _subtract_days_from_date(procedure_end_date, DEFAULT_ADVANCE_DAYS), "Регулярные выражения (правила)"
 
 
 def extract_motivating_part(text: str) -> str | None:

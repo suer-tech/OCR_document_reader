@@ -99,8 +99,13 @@ class CourtDecisionNlpExtractor:
                 continue
             getter = _NLP_FIELD_GETTERS[nlp_source]
             value = getter(prediction)
+            
+            reasoning = f"NLP ({prediction.model_version})"
+            if field_name == "early_report_deadline" and prediction.fields.early_report_deadline_source:
+                reasoning = prediction.fields.early_report_deadline_source
+
             normalized[field_name] = {
-                "reasoning": f"NLP ({prediction.model_version})",
+                "reasoning": reasoning,
                 "value": value,
                 "confidence": base_confidence,
             }

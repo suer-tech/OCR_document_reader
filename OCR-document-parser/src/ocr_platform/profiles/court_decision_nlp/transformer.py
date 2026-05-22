@@ -228,19 +228,22 @@ class TransformerTokenClassifierExtractor:
         procedure_end_date, is_calculated = extract_procedure_end_date_with_meta(normalized_text)
 
         # Determine early report deadline via sequence classifier if available
-        early_report_deadline = extract_early_report_deadline(normalized_text, procedure_end_date)
+        # early_report_deadline, early_report_deadline_source = extract_early_report_deadline(normalized_text, procedure_end_date)
+        early_report_deadline, early_report_deadline_source = None, None
         if self.cls_pipeline is not None and procedure_end_date:
             import re
             match = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", normalized_text, re.IGNORECASE)
             search_text = normalized_text[match.start():] if match else normalized_text
             
             # Text-classification returns [{'label': 'REQUIRED', 'score': 0.99...}]
-            pred = self.cls_pipeline(search_text[:2000], truncation=True, max_length=256)[0]
+            pred = self.cls_pipeline(search_text[:2000], truncation=True, max_length=512)[0]
             if pred["label"] == "REQUIRED" and pred["score"] > 0.5:
                 from .rules import _subtract_days_from_date, DEFAULT_ADVANCE_DAYS
                 early_report_deadline = _subtract_days_from_date(procedure_end_date, DEFAULT_ADVANCE_DAYS)
+                early_report_deadline_source = "Модель классификации early-report-classifier"
             else:
                 early_report_deadline = None
+                early_report_deadline_source = None
 
         return PredictionResult(
             fields=CourtDecisionFields(
@@ -253,6 +256,7 @@ class TransformerTokenClassifierExtractor:
                 procedure_end_date=procedure_end_date,
                 procedure_type=extract_procedure_type(normalized_text),
                 early_report_deadline=early_report_deadline,
+                early_report_deadline_source=early_report_deadline_source,
                 motivating_part=extract_motivating_part(normalized_text),
                 resolutive_part=extract_resolutive_part(normalized_text),
                 procedure_end_date_is_calculated=is_calculated,
