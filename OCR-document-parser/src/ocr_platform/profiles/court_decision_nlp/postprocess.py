@@ -31,14 +31,20 @@ def titlecase_russian_name(value: str | None) -> str | None:
 def infer_gender(first_name: str | None, patronymic: str | None) -> str | None:
     if patronymic:
         lowered = patronymic.lower()
-        if lowered.endswith("вна") or lowered.endswith("ична"):
+        if lowered.endswith(("вна", "ична")):
             return "femn"
-        if lowered.endswith("вич") or lowered.endswith("ич"):
+        if lowered.endswith(("вич", "ич")):
             return "masc"
     if first_name:
         lowered = first_name.lower()
-        if lowered.endswith(("а", "я")) and lowered not in {"илья", "никита"}:
+        masc_exceptions = {"илья", "никита", "данила", "савва", "кузьма", "фома", "лука", "иона", "лев"}
+        if lowered.endswith(("а", "я")) and lowered not in masc_exceptions:
             return "femn"
+        # Для большинства других русских имен (оканчивающихся на согласную или й) это мужской пол.
+        # Женские имена на "ь" (Любовь) встречаются реже, поэтому при наличии только имени без отчества
+        # и без окончания на а/я, с большей вероятностью это мужское имя.
+        if not lowered.endswith("ь"):
+            return "masc"
     return None
 
 
@@ -47,7 +53,11 @@ def inflect_to_nominative(value: str | None) -> str | None:
         return None
     morph = get_morph()
     parts: list[str] = []
+    # Очистка по краям от небуквенных символов (включая длинные тире)
+    value = value.strip(" -.,;\t\n\"'–—")
     for chunk in normalize_whitespace(value).split("-"):
+        if not chunk:
+            continue
         parsed = morph.parse(chunk)
         inflected = None
         for item in parsed:
@@ -60,11 +70,17 @@ def inflect_to_nominative(value: str | None) -> str | None:
 
 
 def adjust_surname_for_gender(last_name: str | None, gender: str | None) -> str | None:
-    if not last_name or gender != "femn":
+    if not last_name:
         return last_name
     lowered = last_name.lower()
-    if lowered.endswith(("ов", "ев", "ин", "ын")):
-        return last_name + "а"
+    if gender == "femn":
+        if lowered.endswith(("ов", "ев", "ин", "ын")):
+            return last_name + "а"
+    elif gender == "masc":
+        if lowered.endswith(("ова", "ева", "ина", "ына")):
+            return last_name[:-1]
+        if lowered.endswith(("овая", "евая", "иная", "ыная")):
+            return last_name[:-2]
     return last_name
 
 
