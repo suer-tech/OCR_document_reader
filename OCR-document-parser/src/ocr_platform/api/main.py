@@ -49,10 +49,20 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        description="OCR-платформа для судебных и других документов.",
+        description="""
+# Платформа распознавания документов (OCR / NLP)
+
+Эта платформа позволяет извлекать структурированные данные из судебных и других документов.
+
+## Основной процесс (Workflow)
+Для получения результата вам необходимо выполнить следующие шаги:
+1. **Загрузите документ** через `POST /documents/upload` (как файл) или `POST /documents/ingest` (в base64). Сохраните `pipeline_run_id` и `document_id`.
+2. **Проверяйте статус** (Polling) через `GET /pipeline-runs/{pipeline_run_id}` (рекомендуется раз в 3-5 секунд), пока `status` не станет `"done"`.
+3. **Получите результат** через `GET /documents/{document_id}/result`. Вы получите сырой текст и структурированные поля с оценкой уверенности.
+        """.strip(),
     )
 
-    @app.get("/health", response_model=schemas.HealthResponse)
+    @app.get("/health", response_model=schemas.HealthResponse, tags=["Служебные"], include_in_schema=False)
     async def health() -> schemas.HealthResponse:
         return schemas.HealthResponse(status="ok")
 
@@ -60,6 +70,10 @@ def create_app() -> FastAPI:
         "/documents/ingest",
         response_model=schemas.IngestDocumentResponse,
         status_code=202,
+        tags=["1. Загрузка документов"],
+        summary="Шаг 1. Загрузка документа (JSON)",
+        description="Загружает документ в платформу в формате base64 внутри JSON. В ответ вы получаете `pipeline_run_id`, который нужно использовать для проверки статуса на Шаге 2.",
+        include_in_schema=False,
     )
     async def ingest_document(request: schemas.IngestDocumentRequest) -> schemas.IngestDocumentResponse:
         inc_request("/documents/ingest")
@@ -194,8 +208,9 @@ def create_app() -> FastAPI:
         "/documents/upload",
         response_model=schemas.IngestDocumentResponse,
         status_code=202,
-        summary="Upload document (multipart/form-data)",
-        description="Загрузка документа файлом. Байты передаются напрямую, без base64 — подходит для больших PDF (>1MB).",
+        tags=["1. Загрузка документов"],
+        summary="Шаг 1. Загрузка документа (Файл)",
+        description="Загрузка документа файлом (`multipart/form-data`). Байты передаются напрямую, без base64 — подходит для больших PDF (>1MB). Возвращает `pipeline_run_id` для проверки статуса на Шаге 2.",
     )
     async def upload_document(
         file: UploadFile = File(..., description="PDF, изображение или текстовый файл"),
@@ -340,7 +355,13 @@ def create_app() -> FastAPI:
             idempotency_key=idempotency_key,
         )
 
-    @app.get("/pipeline-runs/{pipeline_run_id}", response_model=schemas.PipelineRunStatusResponse)
+    @app.get(
+        "/pipeline-runs/{pipeline_run_id}", 
+        response_model=schemas.PipelineRunStatusResponse,
+        tags=["2. Статус обработки"],
+        summary="Шаг 2. Проверка статуса (Polling)",
+        description="Проверяет статус асинхронной задачи по `pipeline_run_id`. Рекомендуется опрашивать этот метод с задержкой (например, раз в 3-5 секунд), пока статус не станет `done`."
+    )
     async def get_pipeline_run_status(pipeline_run_id: str) -> schemas.PipelineRunStatusResponse:
         inc_request("/pipeline-runs/status")
         with repository.get_session() as session:
@@ -359,7 +380,13 @@ def create_app() -> FastAPI:
                 last_error=run.last_error,
             )
 
-    @app.get("/documents/{document_id}/result", response_model=schemas.DocumentResultResponse)
+    @app.get(
+        "/documents/{document_id}/result", 
+        response_model=schemas.DocumentResultResponse,
+        tags=["3. Получение результата"],
+        summary="Шаг 3. Получение извлеченных данных",
+        description="Возвращает извлеченные поля (например, ФИО должника, номер дела), сырой текст и оценки качества. Вызывайте этот метод только после того, как статус обработки на Шаге 2 стал `done`."
+    )
     async def get_result(document_id: str) -> schemas.DocumentResultResponse:
         inc_request("/documents/result")
         with repository.get_session() as session:
@@ -441,7 +468,14 @@ def create_app() -> FastAPI:
             human_review_reason=human_review_reason,
         )
 
-    @app.post("/mlflow/backfill", response_model=schemas.MlflowBackfillResponse)
+    @app.post(
+        "/mlflow/backfill", 
+        response_model=schemas.MlflowBackfillResponse,
+        tags=["Служебные"],
+        summary="Админ: Бэкфилл в MLflow",
+        description="Синхронизирует исторические запуски с MLflow для аналитики. Не используется в основном бизнес-процессе.",
+        include_in_schema=False,
+    )
     async def mlflow_backfill(request: schemas.MlflowBackfillRequest) -> schemas.MlflowBackfillResponse:
         inc_request("/mlflow/backfill")
         try:

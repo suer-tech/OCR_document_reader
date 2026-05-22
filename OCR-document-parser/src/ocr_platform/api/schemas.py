@@ -41,61 +41,170 @@ class IngestDocumentRequest(BaseModel):
 
 
 class IngestDocumentResponse(BaseModel):
-    document_id: str
-    pipeline_run_id: str
-    resolved_document_type: Optional[str] = None
-    resolved_profile_id: Optional[str] = None
-    detection_source: Optional[str] = None
-    detection_model: Optional[str] = None
-    idempotency_key: str
-    status: Literal["queued", "processing", "retrying", "done", "failed"]
+    document_id: str = Field(..., description="Внутренний уникальный ID документа в платформе.", examples=["doc_123abc"])
+    pipeline_run_id: str = Field(..., description="ID запущенного процесса обработки. Используйте его для поллинга статуса.", examples=["run_456def"])
+    resolved_document_type: Optional[str] = Field(default=None, description="Определенный тип документа (если удалось определить автоматически или было передано явно).", examples=["court_decision"])
+    resolved_profile_id: Optional[str] = Field(default=None, description="ID профиля обработки.", examples=["court_decision_ru"])
+    detection_source: Optional[str] = Field(default=None, description="Источник определения типа (hint, classifier).")
+    detection_model: Optional[str] = Field(default=None, description="Модель, определившая тип документа.")
+    idempotency_key: str = Field(..., description="Ключ идемпотентности, привязанный к этому запуску.")
+    status: Literal["queued", "processing", "retrying", "done", "failed"] = Field(..., description="Текущий статус задачи.", examples=["queued"])
 
 
 class FieldValue(BaseModel):
-    name: str
-    value: Any
-    reasoning: Optional[str] = None
-    confidence: Optional[float] = None
-    source: Optional[str] = None
+    name: str = Field(..., description="Внутреннее системное имя поля.", examples=["debtor_full_name"])
+    value: Any = Field(..., description="Извлеченное значение поля.", examples=["Иванов Иван Иванович"])
+    reasoning: Optional[str] = Field(default=None, description="Объяснение модели, почему она извлекла именно это значение.", examples=["ФИО должника указано в шапке документа после слова 'Должник:'"])
+    confidence: Optional[float] = Field(default=None, description="Уверенность модели в извлеченном значении (от 0 до 1).", examples=[0.95])
+    source: Optional[str] = Field(default=None, description="Источник извлечения (llm, nlp, regex).", examples=["llm"])
 
 
 class ValidationIssue(BaseModel):
-    code: str
-    message: str
-    field_name: Optional[str] = None
-    severity: Literal["info", "warning", "error"] = "error"
+    code: str = Field(..., description="Код ошибки.", examples=["missing_required_field"])
+    message: str = Field(..., description="Человекочитаемое сообщение об ошибке.", examples=["Обязательное поле 'debtor_inn' не найдено"])
+    field_name: Optional[str] = Field(default=None, description="Имя поля, к которому относится ошибка.", examples=["debtor_inn"])
+    severity: Literal["info", "warning", "error"] = Field(default="error", description="Критичность ошибки.", examples=["error"])
 
 
 class DocumentResultResponse(BaseModel):
-    document_id: str
-    pipeline_run_id: str
-    raw_text_version_id: Optional[str] = None
-    structured_version_id: Optional[str] = None
+    document_id: str = Field(..., description="Внутренний ID документа.", examples=["doc_123abc"])
+    pipeline_run_id: str = Field(..., description="ID процесса обработки.", examples=["run_456def"])
+    raw_text_version_id: Optional[str] = Field(default=None, description="ID версии извлеченного сырого текста.")
+    structured_version_id: Optional[str] = Field(default=None, description="ID версии извлеченных структурированных полей.")
 
-    raw_text: Optional[str] = None
-    fields: Dict[str, FieldValue] = Field(default_factory=dict)
+    raw_text: Optional[str] = Field(default=None, description="Сырой текст документа, полученный после OCR.")
+    fields: Dict[str, FieldValue] = Field(
+        default_factory=dict, 
+        description="""Словарь извлеченных полей, где ключ - системное имя поля. 
+В зависимости от типа документа (например, для `court_decision`) ключи могут быть следующими:
+* `debtor_full_name` — ФИО должника
+* `debtor_inn` — ИНН должника
+* `case_number` — Номер дела
+* `judge_full_name` — ФИО судьи
+* `court_name` — Название суда
+* `decision_date` — Дата решения
+* `procedure_type` — Тип процедуры (например, реализация имущества)
+* `procedure_end_date` — Дата окончания процедуры
+* `procedure_end_date_is_calculated` — Является ли дата окончания вычисленной (true/false)
+* `early_report_deadline` — Заблаговременное предоставление отчета ФУ
+* `motivating_part` — Мотивирующая часть судебного решения
+* `resolutive_part` — Резолютивная часть судебного решения
+        """.strip()
+    )
 
-    technical_quality_score: Optional[float] = None
-    semantic_confidence_score: Optional[float] = None
-    overall_quality_score: Optional[float] = None
+    technical_quality_score: Optional[float] = Field(default=None, description="Оценка технического качества OCR (читаемости документа).", examples=[0.98])
+    semantic_confidence_score: Optional[float] = Field(default=None, description="Усредненная оценка уверенности модели по всем полям.", examples=[0.91])
+    overall_quality_score: Optional[float] = Field(default=None, description="Общая оценка качества извлечения.", examples=[0.94])
 
-    validation_status: Literal["ok", "warnings", "errors"]
-    validation_issues: list[ValidationIssue] = Field(default_factory=list)
+    validation_status: Literal["ok", "warnings", "errors"] = Field(..., description="Статус валидации извлеченных данных.", examples=["ok"])
+    validation_issues: list[ValidationIssue] = Field(default_factory=list, description="Список проблем валидации, если они есть.")
 
-    human_review_required: bool
-    human_review_reason: Optional[str] = None
+    human_review_required: bool = Field(..., description="Требуется ли ручная верификация оператором (если оценка ниже порога).", examples=[False])
+    human_review_reason: Optional[str] = Field(default=None, description="Причина, по которой требуется ручная проверка.")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "document_id": "doc_123abc",
+                    "pipeline_run_id": "run_456def",
+                    "raw_text": "РЕШЕНИЕ Именем Российской Федерации...",
+                    "fields": {
+                        "debtor_full_name": {
+                            "name": "debtor_full_name",
+                            "value": "Иванов Иван Иванович",
+                            "reasoning": "ФИО найдено в шапке после слова 'Должник:'",
+                            "confidence": 0.98,
+                            "source": "nlp"
+                        },
+                        "debtor_inn": {
+                            "name": "debtor_inn",
+                            "value": "123456789012",
+                            "confidence": 0.95,
+                            "source": "nlp"
+                        },
+                        "case_number": {
+                            "name": "case_number",
+                            "value": "А05-6/2025",
+                            "confidence": 0.99,
+                            "source": "nlp"
+                        },
+                        "judge_full_name": {
+                            "name": "judge_full_name",
+                            "value": "Петров П.П.",
+                            "confidence": 0.92,
+                            "source": "nlp"
+                        },
+                        "court_name": {
+                            "name": "court_name",
+                            "value": "Арбитражный суд города Москвы",
+                            "confidence": 0.99,
+                            "source": "nlp"
+                        },
+                        "decision_date": {
+                            "name": "decision_date",
+                            "value": "15.03.2025",
+                            "confidence": 1.0,
+                            "source": "nlp"
+                        },
+                        "procedure_type": {
+                            "name": "procedure_type",
+                            "value": "реализация имущества",
+                            "confidence": 0.96,
+                            "source": "nlp"
+                        },
+                        "procedure_end_date": {
+                            "name": "procedure_end_date",
+                            "value": "15.09.2025",
+                            "confidence": 0.89,
+                            "source": "nlp"
+                        },
+                        "procedure_end_date_is_calculated": {
+                            "name": "procedure_end_date_is_calculated",
+                            "value": True,
+                            "confidence": 0.95,
+                            "source": "nlp"
+                        },
+                        "early_report_deadline": {
+                            "name": "early_report_deadline",
+                            "value": "01.09.2025",
+                            "confidence": 0.85,
+                            "source": "nlp"
+                        },
+                        "motivating_part": {
+                            "name": "motivating_part",
+                            "value": "Суд, выслушав доводы сторон, установил следующее...",
+                            "confidence": 0.90,
+                            "source": "nlp"
+                        },
+                        "resolutive_part": {
+                            "name": "resolutive_part",
+                            "value": "РЕШИЛ: Признать Иванова И.И. банкротом...",
+                            "confidence": 0.99,
+                            "source": "nlp"
+                        }
+                    },
+                    "technical_quality_score": 0.98,
+                    "semantic_confidence_score": 0.95,
+                    "overall_quality_score": 0.965,
+                    "validation_status": "ok",
+                    "human_review_required": False
+                }
+            ]
+        }
+    }
 
 
 class PipelineRunStatusResponse(BaseModel):
-    pipeline_run_id: str
-    document_id: str
-    profile_id: Optional[str] = None
-    status: Literal["queued", "processing", "retrying", "done", "failed"]
-    retry_count: int = 0
-    created_at: str
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-    last_error: Optional[str] = None
+    pipeline_run_id: str = Field(..., description="ID запущенного процесса обработки.", examples=["run_456def"])
+    document_id: str = Field(..., description="ID документа.", examples=["doc_123abc"])
+    profile_id: Optional[str] = Field(default=None, description="ID профиля обработки.", examples=["court_decision_ru"])
+    status: Literal["queued", "processing", "retrying", "done", "failed"] = Field(..., description="Текущий статус обработки. Ждите статус 'done'.", examples=["done"])
+    retry_count: int = Field(default=0, description="Количество попыток повторной обработки при сбоях.")
+    created_at: str = Field(..., description="Время создания задачи.")
+    started_at: Optional[str] = Field(default=None, description="Время фактического начала обработки.")
+    finished_at: Optional[str] = Field(default=None, description="Время завершения обработки.")
+    last_error: Optional[str] = Field(default=None, description="Текст последней ошибки (если status='failed').")
 
 
 class HumanReviewTaskField(BaseModel):
