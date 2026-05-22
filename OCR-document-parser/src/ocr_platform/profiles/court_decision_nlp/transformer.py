@@ -228,15 +228,19 @@ class TransformerTokenClassifierExtractor:
         procedure_end_date, is_calculated = extract_procedure_end_date_with_meta(normalized_text)
 
         # Determine early report deadline via sequence classifier if available
-        # early_report_deadline, early_report_deadline_source = extract_early_report_deadline(normalized_text, procedure_end_date)
         early_report_deadline, early_report_deadline_source = None, None
         if self.cls_pipeline is not None and procedure_end_date:
             import re
             match = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", normalized_text, re.IGNORECASE)
             search_text = normalized_text[match.start():] if match else normalized_text
             
+            # Разделяем на предложения и берем только те, где говорится про отчет
+            sentences = [s.strip() for s in re.split(r'[.;]', search_text) if s.strip()]
+            report_sentences = [s for s in sentences if "отчет" in s.lower() and "управляющ" in s.lower()]
+            context_text = " ".join(report_sentences) if report_sentences else search_text[:500]
+            
             # Text-classification returns [{'label': 'REQUIRED', 'score': 0.99...}]
-            pred = self.cls_pipeline(search_text[:2000], truncation=True, max_length=512)[0]
+            pred = self.cls_pipeline(context_text, truncation=True, max_length=512)[0]
             if pred["label"] == "REQUIRED" and pred["score"] > 0.5:
                 from .rules import _subtract_days_from_date, DEFAULT_ADVANCE_DAYS
                 early_report_deadline = _subtract_days_from_date(procedure_end_date, DEFAULT_ADVANCE_DAYS)
