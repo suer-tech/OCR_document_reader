@@ -242,7 +242,10 @@ class TransformerTokenClassifierExtractor:
                 s_lower = s.lower()
                 has_actor = "управляющ" in s_lower or "арбитражн" in s_lower or "финансов" in s_lower
                 has_object = any(w in s_lower for w in ["отчет", "документ", "заблаговремен", "результат"])
-                if has_actor and has_object:
+                
+                is_debtor_action = any(w in s_lower for w in ["передать финансов", "передать арбитражн", "документацию должника", "банковские карты", "печати", "штампы", "передать управляющ", "уведомить финансов", "выдать финансов"])
+                
+                if has_actor and has_object and not is_debtor_action:
                     report_sentences.append(s)
                     
             context_text = " ".join(report_sentences) if report_sentences else search_text[:500]
