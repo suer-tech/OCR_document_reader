@@ -234,9 +234,17 @@ class TransformerTokenClassifierExtractor:
             match = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", normalized_text, re.IGNORECASE)
             search_text = normalized_text[match.start():] if match else normalized_text
             
-            # Разделяем на предложения и берем только те, где говорится про отчет
+            # Разделяем на предложения и фильтруем мусор
             sentences = [s.strip() for s in re.split(r'[.;]', search_text) if s.strip()]
-            report_sentences = [s for s in sentences if "отчет" in s.lower() and "управляющ" in s.lower()]
+            
+            report_sentences = []
+            for s in sentences:
+                s_lower = s.lower()
+                has_actor = "управляющ" in s_lower or "арбитражн" in s_lower or "финансов" in s_lower
+                has_object = any(w in s_lower for w in ["отчет", "документ", "заблаговремен", "результат"])
+                if has_actor and has_object:
+                    report_sentences.append(s)
+                    
             context_text = " ".join(report_sentences) if report_sentences else search_text[:500]
             
             # Text-classification returns [{'label': 'REQUIRED', 'score': 0.99...}]
