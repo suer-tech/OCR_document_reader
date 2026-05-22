@@ -238,8 +238,18 @@ class TransformerTokenClassifierExtractor:
             # Text-classification returns [{'label': 'REQUIRED', 'score': 0.99...}]
             pred = self.cls_pipeline(search_text[:2000], truncation=True, max_length=512)[0]
             if pred["label"] == "REQUIRED" and pred["score"] > 0.5:
-                from .rules import _subtract_days_from_date, DEFAULT_ADVANCE_DAYS
-                early_report_deadline = _subtract_days_from_date(procedure_end_date, DEFAULT_ADVANCE_DAYS)
+                from .rules import _subtract_days_from_date, DEFAULT_ADVANCE_DAYS, EARLY_REPORT_DAYS_BEFORE_RE, WORD_TO_NUM_DAYS
+                
+                advance_days = DEFAULT_ADVANCE_DAYS
+                days_match = EARLY_REPORT_DAYS_BEFORE_RE.search(search_text)
+                if days_match:
+                    num_str = days_match.group(1).lower()
+                    if num_str.isdigit():
+                        advance_days = int(num_str)
+                    elif num_str in WORD_TO_NUM_DAYS:
+                        advance_days = WORD_TO_NUM_DAYS[num_str]
+                        
+                early_report_deadline = _subtract_days_from_date(procedure_end_date, advance_days)
                 early_report_deadline_source = "Модель классификации early-report-classifier"
             else:
                 early_report_deadline = None
