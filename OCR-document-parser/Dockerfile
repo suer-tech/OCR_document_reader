@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml README.md /app/
 COPY src /app/src
+COPY models /app/models
 COPY observability /app/observability
 
 RUN pip install --no-cache-dir -e ".[nlp]"
