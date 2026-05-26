@@ -215,8 +215,8 @@ def create_app() -> FastAPI:
     async def upload_document(
         file: UploadFile = File(..., description="PDF, изображение или текстовый файл"),
         source_type: str = Form("external", description="Источник: crm, email, portal, external, other"),
-        document_type: str | None = Form(None, description="Тип документа (например court_decision)"),
-        idempotency_key: str | None = Form(None, description="Ключ идемпотентности"),
+        document_type: str = Form(..., description="Тип документа (например court_decision)"),
+        idempotency_key: str = Form(..., description="Ключ идемпотентности"),
         external_id: str | None = Form(None, description="Внешний идентификатор"),
         webhook_url: str | None = Form(None, description="URL для отправки вебхука по готовности"),
     ) -> schemas.IngestDocumentResponse:
@@ -238,12 +238,7 @@ def create_app() -> FastAPI:
             source_type = "external"
 
         content_hash = hashlib.sha256(content_bytes).hexdigest()
-        idempotency_key = idempotency_key or _build_idempotency_key(
-            content_hash=content_hash,
-            source_type=source_type,
-            external_id=external_id,
-        )
-        requested_document_type = (document_type.strip() if document_type else None) or None
+        requested_document_type = document_type.strip()
 
         with repository.get_session() as session:
             existing = (
