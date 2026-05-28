@@ -29,6 +29,37 @@ models.zip
 *.pt
 *.pth
 
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Local environment files
+.env
+
+# Runtime artifacts
+logs/
+mlruns/
+*.db
+ocr.db
+
+# Local datasets
+data/
+
+# Build metadata
+*.egg-info/
+
+# ML models and weights
+models/
+models.zip
+*.zip
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+
 # PDF files (test documents)
 *.pdf
 
@@ -38,3 +69,6 @@ scratch/
 # Editor & OS artifacts
 .DS_Store
 Thumbs.db
+
+# Text files
+*.txt

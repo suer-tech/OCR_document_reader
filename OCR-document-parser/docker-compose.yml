@@ -17,11 +17,11 @@ services:
           cpus: '2.0'
           memory: 4G
     environment:
-      OCR_DATABASE_URL: ${OCR_DATABASE_URL}
+      OCR_DATABASE_URL: ${OCR_DATABASE_URL:-postgresql+psycopg://ocr_user:STRONG_PASSWORD@postgres:5432/ocr_db}
       OCR_STORAGE_DIR: /app/data/documents
       OCR_LOG_LEVEL: INFO
       OCR_LOG_FILE_PATH: /app/logs/app.json.log
-      OCR_RABBITMQ_URL: ${OCR_RABBITMQ_URL}
+      OCR_RABBITMQ_URL: ${OCR_RABBITMQ_URL:-amqp://ocr_user:RABBITMQ_PASSWORD@rabbitmq:5672/%2F}
       OCR_RABBITMQ_INGEST_QUEUE: ocr.ingest
       OCR_WORKER_MAX_RETRIES: 3
       OCR_MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -63,11 +63,11 @@ services:
           memory: 4G
     shm_size: 2g
     environment:
-      OCR_DATABASE_URL: ${OCR_DATABASE_URL}
+      OCR_DATABASE_URL: ${OCR_DATABASE_URL:-postgresql+psycopg://ocr_user:STRONG_PASSWORD@postgres:5432/ocr_db}
       OCR_STORAGE_DIR: /app/data/documents
       OCR_LOG_LEVEL: INFO
       OCR_LOG_FILE_PATH: /app/logs/app.json.log
-      OCR_RABBITMQ_URL: ${OCR_RABBITMQ_URL}
+      OCR_RABBITMQ_URL: ${OCR_RABBITMQ_URL:-amqp://ocr_user:RABBITMQ_PASSWORD@rabbitmq:5672/%2F}
       OCR_RABBITMQ_INGEST_QUEUE: ocr.ingest
       OCR_WORKER_MAX_RETRIES: 3
       OCR_MLFLOW_TRACKING_URI: http://mlflow:5000

@@ -1,0 +1,76 @@
+profile_id: rtk
+extractor: llm
+
+applicable_sources:
+  - crm
+  - email
+  - portal
+  - external
+  - other
+
+document_type: rtk
+
+models:
+  ocr:
+    provider: openrouter
+    model: openai/gpt-oss-120b
+  llm_extraction:
+    provider: openrouter
+    model: openai/gpt-oss-20b
+    fallback_models:
+      - openai/gpt-oss-120b
+      - x-ai/grok-4.1-fast
+    temperature: 0.0
+    timeout_seconds: 180.0
+
+thresholds:
+  technical_quality_min: 0.6
+  semantic_confidence_min: 0.7
+  overall_quality_min_auto_accept: 0.75
+  warnings_require_review: false
+
+fields_llm:
+  creditor:
+    required: true
+    label_ru: "Кредитор"
+    description_ru: "Наименование юридического лица или ФИО физического лица, являющегося кредитором (заявителем требований)."
+
+  claims_amount:
+    required: true
+    label_ru: "Сумма требований"
+    description_ru: "Общая сумма заявленных требований кредитора. Может включать основной долг, пени, штрафы, неустойки. Указывать текстом или числом."
+
+  grounds:
+    required: true
+    label_ru: "Основания"
+    description_ru: "Основания возникновения задолженности. Перечислите договоры, судебные решения, акты, накладные или иные документы, на которые ссылается кредитор."
+
+fields_nlp:
+  creditor:
+    required: true
+    label_ru: "Кредитор"
+    nlp_source: creditor
+
+  claims_amount:
+    required: true
+    label_ru: "Сумма требований"
+    nlp_source: claims_amount
+
+  grounds:
+    required: true
+    label_ru: "Основания"
+    nlp_source: grounds
+
+pipeline:
+  - name: store_original
+    type: storage
+  - name: detect_document_type
+    type: classifier
+  - name: extract_entities
+    type: extraction
+  - name: validate_entities
+    type: validation
+  - name: compute_quality
+    type: quality
+  - name: route_to_human_review
+    type: routing
