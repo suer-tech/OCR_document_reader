@@ -72,3 +72,8 @@ Thumbs.db
 
 # Text files
 *.txt
+
+# Local startup scripts
+start_local.ps1
+setup_poppler.ps1
+

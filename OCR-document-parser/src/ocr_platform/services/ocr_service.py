@@ -10,6 +10,13 @@ import pytesseract
 from pdf2image import convert_from_path
 from PIL import Image
 
+# Auto-detect Tesseract executable on Windows
+import platform
+if platform.system() == "Windows":
+    _tesseract_win = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if _tesseract_win.exists():
+        pytesseract.pytesseract.tesseract_cmd = str(_tesseract_win)
+
 from ocr_platform.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -92,7 +99,8 @@ def run_ocr(file_path: str, content_type: ContentType) -> str:
 
     if content_type == "pdf":
         try:
-            images = convert_from_path(path, dpi=200)
+            poppler_path = r"C:\poppler\poppler-24.08.0\Library\bin" if platform.system() == "Windows" else None
+            images = convert_from_path(path, dpi=200, poppler_path=poppler_path)
         except Exception as exc:
             logger.exception(
                 "ocr_failed",

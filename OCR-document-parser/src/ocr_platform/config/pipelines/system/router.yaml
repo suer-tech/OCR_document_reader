@@ -7,6 +7,7 @@ unknown_document_type: unknown
 # Глобальная маршрутизация: тип документа -> профиль обработки.
 document_type_to_profile:
   court_decision: court_decision_ru
+  rtk: rtk
   unknown: unknown
 
 detection:
