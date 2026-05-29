@@ -215,7 +215,7 @@ def create_app() -> FastAPI:
     async def upload_document(
         file: UploadFile = File(..., description="PDF, изображение или текстовый файл"),
         source_type: str = Form("external", description="Источник: crm, email, portal, external, other"),
-        document_type: str = Form(..., description="Тип документа (например court_decision)"),
+        document_type: str = Form(..., description="Тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), unknown (Неизвестно/Автоопределение)"),
         idempotency_key: str = Form(..., description="Ключ идемпотентности"),
         external_id: str | None = Form(None, description="Внешний идентификатор"),
         webhook_url: str | None = Form(None, description="URL для отправки вебхука по готовности"),

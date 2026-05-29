@@ -17,7 +17,7 @@ class IngestDocumentRequest(BaseModel):
     source_type: SourceType = Field(..., description="Источник документа (CRM, email, личный кабинет и т.д.).")
     document_type: Optional[str] = Field(
         default=None,
-        description="Явно переданный тип документа. Если не передан, система определяет тип автоматически.",
+        description="Явно переданный тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), unknown (Неизвестно/Автоопределение). Если не передан, система определяет тип автоматически.",
     )
     document_type_hint: Optional[str] = Field(
         default=None,
@@ -76,7 +76,9 @@ class DocumentResultResponse(BaseModel):
     fields: Dict[str, FieldValue] = Field(
         default_factory=dict, 
         description="""Словарь извлеченных полей, где ключ - системное имя поля. 
-В зависимости от типа документа (например, для `court_decision`) ключи могут быть следующими:
+В зависимости от типа документа ключи могут быть следующими:
+
+Для `court_decision` (Судебное решение):
 * `debtor_full_name` — ФИО должника
 * `debtor_inn` — ИНН должника
 * `case_number` — Номер дела
@@ -89,6 +91,11 @@ class DocumentResultResponse(BaseModel):
 * `early_report_deadline` — Заблаговременное предоставление отчета ФУ
 * `motivating_part` — Мотивирующая часть судебного решения
 * `resolutive_part` — Резолютивная часть судебного решения
+
+Для `rtk` (Заявление о включении в РТК):
+* `creditor` — Наименование кредитора
+* `claims_amount` — Сумма требований
+* `grounds` — Основание возникновения задолженности
         """.strip()
     )
 
