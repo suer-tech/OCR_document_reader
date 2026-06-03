@@ -56,3 +56,23 @@ mlruns/
 .DS_Store
 Thumbs.db
 
+# Markdown files (ignore all except README and other tracked docs)
+*.md
+!README.md
+!AGENTS.md
+!ARCHITECTURE.md
+!PLANS.md
+!QUALITY_SCORE.md
+
+# Test result JSON files
+*.json
+
+# Other test document formats
+*.docx
+*.doc
+*.xls
+*.xlsx
+*.png
+*.jpg
+*.jpeg
+
