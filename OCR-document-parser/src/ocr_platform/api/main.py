@@ -41,6 +41,21 @@ def _format_ts(value: datetime | None) -> str | None:
     return value.isoformat()
 
 
+def _resolve_initial_profile_id(requested_document_type: str | None) -> str:
+    if not requested_document_type:
+        return "unknown"
+    try:
+        from ocr_platform.orchestration.router import load_router_config
+        router_cfg = load_router_config()
+        mapping = router_cfg.get("document_type_to_profile", {})
+        doc_type_clean = requested_document_type.strip()
+        if doc_type_clean in mapping and doc_type_clean != "unknown":
+            return mapping[doc_type_clean]
+    except Exception:
+        pass
+    return "unknown"
+
+
 def create_app() -> FastAPI:
     configure_logging()
     repository.init_db()
@@ -90,6 +105,7 @@ def create_app() -> FastAPI:
             external_id=external_id,
         )
         requested_document_type = request.document_type or request.document_type_hint
+        initial_profile_id = _resolve_initial_profile_id(requested_document_type)
 
         with repository.get_session() as session:
             existing = (
@@ -136,7 +152,7 @@ def create_app() -> FastAPI:
                     models.PipelineRun(
                         id=pipeline_run_id,
                         document_id=document_id,
-                        profile_id="unknown",
+                        profile_id=initial_profile_id,
                         status="queued",
                         idempotency_key=idempotency_key,
                         webhook_url=request.webhook_url or request.meta.get("webhook_url"),
@@ -239,6 +255,7 @@ def create_app() -> FastAPI:
 
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         requested_document_type = document_type.strip()
+        initial_profile_id = _resolve_initial_profile_id(requested_document_type)
 
         with repository.get_session() as session:
             existing = (
@@ -283,7 +300,7 @@ def create_app() -> FastAPI:
                     models.PipelineRun(
                         id=pipeline_run_id,
                         document_id=document_id,
-                        profile_id="unknown",
+                        profile_id=initial_profile_id,
                         status="queued",
                         idempotency_key=idempotency_key,
                         webhook_url=webhook_url,

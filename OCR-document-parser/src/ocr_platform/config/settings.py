@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +45,14 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/%2F"
     rabbitmq_ingest_queue: str = "ocr.ingest"
     worker_max_retries: int = 3
+
+    # Движок OCR для сканированных страниц и картинок: tesseract, docling или deepseek.
+    ocr_engine: str = Field(default="tesseract", validation_alias="OCR_ENGINE")
+
+    # Удаленный сервер Ollama для OCR
+    ollama_ocr_url: str = Field(default="http://localhost:11434", validation_alias="OCR_OLLAMA_OCR_URL")
+    ollama_ocr_model: str = Field(default="deepseek-ocr:latest", validation_alias="OCR_OLLAMA_OCR_MODEL")
+    ollama_ocr_token: str | None = Field(default=None, validation_alias="OCR_OLLAMA_OCR_TOKEN")
 
 
 @lru_cache(maxsize=1)

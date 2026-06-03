@@ -27,6 +27,10 @@ services:
       OCR_OPENROUTER_API_KEY: ${OCR_OPENROUTER_API_KEY:-}
       OCR_OPENAI_BASE_URL: ${OCR_OPENAI_BASE_URL:-https://api.openai.com/v1}
       OCR_OPENROUTER_BASE_URL: ${OCR_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OCR_ENGINE: ${OCR_ENGINE:-tesseract}
+      OCR_OLLAMA_OCR_URL: ${OCR_OLLAMA_OCR_URL:-http://localhost:11434}
+      OCR_OLLAMA_OCR_MODEL: ${OCR_OLLAMA_OCR_MODEL:-deepseek-ocr:latest}
+      OCR_OLLAMA_OCR_TOKEN: ${OCR_OLLAMA_OCR_TOKEN:-}
       OMP_NUM_THREADS: '10'
       MKL_NUM_THREADS: '10'
       TOKENIZERS_PARALLELISM: 'true'
@@ -71,6 +75,10 @@ services:
       OCR_OPENROUTER_API_KEY: ${OCR_OPENROUTER_API_KEY:-}
       OCR_OPENAI_BASE_URL: ${OCR_OPENAI_BASE_URL:-https://api.openai.com/v1}
       OCR_OPENROUTER_BASE_URL: ${OCR_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OCR_ENGINE: ${OCR_ENGINE:-tesseract}
+      OCR_OLLAMA_OCR_URL: ${OCR_OLLAMA_OCR_URL:-http://localhost:11434}
+      OCR_OLLAMA_OCR_MODEL: ${OCR_OLLAMA_OCR_MODEL:-deepseek-ocr:latest}
+      OCR_OLLAMA_OCR_TOKEN: ${OCR_OLLAMA_OCR_TOKEN:-}
       OMP_NUM_THREADS: '10'
       MKL_NUM_THREADS: '10'
       TOKENIZERS_PARALLELISM: 'true'
@@ -102,6 +110,7 @@ services:
     container_name: ocr-mlflow
     command: >
       sh -c "pip install --no-cache-dir mlflow &&
+      mlflow db upgrade sqlite:////mlflow/data/mlflow.db &&
       exec mlflow server --host 0.0.0.0 --port 5000 --allowed-hosts localhost,localhost:5000,127.0.0.1,127.0.0.1:5000,mlflow,mlflow:5000,ocr-mlflow,ocr-mlflow:5000 --backend-store-uri sqlite:////mlflow/data/mlflow.db --default-artifact-root mlflow-artifacts:/ --artifacts-destination /mlflow/artifacts"
     ports:
       - "5000:5000"

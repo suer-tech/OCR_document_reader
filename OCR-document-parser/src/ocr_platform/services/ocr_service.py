@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 OCR_TEXT_ARTIFACT_MAX_LEN = 100_000
 
 # Источник извлечённого текста (для логирования)
-TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text"]
+TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "docling", "deepseek"]
 
 ContentType = Literal["pdf", "image", "text"]
 
@@ -146,6 +146,57 @@ def run_ocr(file_path: str, content_type: ContentType) -> str:
     return ""
 
 
+def run_ocr_with_engine(file_path: str, content_type: ContentType) -> tuple[str, TextSource]:
+    """
+    Выполняет OCR с использованием выбранного движка (deepseek, docling или tesseract).
+    Применяет цепочки откатов (fallbacks) при возникновении сбоев:
+    - deepseek -> tesseract (прямой откат)
+    - docling -> tesseract
+    Возвращает (текст, источник_текста).
+    """
+    from ocr_platform.config.settings import get_settings
+    settings = get_settings()
+    engine = settings.ocr_engine.lower()
+
+    # Ступень 1: DeepSeek OCR (удаленный GPU сервер)
+    if engine == "deepseek":
+        try:
+            from ocr_platform.services.deepseek_ocr_service import run_deepseek_ocr
+            text = run_deepseek_ocr(file_path)
+            if text.strip():
+                return text, "deepseek"
+            logger.warning("deepseek_ocr_returned_empty_text", file_path=file_path)
+        except Exception as exc:
+            logger.warning(
+                "deepseek_ocr_failed_falling_back_to_tesseract",
+                file_path=file_path,
+                error=str(exc),
+            )
+        # Если свалился deepseek, переходим напрямую к Tesseract
+        engine = "tesseract"
+
+    # Ступень 2: Docling (локальный CPU инференс, используется только если настроен в env)
+    if engine == "docling":
+        try:
+            from ocr_platform.services.docling_service import run_docling_ocr
+            text = run_docling_ocr(file_path)
+            if text.strip():
+                return text, "docling"
+            logger.warning("docling_returned_empty_text", file_path=file_path)
+        except Exception as exc:
+            logger.warning(
+                "docling_failed_falling_back_to_tesseract",
+                file_path=file_path,
+                error=str(exc),
+            )
+        # Если свалился docling, переходим к Tesseract
+        logger.info("running_fallback_tesseract_ocr", file_path=file_path)
+        engine = "tesseract"
+
+    # Ступень 3: Tesseract (легкий локальный OCR)
+    return run_ocr(file_path, content_type), "ocr"
+
+
 def extract_text_at_ingest(
     file_path: str,
     content_type: ContentType,
@@ -196,7 +247,7 @@ def extract_text_at_ingest(
             )
             return text, False, None, "pymupdf"
 
-        # 3. OCR (pdf2image + Tesseract)
+        # 3. OCR (с выбором движка и fallback-ом)
         logger.info(
             "text_extraction_step",
             step="ocr",
@@ -205,17 +256,17 @@ def extract_text_at_ingest(
             pipeline_run_id=pipeline_run_id,
         )
         t0 = perf_counter()
-        text = run_ocr(file_path, content_type)
+        text, text_source = run_ocr_with_engine(file_path, content_type)
         ocr_latency_ms = (perf_counter() - t0) * 1000.0
         logger.info(
             "text_extraction_source",
-            source="ocr",
+            source=text_source,
             document_id=document_id,
             pipeline_run_id=pipeline_run_id,
             latency_ms=round(ocr_latency_ms, 2),
             text_length=len(text),
         )
-        return text, True, ocr_latency_ms, "ocr"
+        return text, True, ocr_latency_ms, text_source
 
     if content_type == "image":
         logger.info(
@@ -226,17 +277,17 @@ def extract_text_at_ingest(
             pipeline_run_id=pipeline_run_id,
         )
         t0 = perf_counter()
-        text = run_ocr(file_path, content_type)
+        text, text_source = run_ocr_with_engine(file_path, content_type)
         ocr_latency_ms = (perf_counter() - t0) * 1000.0
         logger.info(
             "text_extraction_source",
-            source="ocr",
+            source=text_source,
             document_id=document_id,
             pipeline_run_id=pipeline_run_id,
             latency_ms=round(ocr_latency_ms, 2),
             text_length=len(text),
         )
-        return text, True, ocr_latency_ms, "ocr"
+        return text, True, ocr_latency_ms, text_source
 
     if content_type == "text":
         try:

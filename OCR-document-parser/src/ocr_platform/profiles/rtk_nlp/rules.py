@@ -87,32 +87,31 @@ def extract_claims_amount(text: str) -> str | None:
 
     duty_amount = 0.0
 
-    # Ищем сумму госпошлины.
-    # Вариант А: сумма идет ПОСЛЕ слова пошлина
+    # Ищем сумму госпошлины — предпочитаем прямой порядок (слово → сумма)
+    # Вариант А: сумма идет ПОСЛЕ слова пошлина (основной)
     m_forward = re.search(
         r"(?i)(?:госпошлин|государственн\w*\s+пошлин\w*)[^\d]{0,100}?((?:(?:\d{1,3}(?:[ \xA0]\d{3})+)|(?:\d+))(?:[,.]\d{1,2})?)",
         text,
     )
-    # Вариант Б: сумма идет ДО слова пошлина
-    m_backward = re.search(
-        r"(?i)((?:(?:\d{1,3}(?:[ \xA0]\d{3})+)|(?:\d+))(?:[,.]\d{1,2})?)[^\d]{0,80}?(?:госпошлин|государственн\w*\s+пошлин\w*)",
-        text,
-    )
-
-    duty_candidates = []
     if m_forward:
-        duty_candidates.append(parse_float(m_forward.group(1)))
-    if m_backward:
-        duty_candidates.append(parse_float(m_backward.group(1)))
+        candidate = parse_float(m_forward.group(1))
+        if candidate > 0 and candidate in global_numbers and candidate < total_amount:
+            duty_amount = candidate
 
-    # Проверяем, что найденный кандидат вообще является денежной суммой в тексте
-    valid_candidates = [c for c in duty_candidates if c in global_numbers]
-    if valid_candidates:
-        non_zero = [c for c in valid_candidates if c > 0]
-        if non_zero:
-            # Если найдено несколько (например, сумма ДО и сумма ПОСЛЕ пошлины)
-            # госпошлина — это всегда меньшая сумма из соседних
-            duty_amount = min(non_zero)
+    # Вариант Б: сумма идет ДО слова пошлина (только если вариант А не сработал)
+    if duty_amount == 0.0:
+        m_backward = re.search(
+            r"(?i)((?:(?:\d{1,3}(?:[ \xA0]\d{3})+)|(?:\d+))(?:[,.]\d{1,2})?)[^\d]{0,30}?(?:госпошлин|государственн\w*\s+пошлин\w*)",
+            text,
+        )
+        if m_backward:
+            candidate = parse_float(m_backward.group(1))
+            if (
+                candidate > 0
+                and candidate in global_numbers
+                and candidate < total_amount
+            ):
+                duty_amount = candidate
 
     if duty_amount >= total_amount:
         duty_amount = 0.0
