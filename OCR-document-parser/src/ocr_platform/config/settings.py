@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     rabbitmq_ingest_queue: str = "ocr.ingest"
     worker_max_retries: int = 3
 
-    # Движок OCR для сканированных страниц и картинок: tesseract, docling или deepseek.
+    # Движок OCR для сканированных страниц и картинок: tesseract или deepseek.
     ocr_engine: str = Field(default="tesseract", validation_alias="OCR_ENGINE")
 
     # Удаленный сервер Ollama для OCR

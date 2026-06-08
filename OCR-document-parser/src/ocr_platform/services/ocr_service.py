@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 OCR_TEXT_ARTIFACT_MAX_LEN = 100_000
 
 # Источник извлечённого текста (для логирования)
-TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "docling", "deepseek"]
+TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "deepseek"]
 
 ContentType = Literal["pdf", "image", "text"]
 
@@ -148,10 +148,9 @@ def run_ocr(file_path: str, content_type: ContentType) -> str:
 
 def run_ocr_with_engine(file_path: str, content_type: ContentType) -> tuple[str, TextSource]:
     """
-    Выполняет OCR с использованием выбранного движка (deepseek, docling или tesseract).
+    Выполняет OCR с использованием выбранного движка (deepseek или tesseract).
     Применяет цепочки откатов (fallbacks) при возникновении сбоев:
     - deepseek -> tesseract (прямой откат)
-    - docling -> tesseract
     Возвращает (текст, источник_текста).
     """
     from ocr_platform.config.settings import get_settings
@@ -173,24 +172,6 @@ def run_ocr_with_engine(file_path: str, content_type: ContentType) -> tuple[str,
                 error=str(exc),
             )
         # Если свалился deepseek, переходим напрямую к Tesseract
-        engine = "tesseract"
-
-    # Ступень 2: Docling (локальный CPU инференс, используется только если настроен в env)
-    if engine == "docling":
-        try:
-            from ocr_platform.services.docling_service import run_docling_ocr
-            text = run_docling_ocr(file_path)
-            if text.strip():
-                return text, "docling"
-            logger.warning("docling_returned_empty_text", file_path=file_path)
-        except Exception as exc:
-            logger.warning(
-                "docling_failed_falling_back_to_tesseract",
-                file_path=file_path,
-                error=str(exc),
-            )
-        # Если свалился docling, переходим к Tesseract
-        logger.info("running_fallback_tesseract_ocr", file_path=file_path)
         engine = "tesseract"
 
     # Ступень 3: Tesseract (легкий локальный OCR)

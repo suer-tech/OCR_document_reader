@@ -12,7 +12,7 @@ ENV KMP_BLOCKTIME=1
 
 WORKDIR /app
 
-# libgomp1 — OpenMP runtime; poppler — pdf2image; tesseract — OCR; libgl1, libglib2.0-0 — OpenCV / Docling dependencies
+# libgomp1 — OpenMP runtime; poppler — pdf2image; tesseract — OCR; libgl1, libglib2.0-0 — OpenCV dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc g++ libgomp1 \
     poppler-utils \
