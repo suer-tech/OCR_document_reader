@@ -88,5 +88,5 @@ OCR/ (корень проекта)
 ## 🚀 Как начать работу
 
 Подробные инструкции по установке зависимостей, настройке окружения (.env) и запуску сервисов находятся в индивидуальных README-файлах каждого модуля:
-* Подробности по оркестратору и Docker: [OCR-document-parser/README.md](file:///c:/Users/user2/Documents/Cursor/OCR/OCR-document-parser/README.md)
-* Подробности по запуску и дообучению NLP: [NLP-entity-extractor/README.md](file:///c:/Users/user2/Documents/Cursor/OCR/NLP-entity-extractor/README.md)
+* Подробности по оркестратору и Docker: [OCR-document-parser/README.md](/OCR-document-parser/README.md)
+* Подробности по запуску и дообучению NLP: [NLP-entity-extractor/README.md](/NLP-entity-extractor/README.md)

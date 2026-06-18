@@ -203,7 +203,7 @@ async def process_pipeline_run(pipeline_run_id: str) -> None:
                 "confidence": 1.0,
             }
             validation_status, validation_issues = validation_service.validate_fields(
-                fields
+                fields, profile_id, profile_config
             )
             technical, semantic, overall = quality_service.compute_quality_scores(
                 text, fields

@@ -13,10 +13,27 @@ CLAIMS_AMOUNT_RE = re.compile(
     r"сумм[аеу]\s+требований\s*[:\-]?\s*(\d+[\d\s\.,]*)\s*(?:руб|р\.)", re.IGNORECASE
 )
 GROUNDS_RE = re.compile(r"основани[ея]\s*[:\-]?\s*(договор[^\n\.]+)", re.IGNORECASE)
+CASE_NUMBER_RE = re.compile(r"Дел[оу]\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{4})", re.IGNORECASE)
 
 
 def extract_creditor(text: str) -> str | None:
-    return extract_creditor_with_ollama_llm(text)
+    val = extract_creditor_with_ollama_llm(text)
+    if val:
+        return val
+
+    # Резервный поиск по регулярному выражению, если Ollama недоступна/ошибка 502
+    match = CREDITOR_BLOCK_RE.search(text)
+    if match:
+        extracted = match.group(1).strip()
+        # Очистим от лишних переносов строк
+        extracted = re.sub(r"\s+", " ", extracted)
+        return extracted
+    return None
+
+
+def extract_case_number(text: str) -> str | None:
+    match = CASE_NUMBER_RE.search(text)
+    return match.group(1) if match else None
 
 
 def extract_claims_amount(text: str) -> str | None:

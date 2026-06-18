@@ -45,6 +45,11 @@ fields_llm:
     label_ru: "Основания"
     description_ru: "Основания возникновения задолженности. Перечислите договоры, судебные решения, акты, накладные или иные документы, на которые ссылается кредитор."
 
+  case_number:
+    required: true
+    label_ru: "Номер дела"
+    description_ru: "Номер судебного дела в формате 'А05-6/2025' или 'Дело № А05-6/2025'. Обычно указывается в шапке документа."
+
 fields_nlp:
   creditor:
     required: true
@@ -60,6 +65,11 @@ fields_nlp:
     required: true
     label_ru: "Основания"
     nlp_source: grounds
+
+  case_number:
+    required: true
+    label_ru: "Номер дела"
+    nlp_source: case_number
 
 pipeline:
   - name: store_original

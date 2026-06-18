@@ -22,6 +22,7 @@ _NLP_FIELD_GETTERS = {
     "creditor": rules.extract_creditor,
     "claims_amount": rules.extract_claims_amount,
     "grounds": rules.extract_grounds,
+    "case_number": rules.extract_case_number,
 }
 
 
