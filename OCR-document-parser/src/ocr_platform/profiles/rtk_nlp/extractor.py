@@ -74,7 +74,7 @@ class RtkNlpExtractor:
 
         # Для RTK у нас нет NER модели, поэтому prediction = text
         base_confidence = (
-            0.5  # Пониженный confidence, так как используется только regex
+            0.9  # По умолчанию для регулярных выражений уверенность 90%
         )
 
         fields_cfg = profile_config.get("fields_nlp", {})
