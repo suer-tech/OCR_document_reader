@@ -13,7 +13,7 @@ CLAIMS_AMOUNT_RE = re.compile(
     r"сумм[аеу]\s+требований\s*[:\-]?\s*(\d+[\d\s\.,]*)\s*(?:руб|р\.)", re.IGNORECASE
 )
 GROUNDS_RE = re.compile(r"основани[ея]\s*[:\-]?\s*(договор[^\n\.]+)", re.IGNORECASE)
-CASE_NUMBER_RE = re.compile(r"Дел[оу]\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{4})", re.IGNORECASE)
+CASE_NUMBER_RE = re.compile(r"Дел[оу]\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{2,4})", re.IGNORECASE)
 
 
 def extract_creditor(text: str) -> str | None:
