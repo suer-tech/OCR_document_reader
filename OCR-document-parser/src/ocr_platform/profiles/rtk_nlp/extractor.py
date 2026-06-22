@@ -100,16 +100,20 @@ class RtkNlpExtractor:
                 continue
 
             getter = _NLP_FIELD_GETTERS[nlp_source]
-            value = getter(text)
+            res = getter(text)
+            if isinstance(res, tuple):
+                value, confidence = res
+            else:
+                value = res
+                confidence = base_confidence
+                if field_name == "creditor" and value:
+                    confidence = 0.9
 
             reasoning = (
                 "NLP (Regex Rule)"
                 if nlp_source != "creditor"
                 else "LLM (gpt-oss:20b via Ollama)"
             )
-
-            if field_name == "creditor" and value:
-                confidence = 0.9
 
             normalized[field_name] = {
                 "reasoning": reasoning if value else "Значение не найдено паттернами",

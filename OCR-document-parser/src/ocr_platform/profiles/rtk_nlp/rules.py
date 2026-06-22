@@ -16,10 +16,10 @@ GROUNDS_RE = re.compile(r"основани[ея]\s*[:\-]?\s*(договор[^\n\
 CASE_NUMBER_RE = re.compile(r"Дел[оу]\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{2,4})", re.IGNORECASE)
 
 
-def extract_creditor(text: str) -> str | None:
-    val = extract_creditor_with_ollama_llm(text)
+def extract_creditor(text: str) -> tuple[str | None, float]:
+    val, confidence = extract_creditor_with_ollama_llm(text)
     if val:
-        return val
+        return val, confidence
 
     # Резервный поиск по регулярному выражению, если Ollama недоступна/ошибка 502
     match = CREDITOR_BLOCK_RE.search(text)
@@ -27,8 +27,8 @@ def extract_creditor(text: str) -> str | None:
         extracted = match.group(1).strip()
         # Очистим от лишних переносов строк
         extracted = re.sub(r"\s+", " ", extracted)
-        return extracted
-    return None
+        return extracted, 0.5
+    return None, 0.0
 
 
 def extract_case_number(text: str) -> str | None:
@@ -381,11 +381,12 @@ def extract_grounds(text: str) -> str | None:
     return match.group(1).strip().lower() if match else None
 
 
-def extract_creditor_with_ollama_llm(text: str) -> str | None:
+def extract_creditor_with_ollama_llm(text: str) -> tuple[str | None, float]:
     """
     Интеллектуальное извлечение кредитора из всего текста документа (до 30000 символов)
     с помощью модели gpt-oss:20b на удаленном сервере Ollama с Bearer-авторизацией.
-    Использует пошаговое рассуждение (SGR) для сопоставления упоминаний и исправления ошибок OCR.
+    Использует пошаговое рассуждение (SGR) для сопоставления упоминаний и исправления ошибок OCR,
+    а также оценивает уверенность (confidence).
     """
     from ocr_platform.config.settings import get_settings
     from ocr_platform.observability.logging import get_logger
@@ -397,7 +398,7 @@ def extract_creditor_with_ollama_llm(text: str) -> str | None:
 
     search_text = text[:30000].strip()
     if not search_text:
-        return None
+        return None, 0.0
 
     base_url = settings.ollama_ocr_url.rstrip("/")
     if base_url.endswith("/api/chat"):
@@ -407,17 +408,22 @@ def extract_creditor_with_ollama_llm(text: str) -> str | None:
 
     prompt = (
         "Ты — профессиональный юридический аналитик и эксперт по банкротству.\n"
-        "Твоя задача — извлечь точное наименование Кредитора (Заявителя) из предоставленного текста заявления о включении требований в реестр (РТК).\n\n"
+        "Твоя задача — извлечь точное наименование Кредитора (Заявителя) из предоставленного текста заявления о включении требований в реестр (РТК) и определить уровень уверенности (confidence) в извлеченном названии.\n\n"
         "ИНСТРУКЦИЯ АНАЛИЗА:\n"
         "1. Шаг 1: Найди наименование кредитора в шапке документа (в самом начале, обычно в первых строках после слов \"Кредитор:\", \"Заявитель:\", \"от...\").\n"
         "2. Шаг 2: Найди все упоминания этого кредитора (и возможные вариации/опечатки его названия) в остальной части документа.\n"
         "3. Шаг 3: Сравни все найденные варианты. Если в шапке допущена OCR-ошибка (например, \"ПАО Сбербан\" или \"ПКО АйДи Коллек\"), а в теле документа несколько раз упоминается правильное полное название (\"ПАО Сбербанк\" или \"ООО ПКО «АйДи Коллект»\"), выбери наиболее частотное и корректное (полное, без опечаток) наименование.\n"
-        "4. Шаг 4: Приведи название к правильному ОПФ и формату. Исправь опечатки OCR (000 -> ООО, cократи до общепринятых ОПФ вроде ПАО, ООО, АО, НАО, ПКО, если в тексте они записаны криво).\n\n"
+        "4. Шаг 4: Оцени уверенность (confidence):\n"
+        "   - Если в тексте одно и то же название кредитора встречается ровно в двух местах и оба названия слегка отличаются (например, опечатками OCR или ОПФ), установи \"confidence\": 0.5.\n"
+        "   - Если упоминания кредитора встречаются в трех или более местах, выбери наиболее часто встречающееся название и установи \"confidence\": 0.9.\n"
+        "   - В остальных обычных случаях (например, единственное четкое или полностью совпадающие упоминания) установи \"confidence\": 0.9.\n"
+        "5. Шаг 5: Приведи название к правильному ОПФ и формату. Исправь опечатки OCR (000 -> ООО, cократи до общепринятых ОПФ вроде ПАО, ООО, АО, НАО, ПКО, если в тексте они записаны криво).\n\n"
         "ФОРМАТ ОТВЕТА:\n"
         "Верни ответ СТРОГО в формате JSON с помощью следующей схемы:\n"
         "{\n"
-        "  \"reasoning\": \"Подробные пошаговые рассуждения на русском языке: 1) какой кредитор найден в шапке, 2) какие упоминания найдены в теле документа, 3) сравнение и выбор наиболее частого и корректного варианта.\",\n"
-        "  \"creditor_name\": \"Наиболее частое и корректное наименование кредитора (например, ПАО Сбербанк, ООО ПКО «АйДи Коллект»)\"\n"
+        "  \"reasoning\": \"Подробные пошаговые рассуждения на русском языке: 1) какой кредитор найден в шапке, 2) какие упоминания найдены в теле документа, 3) сравнение и выбор наиболее частого и корректного варианта, 4) обоснование уровня уверенности.\",\n"
+        "  \"creditor_name\": \"Наиболее частое и корректное наименование кредитора (например, ПАО Сбербанк, ООО ПКО «АйДи Коллект»)\",\n"
+        "  \"confidence\": число с плавающей точкой в диапазоне от 0.0 до 1.0 (например, 0.5 или 0.9)\n"
         "}\n\n"
         "Не добавляй никаких вводных слов перед JSON или после него. Используй только валидный JSON.\n\n"
         f"Текст документа:\n{search_text}"
@@ -452,13 +458,24 @@ def extract_creditor_with_ollama_llm(text: str) -> str | None:
             data = json.loads(json_str)
             extracted = data.get("creditor_name", "").strip()
             if extracted.lower() in ("none", "нет", "не указан", "unknown"):
-                return None
+                return None, 0.0
+            
+            confidence = data.get("confidence")
+            if confidence is None:
+                confidence = 0.9
+            else:
+                try:
+                    confidence = float(confidence)
+                except (ValueError, TypeError):
+                    confidence = 0.9
+
             local_logger.info(
                 "ollama_llm_creditor_success",
                 creditor=extracted,
+                confidence=confidence,
                 reasoning=data.get("reasoning"),
             )
-            return extracted
+            return extracted, confidence
         else:
             local_logger.warning(
                 "ollama_llm_creditor_http_error",
@@ -468,4 +485,4 @@ def extract_creditor_with_ollama_llm(text: str) -> str | None:
     except Exception as exc:
         local_logger.exception("ollama_llm_creditor_failed", error=str(exc))
 
-    return None
+    return None, 0.0
