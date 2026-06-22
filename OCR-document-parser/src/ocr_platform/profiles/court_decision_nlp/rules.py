@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 from .postprocess import normalize_whitespace
 
-CASE_NUMBER_RE = re.compile(r"Дело\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{2,4})", re.IGNORECASE)
+CASE_NUMBER_RE = re.compile(r"Дел[оауые]?\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{2,4})", re.IGNORECASE)
 INN_RE = re.compile(r"ИНН\s*[:№]?\s*(\d{10,12})", re.IGNORECASE)
 COURT_RE = re.compile(
     r"((?:Арбитражный|АРБИТРАЖНЫЙ)\s+суд\s+"
