@@ -36,8 +36,120 @@ def extract_case_number(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def extract_claims_amount_with_ollama_llm(text: str) -> dict | None:
+    """
+    Интеллектуальное извлечение суммы требований РТК и сведений о госпошлине
+    с использованием пошагового рассуждения (SGR) на модели gpt-oss:20b через Ollama API.
+    """
+    from ocr_platform.config.settings import get_settings
+    from ocr_platform.observability.logging import get_logger
+    import requests
+    import json
+
+    local_logger = get_logger(__name__)
+    settings = get_settings()
+
+    # Берем последние 6000 символов, так как просительная часть обычно находится в конце документа.
+    search_text = text[-6000:].strip() if len(text) > 6000 else text.strip()
+    if not search_text:
+        return None
+
+    base_url = settings.ollama_ocr_url.rstrip("/")
+    url = base_url if base_url.endswith("/api/chat") else f"{base_url}/api/chat"
+
+    prompt = (
+        "Ты — профессиональный юридический аналитик и эксперт по банкротству.\n"
+        "Твоя задача — проанализировать предоставленный текст заявления о включении в реестр требований кредиторов (РТК) "
+        "и извлечь структурированную информацию о сумме требований кредитора.\n\n"
+        "ИНСТРУКЦИЯ ПОИСКА:\n"
+        "1. Найди в тексте заявления финальный блок требований. Обычно он начинается со слов \"ПРОШУ:\", \"ПРОСИМ:\", \"ПРОСИТ СУД:\" или аналогичных.\n"
+        "2. Анализируй требования строго внутри этого блока! Вся информация выше этого блока (в описательной части заявления) может содержать промежуточные расчеты и другие судебные дела — игнорируй их, если они не продублированы в просительной части.\n\n"
+        "МЕТОДОЛОГИЯ АНАЛИЗА (SGR / Step-by-Step Reasoning):\n"
+        "Сначала выполни пошаговые рассуждения в поле \"reasoning\":\n"
+        "- Подсчитай количество кредитных договоров или обязательств, задолженность по которым просят включить в реестр в блоке ПРОШУ.\n"
+        "- Выпиши все суммы, которые просят включить (основной долг, проценты, неустойки). Сложи их, чтобы получить общую сумму задолженности по всем обязательствам.\n"
+        "- Найди упоминание госпошлины. Выясни, входит ли госпошлина в эту общую сумму требований в блоке ПРОШУ или она указана отдельно/взыскивается отдельно.\n\n"
+        "ФОРМАТ ОТВЕТА:\n"
+        "Верни ответ СТРОГО в формате JSON с помощью следующей схемы:\n"
+        "{\n"
+        "  \"reasoning\": \"подробное пошаговое рассуждение на русском языке\",\n"
+        "  \"commitments_count\": <целое число обязательств/кредитных договоров>,\n"
+        "  \"total_debt_amount\": <общая сумма задолженности по всем обязательствам в рублях (float)>,\n"
+        "  \"debt_components\": [\"список строковых описаний компонентов задолженности, например: основной долг, проценты\"],\n"
+        "  \"is_duty_included_in_total\": <true, если госпошлина входит в общую сумму задолженности; false, если пошлина указана отдельно/не входит>,\n"
+        "  \"duty_amount\": <сумма госпошлины в рублях, если она упомянута в документе (float, иначе 0.0)>\n"
+        "}\n\n"
+        "Не добавляй никаких вводных слов перед JSON или после него. Используй только валидный JSON.\n\n"
+        f"Текст заявления:\n{search_text}"
+    )
+
+    payload = {
+        "model": "gpt-oss:20b",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.0
+        }
+    }
+
+    headers = {}
+    if settings.ollama_ocr_token:
+        headers["Authorization"] = f"Bearer {settings.ollama_ocr_token}"
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=120.0)
+        if response.status_code == 200:
+            res_data = response.json()
+            content = res_data.get("message", {}).get("content", "").strip()
+            # Извлекаем JSON из markdown-блоков
+            json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+            json_str = json_match.group(1) if json_match else content
+            data = json.loads(json_str)
+            local_logger.info(
+                "ollama_llm_claims_amount_success",
+                commitments_count=data.get("commitments_count"),
+                total_debt_amount=data.get("total_debt_amount"),
+                is_duty_included_in_total=data.get("is_duty_included_in_total"),
+            )
+            return data
+        else:
+            local_logger.warning(
+                "ollama_llm_claims_amount_http_error",
+                status_code=response.status_code,
+                response_text=response.text,
+            )
+    except Exception as exc:
+        local_logger.exception("ollama_llm_claims_amount_failed", error=str(exc))
+
+    return None
+
+
 def extract_claims_amount(text: str) -> str | None:
-    # Ищем блок после "ПРОШУ", "ПРОСИТ СУД", "ПРОСИМ"
+    # 1. Попробуем получить значение через Ollama (с логикой госпошлины)
+    try:
+        llm_data = extract_claims_amount_with_ollama_llm(text)
+        if llm_data:
+            total_debt = float(llm_data.get("total_debt_amount") or 0.0)
+            is_duty_included = bool(llm_data.get("is_duty_included_in_total"))
+            duty = float(llm_data.get("duty_amount") or 0.0)
+
+            if is_duty_included and duty > 0:
+                final_amount = total_debt - duty
+            else:
+                final_amount = total_debt
+
+            if final_amount > 0:
+                return f"{final_amount:.2f}".replace(".", ",")
+    except Exception as exc:
+        from ocr_platform.observability.logging import get_logger
+        get_logger(__name__).warning("extract_claims_amount_llm_error_falling_back", error=str(exc))
+
+    # 2. Резервный вариант (Fallback): поиск по регулярным выражениям
     block_match = re.search(
         r"(?i)\b(ПРОШУ(?:\s+СУД)?|ПРОСИТ\s+СУД|ПРОСИМ)\b[:\s]*(.*)",
         text,
@@ -192,19 +304,27 @@ GROUNDS_PATTERNS = [
         re.compile(r"\bдоговор[а-я]{0,3}\s+энергоснабжен[а-я]{2,4}\b", re.IGNORECASE),
         "договор энергоснабжения",
     ),
-    # 8. договор займа
+    # 8. кредитный договор (должен быть ДО «договор займа», иначе документы о кредите
+    #    могут ошибочно попасть под паттерн займа)
+    (
+        re.compile(r"\bкредитн[а-я]{2,4}\s+договор[а-я]{0,3}\b", re.IGNORECASE),
+        "кредитный договор",
+    ),
+    # 9. договор займа
     (
         re.compile(
             r"\bдоговор[а-я]{0,3}\s+(?:займ|заем|заём)[а-я]{0,3}\b", re.IGNORECASE
         ),
         "договор займа",
     ),
-    # 9. кредитный договор
-    (
-        re.compile(r"\bкредитн[а-я]{2,4}\s+договор[а-я]{0,3}\b", re.IGNORECASE),
-        "кредитный договор",
-    ),
     # 10. задолженность по уплате налога
+    (
+        re.compile(
+            r"\bобязанност[а-я]{0,3}\s+по\s+уплат[а-я]{1,3}\s+налог[а-я]{0,3}\b",
+            re.IGNORECASE,
+        ),
+        "задолженность по уплате налога",
+    ),
     (
         re.compile(
             r"\bзадолженност[а-я]{0,2}\s+по\s+уплат[а-я]{1,3}\s+налог[а-я]{0,3}\b",
@@ -263,18 +383,20 @@ def extract_grounds(text: str) -> str | None:
 
 def extract_creditor_with_ollama_llm(text: str) -> str | None:
     """
-    Интеллектуальное извлечение кредитора из шапки документа (первые 3000 символов)
+    Интеллектуальное извлечение кредитора из всего текста документа (до 30000 символов)
     с помощью модели gpt-oss:20b на удаленном сервере Ollama с Bearer-авторизацией.
+    Использует пошаговое рассуждение (SGR) для сопоставления упоминаний и исправления ошибок OCR.
     """
     from ocr_platform.config.settings import get_settings
     from ocr_platform.observability.logging import get_logger
     import requests
+    import json
 
     local_logger = get_logger(__name__)
     settings = get_settings()
 
-    header_text = text[:2000].strip()
-    if not header_text:
+    search_text = text[:30000].strip()
+    if not search_text:
         return None
 
     base_url = settings.ollama_ocr_url.rstrip("/")
@@ -283,44 +405,36 @@ def extract_creditor_with_ollama_llm(text: str) -> str | None:
     else:
         url = f"{base_url}/api/chat"
 
+    prompt = (
+        "Ты — профессиональный юридический аналитик и эксперт по банкротству.\n"
+        "Твоя задача — извлечь точное наименование Кредитора (Заявителя) из предоставленного текста заявления о включении требований в реестр (РТК).\n\n"
+        "ИНСТРУКЦИЯ АНАЛИЗА:\n"
+        "1. Шаг 1: Найди наименование кредитора в шапке документа (в самом начале, обычно в первых строках после слов \"Кредитор:\", \"Заявитель:\", \"от...\").\n"
+        "2. Шаг 2: Найди все упоминания этого кредитора (и возможные вариации/опечатки его названия) в остальной части документа.\n"
+        "3. Шаг 3: Сравни все найденные варианты. Если в шапке допущена OCR-ошибка (например, \"ПАО Сбербан\" или \"ПКО АйДи Коллек\"), а в теле документа несколько раз упоминается правильное полное название (\"ПАО Сбербанк\" или \"ООО ПКО «АйДи Коллект»\"), выбери наиболее частотное и корректное (полное, без опечаток) наименование.\n"
+        "4. Шаг 4: Приведи название к правильному ОПФ и формату. Исправь опечатки OCR (000 -> ООО, cократи до общепринятых ОПФ вроде ПАО, ООО, АО, НАО, ПКО, если в тексте они записаны криво).\n\n"
+        "ФОРМАТ ОТВЕТА:\n"
+        "Верни ответ СТРОГО в формате JSON с помощью следующей схемы:\n"
+        "{\n"
+        "  \"reasoning\": \"Подробные пошаговые рассуждения на русском языке: 1) какой кредитор найден в шапке, 2) какие упоминания найдены в теле документа, 3) сравнение и выбор наиболее частого и корректного варианта.\",\n"
+        "  \"creditor_name\": \"Наиболее частое и корректное наименование кредитора (например, ПАО Сбербанк, ООО ПКО «АйДи Коллект»)\"\n"
+        "}\n\n"
+        "Не добавляй никаких вводных слов перед JSON или после него. Используй только валидный JSON.\n\n"
+        f"Текст документа:\n{search_text}"
+    )
+
     payload = {
         "model": "gpt-oss:20b",
         "messages": [
             {
                 "role": "user",
-                "content": (
-                    "Ты — экстрактор названий кредиторов из юридических документов о банкротстве.\n\n"
-                    "Из текста выдели полное наименование лица, которое выступает Кредитором или Заявителем.\n"
-                    "Имя кредитора всегда указано в самом начале документа (первые строки, шапка). "
-                    "Не обращай внимания на другие организации, упомянутые ниже в тексте.\n\n"
-                    "Примеры правильных ответов:\n"
-                    "  «ПАО АКБ [(АВАНГАРД)] ИНН 7702070139» → ПАО АКБ «АВАНГАРД»\n"
-                    '  «ООО ПКО "АйДи Коллект"» → ООО ПКО «АйДи Коллект»\n'
-                    "  «Кредитор: ПАО Сбербанк» → ПАО Сбербанк\n"
-                    '  «Общество с ограниченной ответственностью "Феникс"» → ООО «Феникс»\n'
-                    "  «Наименование: ПАО ВТБ» → ПАО ВТБ\n"
-                    "  «Наименование: ООО «Энергосбытовая компания Башкортостана»» → ООО «Энергосбытовая компания Башкортостана»\n\n"
-                    "Примеры НЕПРАВИЛЬНЫХ ответов (так не делай!):\n"
-                    "  ✗ «освобожден от уплаты государственной пошлины» — это фраза из документа, а не название\n"
-                    "  ✗ «в соответствии со статьей 213.8» — не название\n"
-                    "  ✗ «Агентство: Общество с ограниченной ответственностью» — неполное, без указания названия организации\n"
-                    "  ✗ «Bank ВТБ» — используй русский язык: «ПАО ВТБ» или «Банк ВТБ (ПАО)»\n"
-                    "  ✗ «— 000 «СФО Титан»» — исправь OCR-ошибку: должно быть «ООО «СФО Титан»»\n"
-                    "  ✗ «Акционерное общество кТБанк>» — исправь мусор: должно быть «АО «ТБанк»»\n\n"
-                    "Правила:\n"
-                    "- Если после ОПФ (ПАО, ООО, АО, НАО, ПКО) идёт название в скобках [(бренд)] или (бренд) — "
-                    "это торговое наименование, включи его в ответ в кавычках-ёлочках.\n"
-                    "- Если после названия идут реквизиты (ИНН, ОГРН, адреса, телефон, email) — отбрось их.\n"
-                    "- Если видишь OCR-ошибки (000 вместо ООО, латиница вместо кириллицы, лишние символы <>#*) — "
-                    "попробуй восстановить правильное написание.\n"
-                    "- Верни ТОЛЬКО одно название. Никаких списков, никаких альтернатив через запятую или новую строку. Только один вариант.\n"
-                    "- Никаких пояснений, вводных слов, кавычек вокруг всего названия, точек в конце, markdown-разметки.\n"
-                    "- Если не уверен или не нашёл — ответь ровно одним словом: None\n\n"
-                    f"Текст документа:\n{header_text}"
-                ),
+                "content": prompt
             }
         ],
         "stream": False,
+        "options": {
+            "temperature": 0.0
+        }
     }
 
     headers = {}
@@ -331,14 +445,19 @@ def extract_creditor_with_ollama_llm(text: str) -> str | None:
         response = requests.post(url, json=payload, headers=headers, timeout=120.0)
         if response.status_code == 200:
             res_data = response.json()
-            extracted = res_data.get("message", {}).get("content", "").strip()
-            # Take only the first line (LLM sometimes returns bullet list of alternatives)
-            extracted = extracted.split("\n")[0].strip()
-            # Strip markdown bullet markers, surrounding quotes, whitespace
-            extracted = extracted.lstrip("-*•").strip().strip("\"'").strip()
+            content = res_data.get("message", {}).get("content", "").strip()
+            # Извлекаем JSON из markdown-блоков
+            json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+            json_str = json_match.group(1) if json_match else content
+            data = json.loads(json_str)
+            extracted = data.get("creditor_name", "").strip()
             if extracted.lower() in ("none", "нет", "не указан", "unknown"):
                 return None
-            local_logger.info("ollama_llm_creditor_success", creditor=extracted)
+            local_logger.info(
+                "ollama_llm_creditor_success",
+                creditor=extracted,
+                reasoning=data.get("reasoning"),
+            )
             return extracted
         else:
             local_logger.warning(

@@ -23,6 +23,7 @@ from .rules import (
     extract_court_name,
     extract_decision_date,
     extract_early_report_deadline,
+    extract_fio_with_ollama_llm,
     extract_inn,
     extract_motivating_part,
     extract_procedure_end_date_with_meta,
@@ -118,6 +119,54 @@ def _configure_torch_threads() -> None:
             torch.set_num_threads(n)
     except (ValueError, TypeError):
         pass
+
+
+def _fio_str_to_components(fio_str: str) -> FioComponents:
+    """Разобрать строку ФИО от Ollama в объект FioComponents.
+
+    Поддерживает форматы:
+    - «Фамилия Имя Отчество» → last_name, first_name, patronymic
+    - «Фамилия И.О.» → last_name, first_name=«И.», patronymic=«О.»
+    - «Фамилия И.» → last_name, first_name=«И.»
+
+    Возвращает FioComponents с нормализованными значениями.
+    """
+    import re as _re
+    fio_str = fio_str.strip()
+    if not fio_str:
+        return FioComponents()
+
+    # Сплит по пробелу — первое слово всегда фамилия
+    parts = fio_str.split()
+    if not parts:
+        return FioComponents()
+
+    last_name = parts[0]
+    first_name: str | None = None
+    patronymic: str | None = None
+
+    if len(parts) == 1:
+        # Только фамилия
+        pass
+    elif len(parts) == 2:
+        # «Фамилия Имя» или «Фамилия И.О.»
+        second = parts[1]
+        # Проверяем формат «И.О.» — два инициала через точку
+        if _re.match(r"^[А-ЯЁA-Z]\.[А-ЯЁA-Z]\.$", second):
+            first_name = second[0] + "."
+            patronymic = second[2] + "."
+        else:
+            first_name = second
+    elif len(parts) >= 3:
+        # «Фамилия Имя Отчество»
+        first_name = parts[1]
+        patronymic = " ".join(parts[2:])
+
+    return FioComponents(
+        last_name=last_name or None,
+        first_name=first_name or None,
+        patronymic=patronymic or None,
+    )
 
 
 class TransformerTokenClassifierExtractor:
@@ -219,6 +268,22 @@ class TransformerTokenClassifierExtractor:
 
         applicant_fio = normalize_fio_components(applicant.fio) if applicant else FioComponents()
         judge_fio = normalize_fio_components(judge.fio) if judge else FioComponents()
+
+        # ---------------------------------------------------------------
+        # Ollama LLM: пытаемся улучшить/исправить ФИО судьи и должника.
+        # При успехе — заменяем результат NER, при ошибке — NER остаётся.
+        # ---------------------------------------------------------------
+        try:
+            ollama_result = extract_fio_with_ollama_llm(normalized_text)
+            if ollama_result:
+                if ollama_result.get("judge_fio"):
+                    # Парсим строку «Фамилия Имя Отчество» или «Фамилия И.О.» в компоненты
+                    judge_fio = _fio_str_to_components(ollama_result["judge_fio"])
+                if ollama_result.get("debtor_fio"):
+                    applicant_fio = _fio_str_to_components(ollama_result["debtor_fio"])
+        except Exception:
+            pass  # Ollama недоступна — продолжаем с NER
+
         best_candidate = applicant or judge
         confidence_basis = max(applicant.total_score if applicant else 0.0, judge.total_score if judge else 0.0)
         confidence = max(0.0, min(1.0, 1 / (1 + math.exp(-0.55 * (confidence_basis - 6.0))))) if confidence_basis else 0.0

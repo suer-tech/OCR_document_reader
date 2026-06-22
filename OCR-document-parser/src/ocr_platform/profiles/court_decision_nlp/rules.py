@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 from .postprocess import normalize_whitespace
 
-CASE_NUMBER_RE = re.compile(r"Дело\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{4})", re.IGNORECASE)
+CASE_NUMBER_RE = re.compile(r"Дело\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{2,4})", re.IGNORECASE)
 INN_RE = re.compile(r"ИНН\s*[:№]?\s*(\d{10,12})", re.IGNORECASE)
 COURT_RE = re.compile(
     r"((?:Арбитражный|АРБИТРАЖНЫЙ)\s+суд\s+"
@@ -36,12 +36,15 @@ WORD_TO_NUM = {
     "девять": "9", "девяти": "9", "десять": "10", "десяти": "10",
     "одиннадцать": "11", "одиннадцати": "11", "двенадцать": "12", "двенадцати": "12"
 }
-PROCEDURE_TYPE_PATTERNS = [
-    re.compile(r"процедур[ауы]\s+реализации\s+имущества\s+гражданина", re.IGNORECASE),
-    re.compile(r"реализаци[яи]\s+имущества\s+гражданина", re.IGNORECASE),
-    re.compile(r"реструктуризаци[яи]\s+долгов\s+гражданина", re.IGNORECASE),
-    re.compile(r"наблюдени[ея]", re.IGNORECASE),
-    re.compile(r"конкурсн[а-я]+\s+производств[ао]", re.IGNORECASE),
+# Список (паттерн, каноническое значение в именительном падеже)
+# Каноническое значение используется вместо текста из документа, чтобы избежать
+# неверных падежей (например, "процедуры реализации" вместо "процедура реализации").
+PROCEDURE_TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"процедур[ауы]\s+реализации\s+имущества\s+гражданина", re.IGNORECASE), "процедура реализации имущества гражданина"),
+    (re.compile(r"реализаци[яи]\s+имущества\s+гражданина", re.IGNORECASE), "реализация имущества гражданина"),
+    (re.compile(r"реструктуризаци[яи]\s+долгов\s+гражданина", re.IGNORECASE), "реструктуризация долгов гражданина"),
+    (re.compile(r"наблюдени[ея]", re.IGNORECASE), "наблюдение"),
+    (re.compile(r"конкурсн[а-я]+\s+производств[ао]", re.IGNORECASE), "конкурсное производство"),
 ]
 MONTHS = {
     "января": "01",
@@ -141,10 +144,9 @@ def extract_procedure_end_date_with_meta(text: str) -> tuple[str | None, bool | 
 
 
 def extract_procedure_type(text: str) -> str | None:
-    for pattern in PROCEDURE_TYPE_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return normalize_whitespace(match.group(0))
+    for pattern, canonical in PROCEDURE_TYPE_PATTERNS:
+        if pattern.search(text):
+            return canonical
     return None
 
 
@@ -287,3 +289,112 @@ def extract_resolutive_part(text: str) -> str | None:
     resolutive_text = re.sub(r"^[\s:,\.\-–—\(\)]+", "", resolutive_text)
     return resolutive_text.strip() or None
 
+
+# ---------------------------------------------------------------------------
+# Ollama LLM: извлечение ФИО судьи и должника (SGR)
+# ---------------------------------------------------------------------------
+
+def extract_fio_with_ollama_llm(text: str) -> dict | None:
+    """Извлечь ФИО судьи и должника из текста судебного решения с помощью Ollama LLM.
+
+    Использует пошаговое рассуждение (SGR). Возвращает dict вида::
+
+        {
+            "judge_fio":  "Агаларова А.В."  | None,
+            "debtor_fio": "Прутовых Алексей Викторович" | None,
+        }
+
+    При ошибке или недоступности Ollama возвращает None — тогда вызывающий
+    код должен использовать Transformer NER как fallback.
+    """
+    import json
+    import re as _re
+    import requests
+
+    from ocr_platform.config.settings import get_settings
+    from ocr_platform.observability.logging import get_logger
+
+    local_logger = get_logger(__name__)
+    settings = get_settings()
+
+    # Берём шапку (3 000 симв.) + подпись внизу (2 000 симв.),
+    # чтобы модель видела и «в составе судьи» и «Судья А.В. Агаларова».
+    head = text[:3000] if len(text) > 3000 else text
+    tail = text[-2000:] if len(text) > 2000 else ""
+    # Убираем дублирование, если текст короткий
+    if tail and tail in head:
+        tail = ""
+    search_text = head + ("\n[...]\n" + tail if tail else "")
+
+    prompt = (
+        "Ты — профессиональный юридический аналитик.\n"
+        "Проанализируй предоставленный фрагмент судебного решения о банкротстве физического лица.\n\n"
+        "ЗАДАЧА 1 — ФИО СУДЬИ:\n"
+        "Найди ФИО судьи, который рассматривает дело. Оно может находиться:\n"
+        " • в шапке документа после слов \"судья\", \"в составе судьи\", \"под председательством\";\n"
+        " • в конце документа после слова \"Судья\" перед подписью (формат: \"Судья Фамилия И.О.\");\n"
+        " • в строке \"кому выдана\" исполнительного листа.\n\n"
+        "ЗАДАЧА 2 — ФИО ДОЛЖНИКА:\n"
+        "Найди ФИО физического лица-должника (гражданина), в отношении которого рассматривается дело о банкротстве.\n"
+        "Должник упоминается после слов: \"в отношении\", \"должника\", \"гражданина\", \"признать банкротом\".\n\n"
+        "ПРАВИЛА:\n"
+        " • ФИО вернуть строго в ИМЕНИТЕЛЬНОМ падеже (отвечает на вопрос КТО?).\n"
+        " • Если ФИО содержит только инициалы (например, А.В.) — вернуть как есть, НЕ расшифровывать.\n"
+        " • Не путать судью и должника.\n"
+        " • Если ФИО не удалось определить однозначно — вернуть null.\n\n"
+        "МЕТОДОЛОГИЯ (SGR — пошаговое рассуждение):\n"
+        "Сначала рассуди пошагово в поле \"reasoning\", затем дай финальный ответ.\n\n"
+        "ФОРМАТ ОТВЕТА — строго валидный JSON, без текста до и после:\n"
+        "{\n"
+        "  \"reasoning\": \"пошаговые рассуждения на русском языке\",\n"
+        "  \"judge_fio\": \"Фамилия Имя Отчество или Фамилия И.О.\" | null,\n"
+        "  \"debtor_fio\": \"Фамилия Имя Отчество\" | null\n"
+        "}\n\n"
+        f"Текст фрагмента:\n{search_text}"
+    )
+
+    base_url = settings.ollama_ocr_url.rstrip("/")
+    url = base_url if base_url.endswith("/api/chat") else f"{base_url}/api/chat"
+
+    payload = {
+        "model": "gpt-oss:20b",
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"temperature": 0.0},
+    }
+
+    headers: dict = {}
+    if settings.ollama_ocr_token:
+        headers["Authorization"] = f"Bearer {settings.ollama_ocr_token}"
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=120.0)
+        if response.status_code != 200:
+            local_logger.warning(
+                "ollama_fio_http_error",
+                status_code=response.status_code,
+                response_text=response.text[:300],
+            )
+            return None
+
+        content = response.json().get("message", {}).get("content", "").strip()
+        # Извлекаем JSON из markdown-блоков ```json ... ``` если модель обернула
+        json_match = _re.search(r"```json\s*(.*?)\s*```", content, _re.DOTALL)
+        json_str = json_match.group(1) if json_match else content
+        data = json.loads(json_str)
+
+        result: dict = {
+            "judge_fio": data.get("judge_fio") or None,
+            "debtor_fio": data.get("debtor_fio") or None,
+        }
+        local_logger.info(
+            "ollama_fio_success",
+            judge_fio=result["judge_fio"],
+            debtor_fio=result["debtor_fio"],
+            reasoning_preview=(data.get("reasoning") or "")[:200],
+        )
+        return result
+
+    except Exception as exc:
+        local_logger.warning("ollama_fio_failed", error=str(exc))
+        return None
