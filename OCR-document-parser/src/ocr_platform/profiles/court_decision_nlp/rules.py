@@ -291,21 +291,22 @@ def extract_resolutive_part(text: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Ollama LLM: извлечение ФИО судьи и должника (SGR)
+# Ollama LLM: извлечение ФИО судьи, должника и типа процедуры (SGR)
 # ---------------------------------------------------------------------------
 
-def extract_fio_with_ollama_llm(text: str) -> dict | None:
-    """Извлечь ФИО судьи и должника из текста судебного решения с помощью Ollama LLM.
+def extract_court_decision_info_with_ollama_llm(text: str) -> dict | None:
+    """Извлечь ФИО судьи, должника и тип процедуры из текста судебного решения с помощью Ollama LLM.
 
     Использует пошаговое рассуждение (SGR). Возвращает dict вида::
 
         {
             "judge_fio":  "Агаларова А.В."  | None,
             "debtor_fio": "Прутовых Алексей Викторович" | None,
+            "procedure_type": "реализация имущества гражданина" | None,
         }
 
     При ошибке или недоступности Ollama возвращает None — тогда вызывающий
-    код должен использовать Transformer NER как fallback.
+    код должен использовать регулярные выражения или Transformer NER как fallback.
     """
     import json
     import re as _re
@@ -337,18 +338,30 @@ def extract_fio_with_ollama_llm(text: str) -> dict | None:
         "ЗАДАЧА 2 — ФИО ДОЛЖНИКА:\n"
         "Найди ФИО физического лица-должника (гражданина), в отношении которого рассматривается дело о банкротстве.\n"
         "Должник упоминается после слов: \"в отношении\", \"должника\", \"гражданина\", \"признать банкротом\".\n\n"
+        "ЗАДАЧА 3 — ТИП ПРОЦЕДУРЫ БАНКРОТСТВА:\n"
+        "Найди тип вводимой процедуры банкротства. Обычно это:\n"
+        " • реализация имущества гражданина (или процедура реализации имущества гражданина);\n"
+        " • реструктуризация долгов гражданина;\n"
+        " • наблюдение;\n"
+        " • конкурсное производство.\n\n"
+        "ЗАДАЧА 4 — НАЗВАНИЕ СУДA:\n"
+        "Найди полное официальное наименование арбитражного суда, принявшего решение. Например: \"Арбитражный суд города Санкт-Петербурга и Ленинградской области\" (не усекай и не сокращай название).\n\n"
         "ПРАВИЛА:\n"
         " • ФИО вернуть строго в ИМЕНИТЕЛЬНОМ падеже (отвечает на вопрос КТО?).\n"
         " • Если ФИО содержит только инициалы (например, А.В.) — вернуть как есть, НЕ расшифровывать.\n"
         " • Не путать судью и должника.\n"
-        " • Если ФИО не удалось определить однозначно — вернуть null.\n\n"
+        " • Тип процедуры вернуть строго в ИМЕНИТЕЛЬНОМ падеже (например, «реализация имущества гражданина» вместо «процедуру реализации имущества» или «процедуры реализации имущества гражданина»).\n"
+        " • Название суда вернуть полностью, включая все регионы и приписки (например, обязательно возвращать «Арбитражный суд города Санкт-Петербурга и Ленинградской области», а не усеченное «Арбитражный суд города Санкт-Петербурга»).\n"
+        " • Если значение не удалось определить однозначно — вернуть null.\n\n"
         "МЕТОДОЛОГИЯ (SGR — пошаговое рассуждение):\n"
         "Сначала рассуди пошагово в поле \"reasoning\", затем дай финальный ответ.\n\n"
         "ФОРМАТ ОТВЕТА — строго валидный JSON, без текста до и после:\n"
         "{\n"
         "  \"reasoning\": \"пошаговые рассуждения на русском языке\",\n"
         "  \"judge_fio\": \"Фамилия Имя Отчество или Фамилия И.О.\" | null,\n"
-        "  \"debtor_fio\": \"Фамилия Имя Отчество\" | null\n"
+        "  \"debtor_fio\": \"Фамилия Имя Отчество\" | null,\n"
+        "  \"procedure_type\": \"Тип процедуры в именительном падеже\" | null,\n"
+        "  \"court_name\": \"Полное название суда\" | null\n"
         "}\n\n"
         f"Текст фрагмента:\n{search_text}"
     )
@@ -371,7 +384,7 @@ def extract_fio_with_ollama_llm(text: str) -> dict | None:
         response = requests.post(url, json=payload, headers=headers, timeout=120.0)
         if response.status_code != 200:
             local_logger.warning(
-                "ollama_fio_http_error",
+                "ollama_court_decision_http_error",
                 status_code=response.status_code,
                 response_text=response.text[:300],
             )
@@ -386,15 +399,19 @@ def extract_fio_with_ollama_llm(text: str) -> dict | None:
         result: dict = {
             "judge_fio": data.get("judge_fio") or None,
             "debtor_fio": data.get("debtor_fio") or None,
+            "procedure_type": data.get("procedure_type") or None,
+            "court_name": data.get("court_name") or None,
         }
         local_logger.info(
-            "ollama_fio_success",
+            "ollama_court_decision_success",
             judge_fio=result["judge_fio"],
             debtor_fio=result["debtor_fio"],
+            procedure_type=result["procedure_type"],
+            court_name=result["court_name"],
             reasoning_preview=(data.get("reasoning") or "")[:200],
         )
         return result
 
     except Exception as exc:
-        local_logger.warning("ollama_fio_failed", error=str(exc))
+        local_logger.warning("ollama_court_decision_failed", error=str(exc))
         return None

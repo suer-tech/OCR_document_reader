@@ -23,7 +23,7 @@ from .rules import (
     extract_court_name,
     extract_decision_date,
     extract_early_report_deadline,
-    extract_fio_with_ollama_llm,
+    extract_court_decision_info_with_ollama_llm,
     extract_inn,
     extract_motivating_part,
     extract_procedure_end_date_with_meta,
@@ -269,20 +269,27 @@ class TransformerTokenClassifierExtractor:
         applicant_fio = normalize_fio_components(applicant.fio) if applicant else FioComponents()
         judge_fio = normalize_fio_components(judge.fio) if judge else FioComponents()
 
-        # ---------------------------------------------------------------
-        # Ollama LLM: пытаемся улучшить/исправить ФИО судьи и должника.
-        # При успехе — заменяем результат NER, при ошибке — NER остаётся.
-        # ---------------------------------------------------------------
+        procedure_type = extract_procedure_type(normalized_text)
+        court_name = extract_court_name(normalized_text)
+
+        # ----------------------------------------------------------------------
+        # Ollama LLM: пытаемся извлечь ФИО судьи, должника, тип процедуры и название суда.
+        # При успехе — заменяем/дополняем результаты, при ошибке — оставляем как есть.
+        # ----------------------------------------------------------------------
         try:
-            ollama_result = extract_fio_with_ollama_llm(normalized_text)
+            ollama_result = extract_court_decision_info_with_ollama_llm(normalized_text)
             if ollama_result:
                 if ollama_result.get("judge_fio"):
                     # Парсим строку «Фамилия Имя Отчество» или «Фамилия И.О.» в компоненты
                     judge_fio = _fio_str_to_components(ollama_result["judge_fio"])
                 if ollama_result.get("debtor_fio"):
                     applicant_fio = _fio_str_to_components(ollama_result["debtor_fio"])
+                if ollama_result.get("procedure_type"):
+                    procedure_type = ollama_result["procedure_type"]
+                if ollama_result.get("court_name"):
+                    court_name = ollama_result["court_name"]
         except Exception:
-            pass  # Ollama недоступна — продолжаем с NER
+            pass  # Ollama недоступна — продолжаем с NER/regex
 
         best_candidate = applicant or judge
         confidence_basis = max(applicant.total_score if applicant else 0.0, judge.total_score if judge else 0.0)
@@ -299,8 +306,8 @@ class TransformerTokenClassifierExtractor:
             match = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", normalized_text, re.IGNORECASE)
             search_text = normalized_text[match.start():] if match else normalized_text
             
-            # Разделяем на предложения и фильтруем мусор
-            sentences = [s.strip() for s in re.split(r'[.;]', search_text) if s.strip()]
+            # Разделяем на предложения и фильтруем мусор (используем lookbehind для сокращений)
+            sentences = [s.strip() for s in re.split(r'(?<!\bст)(?<!\bп)(?<!\bг)(?<!\bд)(?<!\bул)(?<!\bобл)(?<!\bруб)(?<!\bкоп)(?<!\bРесп)(?<!\b[А-Яа-я]\.[А-Яа-я])(?<!\b[А-Яа-я])(?<!\d)[.;]\s*', search_text) if s.strip()]
             
             report_sentences = []
             for s in sentences:
@@ -332,12 +339,12 @@ class TransformerTokenClassifierExtractor:
             fields=CourtDecisionFields(
                 applicant_fio=applicant_fio,
                 judge_fio=judge_fio,
-                court_name=extract_court_name(normalized_text),
+                court_name=court_name,
                 case_number=extract_case_number(normalized_text),
                 inn=extract_inn(normalized_text),
                 decision_date=extract_decision_date(normalized_text),
                 procedure_end_date=procedure_end_date,
-                procedure_type=extract_procedure_type(normalized_text),
+                procedure_type=procedure_type,
                 early_report_deadline=early_report_deadline,
                 early_report_deadline_source=early_report_deadline_source,
                 motivating_part=extract_motivating_part(normalized_text),
