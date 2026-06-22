@@ -16,6 +16,7 @@ COURT_RE = re.compile(
     re.IGNORECASE,
 )
 DECISION_DATE_RE = re.compile(r"[«\"]?(\d{1,2})[»\"]?\s+([А-Яа-яЁё]+)\s+(\d{4})\s*(?:года|г\.?)", re.IGNORECASE)
+DECISION_DATE_NUMERIC_RE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
 REPORT_TIME_RE = re.compile(
     r"рассмотрени[ея]\s+отчета.{1,100}?на\s+([«\"]?\d{1,2}[»\"]?\s+[А-Яа-яЁё]+\s+\d{4}\s*года\s+на\s+\d{1,2}\s*час\.?\s*\d{1,2}\s*мин\.?)",
     re.IGNORECASE | re.DOTALL
@@ -97,9 +98,15 @@ def _add_months(base_date: date, months: int) -> date:
 
 def extract_decision_date(text: str) -> str | None:
     match = DECISION_DATE_RE.search(text)
-    if not match:
-        return None
-    return _to_ru_date(match.group(1), match.group(2), match.group(3))
+    if match:
+        return _to_ru_date(match.group(1), match.group(2), match.group(3))
+    
+    match_num = DECISION_DATE_NUMERIC_RE.search(text)
+    if match_num:
+        day, month, year = match_num.groups()
+        return f"{int(day):02d}.{int(month):02d}.{year}"
+        
+    return None
 
 
 def extract_procedure_end_date(text: str) -> str | None:
