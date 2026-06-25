@@ -276,8 +276,13 @@ async def run_agent_extraction(
                     reasoning = ""
 
                     for creditor_attempt in range(1, CREDITOR_RETRIES + 1):
+                        is_null_retry = False
                         if creditor_attempt > 1:
-                            logger.info(f"Creditor extraction retry {creditor_attempt}/{CREDITOR_RETRIES} due to recognition error")
+                            if not val and known_inn:
+                                is_null_retry = True
+                                logger.info(f"Creditor extraction retry {creditor_attempt}/{CREDITOR_RETRIES} due to null value with known INN {known_inn}")
+                            else:
+                                logger.info(f"Creditor extraction retry {creditor_attempt}/{CREDITOR_RETRIES} due to recognition error")
                             val = None
                             confidence = 0.0
                             reasoning = ""
@@ -292,6 +297,15 @@ async def run_agent_extraction(
                                     f"'creditor_header', 'creditor_inn', "
                                     f"'creditor_body', 'creditor_web', 'creditor_final'. "
                                     f"Make sure all five fields are present."
+                                )
+                            elif is_null_retry:
+                                current_prompt = (
+                                    f"{base_prompt}\n\n"
+                                    f"CRITICAL WARNING: You previously returned null for the creditor name. "
+                                    f"Однако, ИНН кредитора ИЗВЕСТЕН: '{known_inn}'.\n"
+                                    f"Ты ОБЯЗАН прямо сейчас использовать инструмент `search_creditor_name`, передав туда этот ИНН '{known_inn}'. "
+                                    f"Дождись ответа от инструмента и запиши полученное официальное наименование в поле 'creditor_final'. "
+                                    f"Ни в коем случае не возвращай null!"
                                 )
                             else:
                                 current_prompt = base_prompt
@@ -395,6 +409,9 @@ async def run_agent_extraction(
 
                         # Если получили нормальное значение — выходим из цикла ретраев
                         if val != "Ошибка распознавания":
+                            if not val and known_inn:
+                                if creditor_attempt < CREDITOR_RETRIES:
+                                    continue # Идем на ретрай с усиленным промптом
                             break
 
                 elif field_name == "claims_amount":
@@ -491,6 +508,67 @@ async def run_agent_extraction(
 
                         if val is not None:
                             break
+
+                elif field_name == "grounds":
+                    VALID_GROUNDS = [
+                        "договор на предоставление коммунальных услуг",
+                        "кредитный договор",
+                        "договор потребительского микрозайма",
+                        "договор потребительского займа",
+                        "договор банковского счета",
+                        "договор энергоснабжения",
+                        "договор займа",
+                        "задолженность по уплате налога",
+                        "налоговая задолженность",
+                        "исполнительный лист",
+                        "исполнительный документ",
+                        "судебный приказ",
+                        "судебный акт",
+                        "административное правонарушение"
+                    ]
+                    GROUNDS_RETRIES = 3
+                    val = None
+                    confidence = 0.0
+                    reasoning = ""
+
+                    for attempt in range(1, GROUNDS_RETRIES + 1):
+                        current_prompt = base_prompt
+                        if attempt > 1:
+                            logger.info(f"Grounds retry {attempt}/{GROUNDS_RETRIES} due to invalid value: {val}")
+                            valid_list_str = "\\n- ".join(VALID_GROUNDS)
+                            current_prompt = (
+                                f"{base_prompt}\n\n"
+                                f"CRITICAL WARNING: Your previous response '{val}' is INVALID. "
+                                f"You MUST return an EXACT match from the following list ONLY:\n- {valid_list_str}\n\n"
+                                f"Do NOT invent new categories. Pick the closest exact match from the list above."
+                            )
+
+                        try:
+                            agent = extraction_agent_with_tools if extraction_method == "llm_with_tools" else extraction_agent
+                            result = await agent.run(current_prompt, deps=text)
+                        except Exception as e:
+                            logger.warning(f"LLM call attempt {attempt} failed for field grounds: {e}")
+                            if attempt == GROUNDS_RETRIES:
+                                raise e
+                            await asyncio.sleep(5)
+                            continue
+
+                        raw_val = result.data.value
+                        confidence = result.data.confidence
+                        reasoning = result.data.reasoning
+
+                        # Validate
+                        if isinstance(raw_val, str):
+                            clean_val = raw_val.strip().lower()
+                            # Sometimes LLM puts quotes or periods at the end
+                            clean_val = clean_val.strip("'.\",")
+                            if clean_val in VALID_GROUNDS:
+                                val = clean_val
+                                break
+                            else:
+                                val = clean_val
+                        else:
+                            val = str(raw_val)
 
                 else:
                     # Стандартная логика с ретраями для других полей
