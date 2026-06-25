@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import time as _time
 from pathlib import Path
 import platform
 import requests
@@ -18,6 +19,8 @@ def run_deepseek_ocr(file_path: str) -> str:
     """
     Выполняет OCR с использованием удаленной VLM-модели DeepSeek OCR через Ollama API.
     Поддерживает как изображения, так и PDF (автоматически конвертирует страницы PDF в картинки).
+    При ошибке на странице выполняет retry (по настройке deepseek_page_retries).
+    Только после исчерпания всех retry — переходит к fallback-движку (Tesseract).
     """
     path = Path(file_path)
     if not path.exists():
@@ -31,8 +34,10 @@ def run_deepseek_ocr(file_path: str) -> str:
     else:
         url = f"{base_url}/api/chat"
     model = settings.ollama_ocr_model
+    timeout = settings.deepseek_timeout_seconds
+    max_page_retries = settings.deepseek_page_retries
 
-    logger.info("running_remote_deepseek_ocr", file_path=file_path, url=url, model=model)
+    logger.info("running_remote_deepseek_ocr", file_path=file_path, url=url, model=model, timeout=timeout)
 
     # 1. Определяем тип документа
     is_pdf = path.suffix.lower() == ".pdf"
@@ -62,46 +67,71 @@ def run_deepseek_ocr(file_path: str) -> str:
         headers["Authorization"] = f"Bearer {settings.ollama_ocr_token}"
 
     for i, img in enumerate(images_to_process):
-        try:
-            # Сохраняем PIL Image в байты JPEG
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG")
-            img_bytes = buf.getvalue()
-            
-            b64_image = base64.b64encode(img_bytes).decode("utf-8")
+        last_exception: Exception | None = None
+        for attempt in range(max_page_retries):
+            try:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG")
+                img_bytes = buf.getvalue()
+                
+                b64_image = base64.b64encode(img_bytes).decode("utf-8")
 
-            payload = {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": "Extract the text in the image.",
-                        "images": [b64_image]
-                    }
-                ],
-                "stream": False
-            }
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Extract the text in the image.",
+                            "images": [b64_image]
+                        }
+                    ],
+                    "stream": False
+                }
 
-            # Таймаут 60 секунд на одну страницу
-            response = requests.post(url, json=payload, headers=headers, timeout=60.0)
-            
-            if response.status_code != 200:
-                logger.error(
-                    "deepseek_ocr_page_http_error",
+                response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+                
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"Ollama server returned status code {response.status_code} for page {i}"
+                    )
+
+                resp_data = response.json()
+                page_text = resp_data.get("message", {}).get("content", "").strip()
+                extracted_pages.append(page_text)
+                logger.info(
+                    "deepseek_ocr_page_completed",
                     page=i,
-                    status_code=response.status_code,
-                    response_text=response.text,
+                    attempt=attempt + 1,
+                    text_length=len(page_text),
                 )
-                raise RuntimeError(f"Ollama server returned status code {response.status_code} for page {i}")
+                last_exception = None
+                break
 
-            resp_data = response.json()
-            page_text = resp_data.get("message", {}).get("content", "").strip()
-            extracted_pages.append(page_text)
-            logger.info("deepseek_ocr_page_completed", page=i, text_length=len(page_text))
-            
-        except Exception as exc:
-            logger.exception("deepseek_ocr_page_failed", page=i, error=str(exc))
-            raise RuntimeError(f"DeepSeek OCR failed on page {i}: {exc}") from exc
+            except Exception as exc:
+                last_exception = exc
+                if attempt < max_page_retries - 1:
+                    backoff = 2.0 ** attempt
+                    logger.warning(
+                        "deepseek_ocr_page_retry",
+                        page=i,
+                        attempt=attempt + 1,
+                        max_retries=max_page_retries,
+                        backoff_seconds=backoff,
+                        error=str(exc),
+                    )
+                    _time.sleep(backoff)
+                else:
+                    logger.error(
+                        "deepseek_ocr_page_failed_all_retries",
+                        page=i,
+                        attempts=max_page_retries,
+                        error=str(exc),
+                    )
+
+        if last_exception is not None:
+            raise RuntimeError(
+                f"DeepSeek OCR failed on page {i} after {max_page_retries} retries: {last_exception}"
+            ) from last_exception
 
     extracted_text = "\n\n".join(extracted_pages).strip()
     

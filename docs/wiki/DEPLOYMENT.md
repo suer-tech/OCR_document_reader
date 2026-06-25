@@ -43,6 +43,18 @@ MKL_NUM_THREADS=8
 TOKENIZERS_PARALLELISM=true
 ```
 
+### 3.1. DeepSeek OCR (настройки таймаутов и retry)
+
+```ini
+# Таймаут (сек) на один запрос к DeepSeek OCR. Увеличен для сложных многостраничных документов.
+OCR_DEEPSEEK_TIMEOUT_SECONDS=500.0
+# Количество retries на одну страницу при ошибке/timeout DeepSeek OCR
+OCR_DEEPSEEK_PAGE_RETRIES=3
+```
+
+> [!NOTE]
+> **Heartbeat RabbitMQ отключён** (`heartbeat=0`) на уровне подключения pika, чтобы предотвратить разрыв соединения при долгой обработке документов (пайплайн может длиться несколько минут). При потере соединения воркер автоматически переподключается в цикле reconnection.
+
 ## 4. Запуск и Обслуживание
 
 1. **Запуск**:

@@ -188,7 +188,7 @@ async def process_pipeline_run(pipeline_run_id: str) -> None:
             session.add(text_version)
             session.commit()
 
-            fields = document_intel_service.simple_extract_fields(
+            fields = await document_intel_service.simple_extract_fields(
                 text=text,
                 profile_config=profile_config,
                 profile_id=profile_id,
