@@ -254,6 +254,37 @@ async def run_agent_extraction(
                 }
                 continue
 
+        if profile_id == "court_decision_ru" and field_name in ["case_number", "decision_date", "procedure_end_date", "procedure_end_date_is_calculated", "early_report_deadline"]:
+            from ocr_platform.services.court_decision_legacy_rules import (
+                extract_case_number, extract_decision_date,
+                extract_procedure_end_date_with_meta, extract_early_report_deadline
+            )
+            
+            val = None
+            if field_name == "case_number":
+                val = extract_case_number(text)
+                results[field_name] = {"value": val, "confidence": 1.0 if val else 0.0, "reasoning": "Extracted via legacy regex", "source": "regex_legacy"}
+            elif field_name == "decision_date":
+                val = extract_decision_date(text)
+                results[field_name] = {"value": val, "confidence": 1.0 if val else 0.0, "reasoning": "Extracted via legacy regex", "source": "regex_legacy"}
+            elif field_name == "procedure_end_date":
+                val, is_calc = extract_procedure_end_date_with_meta(text)
+                results[field_name] = {"value": val, "confidence": 1.0 if val else 0.0, "reasoning": "Extracted via legacy regex", "source": "regex_legacy"}
+                results["procedure_end_date_is_calculated"] = {
+                    "value": str(is_calc) if is_calc is not None else None,
+                    "confidence": 1.0 if is_calc is not None else 0.0,
+                    "reasoning": "Calculated alongside procedure_end_date via legacy regex",
+                    "source": "regex_legacy"
+                }
+            elif field_name == "procedure_end_date_is_calculated":
+                if field_name not in results:
+                    results[field_name] = {"value": None, "confidence": 0.0, "reasoning": "Not found", "source": "regex_legacy"}
+            elif field_name == "early_report_deadline":
+                ped = results.get("procedure_end_date", {}).get("value")
+                val, source_reason = extract_early_report_deadline(text, ped)
+                results[field_name] = {"value": val, "confidence": 1.0 if val else 0.0, "reasoning": "Extracted via legacy regex and procedure_end_date", "source": "regex_legacy"}
+            continue
+
         if extraction_method == "regex":
             pattern = field_def.get("regex_pattern")
             if pattern:
