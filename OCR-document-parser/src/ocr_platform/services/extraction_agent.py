@@ -293,10 +293,7 @@ async def run_agent_extraction(
                                 current_prompt = (
                                     f"{base_prompt}\n\n"
                                     f"CRITICAL WARNING: Your previous response did not follow the required JSON structure. "
-                                    f"You MUST return a JSON object with the keys: "
-                                    f"'creditor_header', 'creditor_inn', "
-                                    f"'creditor_body', 'creditor_web', 'creditor_final'. "
-                                    f"Make sure all five fields are present."
+                                    f"You MUST return a JSON object containing the key 'creditor_final'."
                                 )
                             elif is_null_retry:
                                 current_prompt = (
@@ -365,12 +362,25 @@ async def run_agent_extraction(
                             if is_valid_format:
                                 # Обогащаем reasoning SGR-данными
                                 sgr_reasoning_parts = []
-                                for k in ("creditor_header", "creditor_inn", "creditor_body", "creditor_web"):
+                                for k in ("creditor_name", "creditor_name_web", "creditor_header", "creditor_inn", "creditor_body", "creditor_web"):
                                     if k in sgr_data and sgr_data[k]:
                                         sgr_reasoning_parts.append(f"{k}: {sgr_data[k]}")
                                 if sgr_reasoning_parts:
                                     reasoning = f"{reasoning} | SGR: {'; '.join(sgr_reasoning_parts)}"
+                                
+                                if "confidence" in sgr_data and sgr_data["confidence"] is not None:
+                                    try:
+                                        confidence = float(sgr_data["confidence"])
+                                    except ValueError:
+                                        pass
+
                                 val = _clean_llm_string(creditor_name_extracted)
+                                break
+                            elif isinstance(raw_val, str) and len(raw_val.strip()) > 0 and not raw_val.strip().startswith("{"):
+                                # Fallback: treat string as the value напрямую, если модель упорно отказывается выдать JSON
+                                val = _clean_llm_string(raw_val)
+                                confidence = 0.5
+                                reasoning = f"{reasoning} | Fallback: accepted raw string as creditor name, reduced confidence."
                                 break
                             else:
                                 logger.warning(f"Invalid format for creditor field on format attempt {format_attempt}: {raw_val}")
