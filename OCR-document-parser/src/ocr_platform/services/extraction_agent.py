@@ -182,6 +182,20 @@ async def run_agent_extraction(
         extraction_method = field_def.get("extraction_method", "llm")
         logger.info(f"Extracting field {field_name} using method {extraction_method}")
 
+        if profile_id == "rtk" and not is_tax_document and field_name == "creditor_inn":
+            # Ищем первое упоминание ИНН и 10 или 12 цифр после него
+            inn_match = re.search(r'(?i:инн)[^\d]*(\d{10}|\d{12})\b', text)
+            if inn_match:
+                found_inn = inn_match.group(1)
+                logger.info(f"Creditor INN found via regex: {found_inn}")
+                results[field_name] = {
+                    "value": found_inn,
+                    "confidence": 1.0,
+                    "reasoning": "Found INN via regex (first occurrence after 'ИНН')",
+                    "source": "regex_fallback"
+                }
+                continue
+
         if extraction_method == "regex":
             pattern = field_def.get("regex_pattern")
             if pattern:
