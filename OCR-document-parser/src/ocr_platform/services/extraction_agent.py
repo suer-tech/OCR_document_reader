@@ -11,9 +11,39 @@ from ocr_platform.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Простая модель для структурированного вывода LLM для всех полей
-class FieldResult(BaseModel):
-    value: Any
+# Pydantic schemas for structured outputs
+from pydantic import Field
+
+class CreditorResult(BaseModel):
+    creditor_name: str | None = Field(description="Наименование кредитора, найденное в тексте, или null")
+    creditor_name_web: str | None = Field(description="Наименование из интернета, если использовался поиск, иначе null")
+    creditor_final: str | None = Field(description="ИТОГОВОЕ финальное наименование кредитора после анализа")
+    confidence: float
+    reasoning: str
+
+class CreditorInnResult(BaseModel):
+    INN: str | None = Field(description="10 или 12 цифр ИНН кредитора")
+    confidence: float
+    reasoning: str
+
+class ClaimsAmountResult(BaseModel):
+    commitments_count: int | None = Field(description="Количество отдельных обязательств/договоров, или null")
+    amounts: list[float] | None = Field(description="Список сумм для каждого обязательства, или null")
+    confidence: float
+    reasoning: str
+
+class GroundsResult(BaseModel):
+    grounds: str | None = Field(description="Точное значение из списка допустимых оснований, либо null")
+    confidence: float
+    reasoning: str
+
+class TaxCreditorHeaderResult(BaseModel):
+    creditor_header: str | None = Field(description="Наименование налоговой из шапки документа или null")
+    confidence: float
+    reasoning: str
+
+class GenericFieldResult(BaseModel):
+    value: Any = Field(description="Извлеченное значение поля, либо null")
     confidence: float
     reasoning: str | None
 
@@ -24,12 +54,24 @@ def _clean_llm_string(s: str | None) -> str | None:
     """Удаляет экранирующие бэкслеши и лишние кавычки только по краям строки."""
     if s is None:
         return None
-    # Сначала заменяем экранированные кавычки на нормальные
-    s = s.replace('\\"', '"').replace("\\'", "'").strip()
+    # Сначала удаляем любые литеральные бэкслеши
+    s = s.replace('\\"', '"').replace("\\'", "'").replace('\\', '').strip()
     
     # Удаляем кавычки, только если они обертывают всю строку (например, "ООО Ромашка")
     if len(s) >= 2 and ((s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'"))):
         s = s[1:-1].strip()
+        
+    # Если внутри остались прямые двойные кавычки, заменяем их на ёлочки «»,
+    # чтобы при сериализации в JSON не появлялись экранирующие слэши (\")
+    if '"' in s:
+        parts = s.split('"')
+        new_s = ""
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                new_s += part
+            else:
+                new_s += part + ("«" if i % 2 == 0 else "»")
+        s = new_s
         
     return s
 
@@ -51,37 +93,48 @@ model = OpenAIModel(
     api_key=settings.ollama_ocr_token or "ollama"
 )
 
-# PydanticAI Agent without tools
-extraction_agent = Agent(
-    model,
-    deps_type=str,  # Document text
-    result_type=FieldResult,
-    retries=2,
-    system_prompt=(
-        "You are an expert legal document analyst. "
-        "Extract the requested field accurately based on the provided text and instructions. "
-        "IMPORTANT: You MUST respond ONLY with raw, valid JSON matching the requested schema. "
-        "Do not wrap the JSON in markdown blocks like ```json ... ```. "
-        "Do not include any other text."
-    ),
+# Agents definitions
+SYSTEM_PROMPT = (
+    "You are an expert legal document analyst. "
+    "Extract the requested field accurately based on the provided text and instructions. "
+    "IMPORTANT: You MUST respond ONLY with raw, valid JSON matching the requested schema. "
+    "Do not wrap the JSON in markdown blocks like ```json ... ```. "
+    "Do not include any other text."
 )
 
-# PydanticAI Agent with tools
-extraction_agent_with_tools = Agent(
-    model,
-    deps_type=str,  # Document text
-    result_type=FieldResult,
-    retries=2,
-    system_prompt=(
-        "You are an expert legal document analyst. "
-        "Extract the requested field accurately based on the provided text and instructions. "
-        "IMPORTANT: You MUST respond ONLY with raw, valid JSON matching the requested schema. "
-        "Do not wrap the JSON in markdown blocks like ```json ... ```. "
-        "Do not include any other text."
-    ),
+agent_generic = Agent(
+    model, deps_type=str, result_type=GenericFieldResult, retries=3, system_prompt=SYSTEM_PROMPT
 )
-extraction_agent_with_tools.tool(search_creditor_inn)
-extraction_agent_with_tools.tool(search_creditor_name)
+
+agent_generic_with_tools = Agent(
+    model, deps_type=str, result_type=GenericFieldResult, retries=3, system_prompt=SYSTEM_PROMPT
+)
+agent_generic_with_tools.tool(search_creditor_inn)
+agent_generic_with_tools.tool(search_creditor_name)
+
+agent_creditor = Agent(
+    model, deps_type=str, result_type=CreditorResult, retries=3, system_prompt=SYSTEM_PROMPT
+)
+agent_creditor.tool(search_creditor_inn)
+agent_creditor.tool(search_creditor_name)
+
+agent_creditor_inn = Agent(
+    model, deps_type=str, result_type=CreditorInnResult, retries=3, system_prompt=SYSTEM_PROMPT
+)
+agent_creditor_inn.tool(search_creditor_inn)
+agent_creditor_inn.tool(search_creditor_name)
+
+agent_claims_amount = Agent(
+    model, deps_type=str, result_type=ClaimsAmountResult, retries=3, system_prompt=SYSTEM_PROMPT
+)
+
+agent_grounds = Agent(
+    model, deps_type=str, result_type=GroundsResult, retries=3, system_prompt=SYSTEM_PROMPT
+)
+
+agent_tax_creditor = Agent(
+    model, deps_type=str, result_type=TaxCreditorHeaderResult, retries=3, system_prompt=SYSTEM_PROMPT
+)
 
 # Вспомогательные модели и агенты для верификации кредитора
 class CompanyNameResult(BaseModel):
@@ -227,47 +280,26 @@ async def run_agent_extraction(
                         base_prompt = f"ВНИМАНИЕ! Для данного документа мы уже определили точное наименование кредитора (налогового органа): '{creditor_name}'.\nТы ОБЯЗАН использовать именно это наименование '{creditor_name}' для вызова инструмента search_creditor_inn, чтобы найти его ИНН в интернете.\n\n{base_prompt}"
                         # Allow to fall through to normal LLM extraction
 
-                # Специальная логика для creditor (JSON валидация, ретраи с усилением промпта и проверка по ИНН)
                 if field_name == "creditor":
                     if is_tax_document:
                         prompt_instruction = """МЕТОДОЛОГИЯ АНАЛИЗА (SGR / Step-by-Step Reasoning):
       Сначала выполни пошаговые рассуждения в поле "reasoning" строго следуя шагам:
-      1. Шаг 1: Найди наименование и номер межрайонной налоговой инспекции в шапке документа. Оно может начинаться со слова "Межрайонная" и заканчиваться наименованием области или республики или края. Например: "МЕЖРАЙОННАЯ ИНСПЕКЦИЯ ФЕДЕРАЛЬНОЙ НАЛОГОВОЙ СЛУЖБЫ № 5 ПО ОМСКОЙ ОБЛАСТИ" или "МЕЖРАЙОННАЯ ИНСПЕКЦИЯ ФЕДЕРАЛЬНОЙ НАЛОГОВОЙ СЛУЖБЫ № 9 ПО РЕСПУБЛИКЕ БАШКОРТОСТАН"
-              
-      2. Шаг 2. ДАЙ ОТВЕТ В ФОРМАТЕ:
-      Верни JSON-объект со следующими полями:
-      {
-        "creditor_header": "наименование и номер межрайонной налоговой испекции из шапки документа или null"
-      }      
-      Если наименование межрайонной инспекции не удалось определить — верни null в "creditor_header".
-      
-      В поле "confidence" оцени уверенность (0.9 если уверен, 0.5 если сомневаешься)."""
+      1. Шаг 1: Найди наименование и номер межрайонной налоговой инспекции в шапке документа.
+      2. Шаг 2. Верни значение в поле creditor_header, оцени confidence."""
                         base_prompt = f"Instruction: {prompt_instruction}\n\nDocument Text:\n{text[:10000]}"
                         
+                        agent = agent_tax_creditor
                         max_attempts = 3
                         val = None
                         confidence = 0.0
                         reasoning = ""
                         for attempt in range(1, max_attempts + 1):
                             try:
-                                result = await extraction_agent.run(base_prompt, deps=text)
-                                raw_val = result.data.value
+                                result = await agent.run(base_prompt, deps=text)
+                                val = result.data.creditor_header
                                 confidence = result.data.confidence
                                 reasoning = result.data.reasoning
-                                
-                                if isinstance(raw_val, dict) and "creditor_header" in raw_val:
-                                    val = raw_val["creditor_header"]
-                                    break
-                                elif isinstance(raw_val, str):
-                                    stripped = raw_val.strip()
-                                    if stripped.startswith("{"):
-                                        try:
-                                            import json
-                                            parsed = json.loads(stripped)
-                                            val = parsed.get("creditor_header")
-                                            break
-                                        except Exception:
-                                            pass
+                                break
                             except Exception as e:
                                 logger.warning(f"LLM extraction attempt {attempt} failed for tax creditor: {e}")
                                 if attempt == max_attempts:
@@ -288,33 +320,17 @@ async def run_agent_extraction(
                     if known_inn:
                         base_prompt = f"ВНИМАНИЕ! Ранее по этому документу был найден ИНН кредитора: {known_inn}\nИспользуй этот ИНН для вызова инструмента search_creditor_name.\n\n{base_prompt}"
                         
-                    CREDITOR_KEY = "creditor_final"
+                    agent = agent_creditor
                     CREDITOR_RETRIES = 3
                     val = None
                     confidence = 0.0
                     reasoning = ""
 
                     for creditor_attempt in range(1, CREDITOR_RETRIES + 1):
-                        is_null_retry = False
+                        current_prompt = base_prompt
                         if creditor_attempt > 1:
                             if not val and known_inn:
-                                is_null_retry = True
                                 logger.info(f"Creditor extraction retry {creditor_attempt}/{CREDITOR_RETRIES} due to null value with known INN {known_inn}")
-                            else:
-                                logger.info(f"Creditor extraction retry {creditor_attempt}/{CREDITOR_RETRIES} due to recognition error")
-                            val = None
-                            confidence = 0.0
-                            reasoning = ""
-
-                        max_format_attempts = 3
-                        for format_attempt in range(1, max_format_attempts + 1):
-                            if format_attempt > 1:
-                                current_prompt = (
-                                    f"{base_prompt}\n\n"
-                                    f"CRITICAL WARNING: Your previous response did not follow the required JSON structure. "
-                                    f"You MUST return a JSON object containing the key 'creditor_final'."
-                                )
-                            elif is_null_retry:
                                 current_prompt = (
                                     f"{base_prompt}\n\n"
                                     f"CRITICAL WARNING: You previously returned null for the creditor name. "
@@ -324,89 +340,56 @@ async def run_agent_extraction(
                                     f"Ни в коем случае не возвращай null!"
                                 )
                             else:
-                                current_prompt = base_prompt
+                                logger.info(f"Creditor extraction retry {creditor_attempt}/{CREDITOR_RETRIES} due to recognition error")
 
-                            # Вызов LLM с ретраями при любых ошибках
-                            max_attempts = 3
-                            for attempt in range(1, max_attempts + 1):
-                                try:
-                                    agent = extraction_agent_with_tools if extraction_method == "llm_with_tools" else extraction_agent
-                                    result = await agent.run(current_prompt, deps=text)
-                                    break
-                                except Exception as e:
-                                    logger.warning(f"LLM call attempt {attempt} failed for field creditor: {e}")
-                                    if attempt == max_attempts:
-                                        raise e
-                                    if attempt == 2:
-                                        logger.info("Pausing for 15 seconds after the second failed attempt...")
-                                        await asyncio.sleep(15)
+                        max_attempts = 3
+                        for attempt in range(1, max_attempts + 1):
+                            try:
+                                result = await agent.run(current_prompt, deps=text)
+                                break
+                            except Exception as e:
+                                logger.warning(f"LLM call attempt {attempt} failed for field creditor: {e}")
+                                if attempt == max_attempts:
+                                    raise e
+                                if attempt == 2:
+                                    logger.info("Pausing for 15 seconds after the second failed attempt...")
+                                    await asyncio.sleep(15)
 
-                            raw_val = result.data.value
-                            confidence = result.data.confidence
-                            reasoning = result.data.reasoning
-
-                            # Валидация формата
-                            is_valid_format = False
-                            creditor_name_extracted = None
-                            sgr_data = {}
-
-                            if isinstance(raw_val, dict):
-                                sgr_data = raw_val
-                                if CREDITOR_KEY in raw_val:
-                                    creditor_name_extracted = raw_val[CREDITOR_KEY]
-                                    is_valid_format = True
-                            elif isinstance(raw_val, str):
-                                stripped = raw_val.strip()
-                                if stripped.startswith("{"):
-                                    try:
-                                        import ast
-                                        parsed = ast.literal_eval(stripped)
-                                        if isinstance(parsed, dict):
-                                            sgr_data = parsed
-                                            if CREDITOR_KEY in parsed:
-                                                creditor_name_extracted = parsed[CREDITOR_KEY]
-                                                is_valid_format = True
-                                    except Exception:
-                                        try:
-                                            import json
-                                            parsed = json.loads(stripped)
-                                            if isinstance(parsed, dict):
-                                                sgr_data = parsed
-                                                if CREDITOR_KEY in parsed:
-                                                    creditor_name_extracted = parsed[CREDITOR_KEY]
-                                                    is_valid_format = True
-                                        except Exception:
-                                            pass
-
-                            if is_valid_format:
-                                # Обогащаем reasoning SGR-данными
-                                sgr_reasoning_parts = []
-                                for k in ("creditor_name", "creditor_name_web", "creditor_header", "creditor_inn", "creditor_body", "creditor_web"):
-                                    if k in sgr_data and sgr_data[k]:
-                                        sgr_reasoning_parts.append(f"{k}: {sgr_data[k]}")
-                                if sgr_reasoning_parts:
-                                    reasoning = f"{reasoning} | SGR: {'; '.join(sgr_reasoning_parts)}"
+                        tool_called = False
+                        try:
+                            msgs_str = str(result.all_messages())
+                            if "search_creditor_name" in msgs_str:
+                                tool_called = True
+                        except Exception:
+                            pass
+                        
+                        if not is_tax_document and known_inn and not tool_called:
+                            cleaned_inn = "".join(c for c in str(known_inn) if c.isdigit())
+                            if len(cleaned_inn) in (10, 12):
+                                logger.info(f"LLM hallucinated and didn't call search_creditor_name. Forcing manual call for INN: {cleaned_inn}")
+                                tool_result_text = _search_by_inn(cleaned_inn) or "Company name not found"
                                 
-                                if "confidence" in sgr_data and sgr_data["confidence"] is not None:
-                                    try:
-                                        confidence = float(sgr_data["confidence"])
-                                    except ValueError:
-                                        pass
+                                forced_prompt = (
+                                    f"{current_prompt}\n\n"
+                                    f"ВНИМАНИЕ! Ты проигнорировал требование вызвать инструмент поиска имени по ИНН. Я вызвал его принудительно.\n"
+                                    f"Результат поиска по ИНН {cleaned_inn}:\n{tool_result_text}\n"
+                                    f"Учитывая эти данные поиска, извлеки корректное официальное наименование кредитора и верни JSON."
+                                )
+                                try:
+                                    result = await agent.run(forced_prompt, deps=text)
+                                except Exception as e:
+                                    logger.warning(f"Forced LLM call failed for field creditor: {e}")
 
-                                val = _clean_llm_string(creditor_name_extracted)
-                                break
-                            elif isinstance(raw_val, str) and len(raw_val.strip()) > 0 and not raw_val.strip().startswith("{"):
-                                # Fallback: treat string as the value напрямую, если модель упорно отказывается выдать JSON
-                                val = _clean_llm_string(raw_val)
-                                confidence = 0.5
-                                reasoning = f"{reasoning} | Fallback: accepted raw string as creditor name, reduced confidence."
-                                break
-                            else:
-                                logger.warning(f"Invalid format for creditor field on format attempt {format_attempt}: {raw_val}")
-                                if format_attempt == max_format_attempts:
-                                    raise ValueError(f"Failed to obtain valid JSON format with '{CREDITOR_KEY}' after {max_format_attempts} attempts. Last value: {raw_val}")
+                        data = result.data
+                        val = _clean_llm_string(data.creditor_final)
+                        confidence = data.confidence
+                        
+                        sgr_reasoning_parts = []
+                        if data.creditor_name: sgr_reasoning_parts.append(f"creditor_name: {data.creditor_name}")
+                        if data.creditor_name_web: sgr_reasoning_parts.append(f"creditor_name_web: {data.creditor_name_web}")
+                        reasoning = f"{data.reasoning} | SGR: {'; '.join(sgr_reasoning_parts)}"
 
-                        # Сверка названия кредитора по ИНН через интернет (только если есть val)
+                        # Сверка названия кредитора по ИНН через интернет
                         if val:
                             inn = results.get("creditor_inn", {}).get("value")
                             if inn:
@@ -436,112 +419,43 @@ async def run_agent_extraction(
                                                 confidence = 0.0
                                                 reasoning = f"{reasoning} | CRITICAL MISMATCH with registry for INN {cleaned_inn} (internet: {web_company_name})."
 
-                        # Если получили нормальное значение — выходим из цикла ретраев
                         if val != "Ошибка распознавания":
                             if not val and known_inn:
                                 if creditor_attempt < CREDITOR_RETRIES:
-                                    continue # Идем на ретрай с усиленным промптом
+                                    continue
                             break
 
                 elif field_name == "claims_amount":
-                    CLAIMS_RETRIES = 3
-                    val = None
-                    confidence = 0.0
-                    reasoning = ""
-
-                    for claims_attempt in range(1, CLAIMS_RETRIES + 1):
-                        if claims_attempt > 1:
-                            logger.info(f"Claims_amount retry {claims_attempt}/{CLAIMS_RETRIES} due to null value")
-                            val = None
-                            confidence = 0.0
-                            reasoning = ""
-
-                        max_format_attempts = 3
-                        for format_attempt in range(1, max_format_attempts + 1):
-                            if format_attempt > 1:
-                                current_prompt = (
-                                    f"{base_prompt}\n\n"
-                                    f"CRITICAL WARNING: Your previous response did not follow the required JSON structure. "
-                                    f"You MUST return a JSON object with keys 'commitments_count' (integer) and 'amounts' (list of plain numbers). "
-                                    f"Format: {{\"commitments_count\": <int>, \"amounts\": [<float>, ...]}}"
-                                    f"Do NOT include textual descriptions, units, or non-numeric characters in the amounts."
-                                )
-                            else:
-                                current_prompt = base_prompt
-
-                            max_attempts = 3
-                            for attempt in range(1, max_attempts + 1):
-                                try:
-                                    result = await extraction_agent.run(current_prompt, deps=text)
-                                    break
-                                except Exception as e:
-                                    logger.warning(f"LLM call attempt {attempt} failed for field claims_amount: {e}")
-                                    if attempt == max_attempts:
-                                        raise e
-                                    if attempt == 2:
-                                        logger.info("Pausing for 15 seconds after the second failed attempt...")
-                                        await asyncio.sleep(15)
-
-                            raw_value = result.data.value
-                            confidence = result.data.confidence
-                            reasoning = result.data.reasoning
-
-                            parsed = None
-                            if isinstance(raw_value, dict):
-                                parsed = raw_value
-                            elif isinstance(raw_value, str):
-                                stripped = raw_value.strip()
-                                if stripped.startswith("{"):
-                                    try:
-                                        import ast
-                                        parsed = ast.literal_eval(stripped)
-                                    except Exception:
-                                        try:
-                                            import json
-                                            parsed = json.loads(stripped)
-                                        except Exception:
-                                            pass
-
-                            if isinstance(parsed, dict):
-                                commitments_count = parsed.get("commitments_count")
-                                amounts = parsed.get("amounts")
-
-                                if commitments_count is not None and isinstance(amounts, list) and len(amounts) > 0:
-                                    try:
-                                        numeric_amounts = []
-                                        for a in amounts:
-                                            # Remove spaces and non-numeric chars except . and -
-                                            cleaned = str(a).replace(" ", "").replace(",", ".")
-                                            numeric_amounts.append(float(cleaned))
-                                        total = sum(numeric_amounts)
-                                        val = f"{total:.2f}" if total > 0 else None
-                                        break
-                                    except (ValueError, TypeError) as e:
-                                        logger.warning(f"Claims_amount parse error (attempt {format_attempt}): {e}. Raw amounts: {amounts}")
-                                        if format_attempt == max_format_attempts:
-                                            val = None
-                                            confidence = 0.0
-                                            reasoning = f"Failed to parse numeric amounts after {max_format_attempts} attempts. Last value: {raw_value}"
-                                else:
-                                    logger.warning(f"Invalid claims_amount format (attempt {format_attempt}): missing commitments_count or amounts. Got: {parsed}")
-                                    if format_attempt == max_format_attempts:
-                                        val = None
-                                        confidence = 0.0
-                                        reasoning = f"Failed to obtain valid format after {max_format_attempts} attempts. Last value: {raw_value}"
-                            else:
-                                logger.warning(f"Invalid claims_amount format (attempt {format_attempt}): not a dict. Got: {raw_value}")
-                                if format_attempt == max_format_attempts:
-                                    val = None
-                                    confidence = 0.0
-                                    reasoning = f"Failed to obtain valid JSON format after {max_format_attempts} attempts. Last value: {raw_value}"
-
-                        if val is not None:
+                    agent = agent_claims_amount
+                    max_attempts = 3
+                    for attempt in range(1, max_attempts + 1):
+                        try:
+                            result = await agent.run(base_prompt, deps=text)
                             break
+                        except Exception as e:
+                            logger.warning(f"LLM call attempt {attempt} failed for field claims_amount: {e}")
+                            if attempt == max_attempts:
+                                raise e
+                            if attempt == 2:
+                                await asyncio.sleep(15)
+
+                    data = result.data
+                    confidence = data.confidence
+                    reasoning = data.reasoning
+                    
+                    if data.commitments_count is not None and isinstance(data.amounts, list) and len(data.amounts) > 0:
+                        total = sum(data.amounts)
+                        val = f"{total:.2f}" if total > 0 else None
+                    else:
+                        val = None
 
                 elif field_name == "grounds":
-                    VALID_GROUNDS = [
+                    # Парсим допустимые значения из промпта
+                    parsed_grounds = re.findall(r'-\s*"([^"]+)"', prompt_instruction)
+                    VALID_GROUNDS = parsed_grounds if parsed_grounds else [
                         "договор на предоставление коммунальных услуг",
                         "кредитный договор",
+                        "соглашение о кредитовании",
                         "договор потребительского микрозайма",
                         "договор потребительского займа",
                         "договор банковского счета",
@@ -555,56 +469,69 @@ async def run_agent_extraction(
                         "судебный акт",
                         "административное правонарушение"
                     ]
-                    GROUNDS_RETRIES = 3
+                    agent = agent_grounds
+                    max_attempts = 3
                     val = None
                     confidence = 0.0
                     reasoning = ""
 
-                    for attempt in range(1, GROUNDS_RETRIES + 1):
-                        current_prompt = base_prompt
-                        if attempt > 1:
-                            logger.info(f"Grounds retry {attempt}/{GROUNDS_RETRIES} due to invalid value: {val}")
-                            valid_list_str = "\\n- ".join(VALID_GROUNDS)
-                            current_prompt = (
-                                f"{base_prompt}\n\n"
-                                f"CRITICAL WARNING: Your previous response '{val}' is INVALID. "
-                                f"You MUST return an EXACT match from the following list ONLY:\n- {valid_list_str}\n\n"
-                                f"Do NOT invent new categories. Pick the closest exact match from the list above."
-                            )
+                    current_prompt = base_prompt
 
+                    for attempt in range(1, max_attempts + 1):
                         try:
-                            agent = extraction_agent_with_tools if extraction_method == "llm_with_tools" else extraction_agent
                             result = await agent.run(current_prompt, deps=text)
                         except Exception as e:
                             logger.warning(f"LLM call attempt {attempt} failed for field grounds: {e}")
-                            if attempt == GROUNDS_RETRIES:
+                            if attempt == max_attempts:
                                 raise e
                             await asyncio.sleep(5)
                             continue
 
-                        raw_val = result.data.value
-                        confidence = result.data.confidence
-                        reasoning = result.data.reasoning
+                        data = result.data
+                        confidence = data.confidence
+                        reasoning = data.reasoning
+                        
+                        clean_val_str = "null"
+                        if data.grounds:
+                            clean_val_str = str(data.grounds).strip().lower().strip("'.\",")
 
-                        # Validate
-                        if isinstance(raw_val, str):
-                            clean_val = raw_val.strip().lower()
-                            # Sometimes LLM puts quotes or periods at the end
-                            clean_val = clean_val.strip("'.\",")
-                            if clean_val in VALID_GROUNDS:
-                                val = clean_val
+                        if clean_val_str in ("null", "none", ""):
+                            val = None
+                            break
+
+                        # Проверяем регулярками (принудительно для РТК, но можно и для всех)
+                        if profile_id == "rtk":
+                            matched_ground = None
+                            for vg in VALID_GROUNDS:
+                                if re.search(r'\b' + re.escape(vg.lower()) + r'(?:$|\b)', clean_val_str, re.IGNORECASE | re.UNICODE):
+                                    matched_ground = vg
+                                    break
+
+                            if matched_ground:
+                                val = matched_ground
                                 break
                             else:
-                                val = clean_val
+                                logger.warning(f"Grounds validation failed on attempt {attempt}: '{clean_val_str}' not in VALID_GROUNDS.")
+                                if attempt < max_attempts:
+                                    current_prompt = (
+                                        f"{base_prompt}\n\n"
+                                        f"CRITICAL WARNING: В предыдущей попытке ты вернул значение '{clean_val_str}', которое НЕ ЯВЛЯЕТСЯ точным совпадением.\n"
+                                        f"Твой ответ должен СТРОГО соответствовать одному из этих значений: {', '.join(VALID_GROUNDS)}.\n"
+                                        f"Если в тексте нет ничего похожего, верни null. Не придумывай свои варианты!"
+                                    )
+                                else:
+                                    # Принудительная проверка - если так и не совпало, возвращаем null
+                                    val = None
                         else:
-                            val = str(raw_val)
+                            # Для других профилей просто берем значение
+                            val = clean_val_str
+                            break
 
-                else:
-                    # Стандартная логика с ретраями для других полей
+                elif field_name == "creditor_inn":
+                    agent = agent_creditor_inn if extraction_method == "llm_with_tools" else agent_generic
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         try:
-                            agent = extraction_agent_with_tools if extraction_method == "llm_with_tools" else extraction_agent
                             result = await agent.run(base_prompt, deps=text)
                             break
                         except Exception as e:
@@ -612,36 +539,40 @@ async def run_agent_extraction(
                             if attempt == max_attempts:
                                 raise e
                             if attempt == 2:
-                                logger.info("Pausing for 15 seconds after the second failed attempt...")
                                 await asyncio.sleep(15)
 
-                    val = result.data.value
-                    confidence = result.data.confidence
-                    reasoning = result.data.reasoning
+                    data = result.data
+                    confidence = data.confidence
+                    reasoning = data.reasoning
+                    val = None
+                    
+                    if hasattr(data, "INN"):
+                        if data.INN:
+                            inn_match = re.search(r'\d{10,12}', str(data.INN))
+                            val = inn_match.group(0) if inn_match else data.INN
+                    else:
+                        if data.value:
+                            inn_match = re.search(r'\d{10,12}', str(data.value))
+                            val = inn_match.group(0) if inn_match else data.value
 
-                    # Постобработка для ИНН
-                    if field_name == "creditor_inn":
-                        inn_value = None
-                        if isinstance(val, dict):
-                            inn_value = val.get("INN") or val.get("inn") or val.get("value")
-                        elif isinstance(val, str):
-                            stripped = val.strip()
-                            if stripped.startswith("{"):
-                                try:
-                                    import ast
-                                    parsed = ast.literal_eval(stripped)
-                                    if isinstance(parsed, dict):
-                                        inn_value = parsed.get("INN") or parsed.get("inn") or parsed.get("value")
-                                except (ValueError, SyntaxError):
-                                    inn_match = re.search(r'\d{10,12}', stripped)
-                                    inn_value = inn_match.group(0) if inn_match else stripped
-                            else:
-                                inn_match = re.search(r'\d{10,12}', stripped)
-                                inn_value = inn_match.group(0) if inn_match else stripped
-                        val = inn_value
+                else:
+                    agent = agent_generic_with_tools if extraction_method == "llm_with_tools" else agent_generic
+                    max_attempts = 3
+                    for attempt in range(1, max_attempts + 1):
+                        try:
+                            result = await agent.run(base_prompt, deps=text)
+                            break
+                        except Exception as e:
+                            logger.warning(f"LLM extraction attempt {attempt} failed for field {field_name}: {e}")
+                            if attempt == max_attempts:
+                                raise e
+                            if attempt == 2:
+                                await asyncio.sleep(15)
 
-                    elif isinstance(val, dict):
-                        val = str(val)
+                    data = result.data
+                    val = data.value
+                    confidence = data.confidence
+                    reasoning = data.reasoning
 
                 results[field_name] = {
                     "value": val,
@@ -649,6 +580,7 @@ async def run_agent_extraction(
                     "reasoning": reasoning,
                     "source": extraction_method
                 }
+
             except Exception as e:
                 import pydantic_ai
                 raw_text = "Unknown"

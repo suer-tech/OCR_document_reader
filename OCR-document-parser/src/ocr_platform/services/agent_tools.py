@@ -79,6 +79,23 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
     except Exception as exc:
         logger.warning("ddg_search_failed", error=str(exc))
 
+    # --- Шаг 2: Фоллбэк на прямой HTML запрос к DuckDuckGo ---
+    logger.info("fallback_to_ddg_html_for_inn", creditor_name=creditor_name)
+    try:
+        query = f"{creditor_name} ИНН"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        resp = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for a in soup.find_all('a', class_='result__snippet')[:5]:
+                snippet = a.text
+                inn = _extract_inn_from_text(snippet)
+                if inn:
+                    logger.info("inn_found_in_html_snippet", inn=inn)
+                    return f"Found INN: {inn}"
+    except Exception as exc:
+        logger.warning("ddg_html_fallback_failed", error=str(exc))
+
     return "INN not found. Could not locate the INN for the given creditor name via web search."
 
 
@@ -110,6 +127,26 @@ def _search_by_inn(inn: str) -> str | None:
                     texts.append(f"Source URL: {page_url}\n{page_text[:2000]}")
     except Exception as exc:
         logger.warning("ddg_search_failed_in_name_search", error=str(exc))
+
+    # --- Step 2: Fallback to direct DuckDuckGo HTML ---
+    if not texts:
+        logger.info("fallback_to_ddg_html_for_name", inn=inn)
+        try:
+            query = f"ИНН {inn} реквизиты организация"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            resp = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                results = soup.find_all('div', class_='result')
+                for res in results[:3]:
+                    title_elem = res.find('h2', class_='result__title')
+                    snippet_elem = res.find('a', class_='result__snippet')
+                    if title_elem and snippet_elem:
+                        title = title_elem.text.strip()
+                        snippet = snippet_elem.text.strip()
+                        texts.append(f"Title: {title}\nSnippet: {snippet}\n")
+        except Exception as exc:
+            logger.warning("ddg_html_fallback_failed", error=str(exc))
 
     if not texts:
         return None

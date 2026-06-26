@@ -36,6 +36,7 @@
 - Бизнес-логика и вызовы ML/AI сервисов.
 - **`ocr_service.py`**: Извлечение текста (pdfplumber) и запуск OCR (DeepSeek OCR, Tesseract).
 - **`document_intel_service.py`**: Запуск NLP-экстрактора для получения структурированных полей.
+- **`extraction_agent.py`**: Запуск LLM-агентов (PydanticAI) для извлечения полей со строгой типизацией (Structured Outputs).
 - **`validation_service.py`**: Проверка форматов (ИНН, даты, суммы) и согласованности.
 - **`quality_service.py`**: Подсчет Quality Score.
 
