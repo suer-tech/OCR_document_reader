@@ -122,9 +122,7 @@ def _search_by_inn(inn: str) -> str | None:
             texts.append(snippet)
             page_url = r.get("href", "")
             if page_url:
-                page_text = _fetch_page_text(page_url)
-                if page_text:
-                    texts.append(f"Source URL: {page_url}\n{page_text[:2000]}")
+                texts.append(f"Source URL: {page_url}\n")
     except Exception as exc:
         logger.warning("ddg_search_failed_in_name_search", error=str(exc))
 
