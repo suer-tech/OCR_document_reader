@@ -21,11 +21,16 @@ from ocr_platform.services.agent_tools import search_creditor_inn, search_credit
 
 
 def _clean_llm_string(s: str | None) -> str | None:
-    """Удаляет экранирующие бэкслеши и все кавычки в строке, возвращённой LLM."""
+    """Удаляет экранирующие бэкслеши и лишние кавычки только по краям строки."""
     if s is None:
         return None
-    s = s.replace('\\"', '"').replace("\\'", "'")
-    s = s.replace('"', '').replace("'", '')
+    # Сначала заменяем экранированные кавычки на нормальные
+    s = s.replace('\\"', '"').replace("\\'", "'").strip()
+    
+    # Удаляем кавычки, только если они обертывают всю строку (например, "ООО Ромашка")
+    if len(s) >= 2 and ((s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'"))):
+        s = s[1:-1].strip()
+        
     return s
 
 from pydantic_ai.models.openai import OpenAIModel
