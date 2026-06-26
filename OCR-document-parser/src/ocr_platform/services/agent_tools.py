@@ -44,23 +44,11 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
     """Search for the INN of a creditor by their name using zachestnyibiznes.ru and DuckDuckGo fallback."""
     logger.info("web_search_creditor_inn", creditor_name=creditor_name)
 
-    # --- Шаг 1: zachestnyibiznes.ru (поиск по названию) ---
-    try:
-        url = f"https://zachestnyibiznes.ru/search?query={requests.utils.quote(creditor_name)}"
-        page_text = _fetch_page_text(url, timeout=10)
-        if page_text:
-            inn = _extract_inn_from_text(page_text)
-            if inn:
-                logger.info("inn_found_zachestnyibiznes", inn=inn)
-                return f"Found INN: {inn}"
-    except Exception as exc:
-        logger.warning("zachestnyibiznes_failed", error=str(exc))
-
-    # --- Шаг 2: DuckDuckGo поиск ---
+    # --- Шаг 1: DuckDuckGo поиск ---
     try:
         from duckduckgo_search import DDGS
 
-        query = f"{creditor_name} ИНН реквизиты юридическое лицо"
+        query = f"{creditor_name} ИНН"
         with DDGS() as ddg:
             results = list(ddg.text(query, max_results=5, safesearch="off"))
 
@@ -105,16 +93,7 @@ def _search_by_inn(inn: str) -> str | None:
     logger.info("search_by_inn", inn=inn)
     texts = []
 
-    # --- Step 1: zachestnyibiznes.ru query ---
-    try:
-        url = f"https://zachestnyibiznes.ru/search?query={inn}"
-        page_text = _fetch_page_text(url, timeout=10)
-        if page_text:
-            texts.append(f"Source zachestnyibiznes.ru:\n{page_text[:4000]}")
-    except Exception as exc:
-        logger.warning("zachestnyibiznes_failed_in_name_search", error=str(exc))
-
-    # --- Step 2: DuckDuckGo search fallback ---
+    # --- Step 1: DuckDuckGo search ---
     try:
         from duckduckgo_search import DDGS
         query = f"ИНН {inn} реквизиты организация"
