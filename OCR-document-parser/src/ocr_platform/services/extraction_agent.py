@@ -357,11 +357,13 @@ async def run_agent_extraction(
 
                         tool_called = False
                         try:
-                            msgs_str = str(result.all_messages())
-                            if "search_creditor_name" in msgs_str:
-                                tool_called = True
-                        except Exception:
-                            pass
+                            for msg in result.all_messages():
+                                if hasattr(msg, 'parts'):
+                                    for part in msg.parts:
+                                        if hasattr(part, 'tool_name') and getattr(part, 'tool_name') == 'search_creditor_name':
+                                            tool_called = True
+                        except Exception as e:
+                            logger.error(f"Error checking tool calls: {e}")
                         
                         if not is_tax_document and known_inn and not tool_called:
                             cleaned_inn = "".join(c for c in str(known_inn) if c.isdigit())
