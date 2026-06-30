@@ -29,7 +29,7 @@ services:
       OCR_OPENROUTER_BASE_URL: ${OCR_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       OCR_ENGINE: ${OCR_ENGINE:-tesseract}
       OCR_OLLAMA_OCR_URL: ${OCR_OLLAMA_OCR_URL:-http://localhost:11434}
-      OCR_OLLAMA_OCR_MODEL: ${OCR_OLLAMA_OCR_MODEL:-deepseek-ocr:latest}
+      OCR_OLLAMA_OCR_MODEL: ${OCR_OLLAMA_OCR_MODEL:-glm-ocr}
       OCR_OLLAMA_OCR_TOKEN: ${OCR_OLLAMA_OCR_TOKEN:-}
       OMP_NUM_THREADS: '10'
       MKL_NUM_THREADS: '10'
@@ -77,7 +77,7 @@ services:
       OCR_OPENROUTER_BASE_URL: ${OCR_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       OCR_ENGINE: ${OCR_ENGINE:-tesseract}
       OCR_OLLAMA_OCR_URL: ${OCR_OLLAMA_OCR_URL:-http://localhost:11434}
-      OCR_OLLAMA_OCR_MODEL: ${OCR_OLLAMA_OCR_MODEL:-deepseek-ocr:latest}
+      OCR_OLLAMA_OCR_MODEL: ${OCR_OLLAMA_OCR_MODEL:-glm-ocr}
       OCR_OLLAMA_OCR_TOKEN: ${OCR_OLLAMA_OCR_TOKEN:-}
       OMP_NUM_THREADS: '10'
       MKL_NUM_THREADS: '10'

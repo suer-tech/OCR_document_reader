@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from time import perf_counter
 
@@ -33,6 +34,8 @@ from ocr_platform.storage import models, repository
 
 logger = get_logger(__name__)
 
+GLOBAL_PIPELINE_TIMEOUT = 1800
+
 
 async def _trigger_webhook_safely(webhook_url: str | None, payload: dict) -> None:
     if not webhook_url:
@@ -58,6 +61,27 @@ async def _trigger_webhook_safely(webhook_url: str | None, payload: dict) -> Non
 
 
 async def process_pipeline_run(pipeline_run_id: str) -> None:
+    try:
+        await asyncio.wait_for(
+            _process_pipeline_run_impl(pipeline_run_id),
+            timeout=GLOBAL_PIPELINE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "pipeline_timed_out",
+            pipeline_run_id=pipeline_run_id,
+            timeout=GLOBAL_PIPELINE_TIMEOUT,
+        )
+        with repository.get_session() as session:
+            run = session.get(models.PipelineRun, pipeline_run_id)
+            if run:
+                run.status = "failed"
+                run.last_error = f"Pipeline timed out after {GLOBAL_PIPELINE_TIMEOUT}s"
+                run.finished_at = datetime.utcnow()
+                session.commit()
+
+
+async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
     document_id = None
     webhook_url = None
     profile_id = "unknown"
@@ -96,13 +120,19 @@ async def process_pipeline_run(pipeline_run_id: str) -> None:
             content_type = file_rec.file_type
             storage_path = file_rec.storage_path
         # Извлечение текста: pdfplumber → pymupdf → OCR (для PDF без текстового слоя)
-        extracted_text, ocr_was_used, ocr_latency_ms, text_source = (
-            ocr_service.extract_text_at_ingest(
-                storage_path,
-                content_type,
-                document_id=document_id,
-                pipeline_run_id=pipeline_run_id,
-            )
+        import asyncio
+
+        (
+            extracted_text,
+            ocr_was_used,
+            ocr_latency_ms,
+            text_source,
+        ) = await asyncio.to_thread(
+            ocr_service.extract_text_at_ingest,
+            storage_path,
+            content_type,
+            document_id=document_id,
+            pipeline_run_id=pipeline_run_id,
         )
         detection_text = extracted_text
 

@@ -46,17 +46,17 @@ class Settings(BaseSettings):
     rabbitmq_ingest_queue: str = "ocr.ingest"
     worker_max_retries: int = 3
 
-    # Движок OCR для сканированных страниц и картинок: tesseract или deepseek.
+    # Движок OCR для сканированных страниц и картинок: tesseract или glm.
     ocr_engine: str = Field(default="tesseract", validation_alias="OCR_ENGINE")
 
     # Удаленный сервер Ollama для OCR
     ollama_ocr_url: str = Field(default="http://localhost:11434", validation_alias="OCR_OLLAMA_OCR_URL")
-    ollama_ocr_model: str = Field(default="deepseek-ocr:latest", validation_alias="OCR_OLLAMA_OCR_MODEL")
+    ollama_ocr_model: str = Field(default="glm-ocr", validation_alias="OCR_OLLAMA_OCR_MODEL")
     ollama_ocr_token: str | None = Field(default=None, validation_alias="OCR_OLLAMA_OCR_TOKEN")
-    deepseek_timeout_seconds: float = Field(default=500.0, validation_alias="OCR_DEEPSEEK_TIMEOUT_SECONDS")
+    glm_timeout_seconds: float = Field(default=500.0, validation_alias="OCR_GLM_TIMEOUT_SECONDS")
 
-    # Максимальное количество retries на одну страницу DeepSeek OCR.
-    deepseek_page_retries: int = Field(default=3, validation_alias="OCR_DEEPSEEK_PAGE_RETRIES")
+    # Максимальное количество retries на одну страницу GLM OCR.
+    glm_page_retries: int = Field(default=3, validation_alias="OCR_GLM_PAGE_RETRIES")
 
 
 @lru_cache(maxsize=1)

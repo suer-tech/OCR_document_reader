@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 OCR_TEXT_ARTIFACT_MAX_LEN = 100_000
 
 # Источник извлечённого текста (для логирования)
-TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "deepseek"]
+TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "glm"]
 
 ContentType = Literal["pdf", "image", "text"]
 
@@ -99,7 +99,19 @@ def run_ocr(file_path: str, content_type: ContentType) -> str:
 
     if content_type == "pdf":
         try:
-            poppler_path = r"C:\poppler\poppler-24.08.0\Library\bin" if platform.system() == "Windows" else None
+            import os
+            poppler_path = None
+            if platform.system() == "Windows":
+                user_profile = os.environ.get("USERPROFILE", r"C:\Users\user2")
+                candidates = [
+                    os.path.join(user_profile, r"poppler\poppler-24.08.0\Library\bin"),
+                    r"C:\poppler\poppler-24.08.0\Library\bin",
+                    r"C:\Users\user2\poppler\poppler-24.08.0\Library\bin",
+                ]
+                for c in candidates:
+                    if os.path.exists(c):
+                        poppler_path = c
+                        break
             images = convert_from_path(path, dpi=200, poppler_path=poppler_path)
         except Exception as exc:
             logger.exception(
@@ -148,30 +160,30 @@ def run_ocr(file_path: str, content_type: ContentType) -> str:
 
 def run_ocr_with_engine(file_path: str, content_type: ContentType) -> tuple[str, TextSource]:
     """
-    Выполняет OCR с использованием выбранного движка (deepseek или tesseract).
+    Выполняет OCR с использованием выбранного движка (glm или tesseract).
     Применяет цепочки откатов (fallbacks) при возникновении сбоев:
-    - deepseek -> tesseract (прямой откат)
+    - glm -> tesseract (прямой откат)
     Возвращает (текст, источник_текста).
     """
     from ocr_platform.config.settings import get_settings
     settings = get_settings()
     engine = settings.ocr_engine.lower()
 
-    # Ступень 1: DeepSeek OCR (удаленный GPU сервер)
-    if engine == "deepseek":
+    # Ступень 1: GLM OCR (удаленный GPU сервер)
+    if engine == "glm":
         try:
-            from ocr_platform.services.deepseek_ocr_service import run_deepseek_ocr
-            text = run_deepseek_ocr(file_path)
+            from ocr_platform.services.glm_ocr_service import run_glm_ocr
+            text = run_glm_ocr(file_path)
             if text.strip():
-                return text, "deepseek"
-            logger.warning("deepseek_ocr_returned_empty_text", file_path=file_path)
+                return text, "glm"
+            logger.warning("glm_ocr_returned_empty_text", file_path=file_path)
         except Exception as exc:
             logger.warning(
-                "deepseek_ocr_failed_falling_back_to_tesseract",
+                "glm_ocr_failed_falling_back_to_tesseract",
                 file_path=file_path,
                 error=str(exc),
             )
-        # Если свалился deepseek, переходим напрямую к Tesseract
+        # Если свалился glm, переходим напрямую к Tesseract
         engine = "tesseract"
 
     # Ступень 3: Tesseract (легкий локальный OCR)

@@ -61,17 +61,29 @@ def _safe_ack(
 
 def publish_ingest_job(job: IngestJob) -> None:
     settings = get_settings()
-    connection, channel = _open_channel()
     try:
-        body = json.dumps({"pipeline_run_id": job.pipeline_run_id, "attempt": job.attempt})
-        channel.basic_publish(
-            exchange="",
-            routing_key=settings.rabbitmq_ingest_queue,
-            body=body,
-            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
-        )
-    finally:
-        connection.close()
+        connection, channel = _open_channel()
+        try:
+            body = json.dumps({"pipeline_run_id": job.pipeline_run_id, "attempt": job.attempt})
+            channel.basic_publish(
+                exchange="",
+                routing_key=settings.rabbitmq_ingest_queue,
+                body=body,
+                properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+            )
+        finally:
+            connection.close()
+    except Exception as e:
+        logger.info(f"RabbitMQ connection failed ({e}). Processing job {job.pipeline_run_id} in-process via asyncio.create_task...")
+        import asyncio
+        from ocr_platform.orchestration.run_processor import process_pipeline_run
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(process_pipeline_run(job.pipeline_run_id))
+        except RuntimeError:
+            # Fallback if no loop is running
+            asyncio.run(process_pipeline_run(job.pipeline_run_id))
 
 
 def consume_ingest_jobs(handler: Callable[[IngestJob], None]) -> None:

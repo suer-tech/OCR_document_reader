@@ -23,4 +23,4 @@ async def simple_extract_fields(
     from ocr_platform.services.extraction_agent import run_agent_extraction
     
     fields_config = profile_config.get("fields", {})
-    return await run_agent_extraction(text, fields_config, profile_id=profile_id)
+    return await run_agent_extraction(text, fields_config, profile_id=profile_id, profile_config=profile_config)
