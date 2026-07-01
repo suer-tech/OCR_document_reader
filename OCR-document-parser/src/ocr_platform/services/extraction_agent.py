@@ -401,6 +401,32 @@ def resolve_llm_model(profile_config: dict | None = None) -> 'Model':
             model_name or "qwen3.6:27b",
             openai_client=async_openai_client,
         )
+    elif provider == "router_ai":
+        from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
+        import httpx
+        from openai import AsyncOpenAI
+
+        settings = get_settings()
+        base_url = os.environ.get("OCR_ROUTER_AI_BASE_URL") or settings.router_ai_base_url or "https://routerai.ru/api/v1"
+        api_key = os.environ.get("OCR_ROUTER_AI_API_KEY") or settings.router_ai_api_key
+
+        if not api_key:
+            raise ValueError("OCR_ROUTER_AI_API_KEY is not set in environment or settings")
+
+        timeout_seconds = float(llm_cfg.get("timeout_seconds", 180.0))
+        model_id = model_name or "deepseek/deepseek-v4-flash"
+        logger.info(f"Resolved LLM provider: router_ai, model: {model_id}, base_url: {base_url}, timeout: {timeout_seconds}s")
+
+        http_client = httpx.AsyncClient(timeout=timeout_seconds)
+        async_openai_client = AsyncOpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            http_client=http_client
+        )
+        return PydanticOpenAIModel(
+            model_id,
+            openai_client=async_openai_client,
+        )
     else:
         # Default: opencode CLI
         opencode_model = model_name or "opencode/deepseek-v4-flash-free"
@@ -742,6 +768,55 @@ async def _run_agent_extraction_impl(
                         # Allow to fall through to normal LLM extraction
 
                 if field_name == "creditor":
+                    if profile_id == "rtk" and not is_tax_document:
+                        known_inn = results.get("creditor_inn", {}).get("value")
+                        val = None
+                        confidence = 0.0
+                        reasoning = ""
+                        if known_inn:
+                            cleaned_inn = "".join(c for c in str(known_inn) if c.isdigit())
+                            if len(cleaned_inn) in (10, 12):
+                                logger.info(f"Custom creditor extraction for RTK non-tax document. Using INN: {cleaned_inn}")
+                                web_search_text = await asyncio.wait_for(
+                                    asyncio.to_thread(_search_by_inn, cleaned_inn),
+                                    timeout=25,
+                                ) or "Company name not found"
+                                
+                                prompt_tmpl = field_def.get("prompt_instruction_inn_web_search")
+                                if prompt_tmpl:
+                                    prompt = prompt_tmpl.format(inn=cleaned_inn, web_search_text=web_search_text)
+                                else:
+                                    prompt = (
+                                        f"Выдели официальное наименование кредитора/организации по ИНН: {cleaned_inn} исключительно на основе результатов интернет-поиска.\n\n"
+                                        f"Результаты поиска в интернете:\n{web_search_text}\n\n"
+                                        f"ВНИМАНИЕ! Не используй текст самого судебного документа, извлеки имя строго по результатам поиска.\n"
+                                        f"Примени стандартные правила сокращения организационно-правовой формы (например, ООО, ПАО, АО, ПКО и др.), но не сокращай само название.\n"
+                                        f"Заполни поля: \n"
+                                        f"- creditor_name: null\n"
+                                        f"- creditor_name_web: найденное название в интернете\n"
+                                        f"- creditor_final: итоговое сокращенное наименование\n"
+                                    )
+                                agent = agent_creditor
+                                try:
+                                    result = await agent.run(prompt, deps="")
+                                    data = result.data
+                                    val = _clean_llm_string(data.creditor_final)
+                                    confidence = data.confidence
+                                    reasoning = f"{data.reasoning} | Extracted directly from web search results by INN {cleaned_inn} without reading document text."
+                                except Exception as e:
+                                    logger.warning(f"Custom creditor extraction failed: {e}")
+                                    val = None
+                                    confidence = 0.0
+                                    reasoning = f"Failed custom extraction: {e}"
+                        
+                        results[field_name] = {
+                            "value": val,
+                            "confidence": confidence,
+                            "reasoning": reasoning,
+                            "source": "inn_web_search_only",
+                        }
+                        continue
+
                     if is_tax_document:
                         prompt_instruction = """МЕТОДОЛОГИЯ АНАЛИЗА (SGR / Step-by-Step Reasoning):
       Сначала выполни пошаговые рассуждения в поле "reasoning" строго следуя шагам:

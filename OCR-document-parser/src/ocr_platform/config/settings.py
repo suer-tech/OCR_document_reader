@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    router_ai_api_key: str | None = None
+    router_ai_base_url: str = "https://routerai.ru/api/v1"
 
     # Используется как общий fallback, если список fallback-моделей
     # не задан в YAML-конфиге конкретного шага.
