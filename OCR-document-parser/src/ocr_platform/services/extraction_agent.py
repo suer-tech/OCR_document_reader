@@ -547,8 +547,12 @@ extraction_agent_with_tools = agent_generic_with_tools
 
 # Вспомогательные модели и агенты для верификации кредитора
 class CompanyNameResult(BaseModel):
-    company_name: str | None
-    reasoning: str | None
+    company_name: str | None = Field(
+        description="Official company or organization name found in internet search results, or null"
+    )
+    reasoning: str | None = Field(
+        description="Brief explanation of which search result evidence supports company_name"
+    )
 
 
 class CompanyComparisonResult(BaseModel):
@@ -562,7 +566,8 @@ company_name_extraction_agent = Agent(
     result_type=CompanyNameResult,
     system_prompt=(
         "You are an expert business registrar analyst. "
-        "Analyze the provided search results to find the official company name or organization name corresponding to the given INN. "
+        "Analyze only the provided search results to find the official company name or organization name corresponding to the given INN. "
+        "Use standard Russian legal-form abbreviations such as ООО, ПАО, АО, and ПКО, but do not abbreviate the entity's own name. "
         "Return the name clearly in the company_name field. If no company name is found, return null."
     ),
     model_settings=default_settings,
@@ -791,17 +796,15 @@ async def _run_agent_extraction_impl(
                                         f"Результаты поиска в интернете:\n{web_search_text}\n\n"
                                         f"ВНИМАНИЕ! Не используй текст самого судебного документа, извлеки имя строго по результатам поиска.\n"
                                         f"Примени стандартные правила сокращения организационно-правовой формы (например, ООО, ПАО, АО, ПКО и др.), но не сокращай само название.\n"
-                                        f"Заполни поля: \n"
-                                        f"- creditor_name: null\n"
-                                        f"- creditor_name_web: найденное название в интернете\n"
-                                        f"- creditor_final: итоговое сокращенное наименование\n"
+                                        f"Заполни поля схемы CompanyNameResult:\n"
+                                        f"- company_name: итоговое официальное наименование с сокращенной организационно-правовой формой\n"
+                                        f"- reasoning: краткое объяснение, из каких строк поиска взято наименование\n"
                                     )
-                                agent = agent_creditor
                                 try:
-                                    result = await agent.run(prompt, deps="")
+                                    result = await company_name_extraction_agent.run(prompt)
                                     data = result.data
-                                    val = _clean_llm_string(data.creditor_final)
-                                    confidence = data.confidence
+                                    val = _clean_llm_string(data.company_name)
+                                    confidence = 0.9 if val else 0.0
                                     reasoning = f"{data.reasoning} | Extracted directly from web search results by INN {cleaned_inn} without reading document text."
                                 except Exception as e:
                                     logger.warning(f"Custom creditor extraction failed: {e}")

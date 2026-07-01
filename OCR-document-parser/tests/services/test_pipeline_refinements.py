@@ -222,3 +222,47 @@ async def test_creditor_verification_by_inn():
         res = await run_agent_extraction("test text", fields_config)
         assert res["creditor"]["value"] == "Ошибка распознавания"
         assert res["creditor"]["confidence"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_rtk_creditor_uses_company_name_schema_for_inn_web_search():
+    fields_config = {
+        "creditor": {
+            "extraction_method": "llm_with_tools",
+            "prompt_instruction": "Extract creditor",
+            "prompt_instruction_inn_web_search": (
+                "Find company by INN {inn} from search results only.\n"
+                "Search results:\n{web_search_text}\n"
+                "Return CompanyNameResult with company_name and reasoning."
+            ),
+        },
+        "creditor_inn": {
+            "extraction_method": "llm_with_tools",
+            "prompt_instruction": "Extract INN",
+        },
+    }
+
+    mock_inn_run = AsyncMock(
+        return_value=make_mock_result(
+            CreditorInnResult(INN="7730233723", confidence=0.95, reasoning="inn found")
+        )
+    )
+    mock_company_name_run = AsyncMock(
+        return_value=make_mock_result(
+            CompanyNameResult(company_name="OOO Romashka", reasoning="registry name")
+        )
+    )
+    mock_creditor_run = AsyncMock()
+
+    with patch.object(extraction_agent.agent_creditor_inn, "run", mock_inn_run), \
+         patch.object(extraction_agent.company_name_extraction_agent, "run", mock_company_name_run), \
+         patch.object(extraction_agent.agent_creditor, "run", mock_creditor_run), \
+         patch("ocr_platform.services.extraction_agent._search_by_inn", return_value="Registry Info: OOO Romashka"):
+
+        res = await run_agent_extraction("test text", fields_config, profile_id="rtk")
+
+    assert res["creditor_inn"]["value"] == "7730233723"
+    assert res["creditor"]["value"] == "OOO Romashka"
+    assert res["creditor"]["confidence"] == 0.9
+    mock_company_name_run.assert_awaited_once()
+    mock_creditor_run.assert_not_awaited()

@@ -1,0 +1,34 @@
+{
+  "properties": {
+    "company_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Official company or organization name found in internet search results, or null",
+      "title": "Company Name"
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Brief explanation of which search result evidence supports company_name",
+      "title": "Reasoning"
+    }
+  },
+  "required": [
+    "company_name",
+    "reasoning"
+  ],
+  "title": "CompanyNameResult",
+  "type": "object"
+}
