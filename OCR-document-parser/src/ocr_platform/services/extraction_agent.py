@@ -4,7 +4,7 @@ import tempfile
 import os
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 
 from bs4 import BeautifulSoup
 import requests
@@ -557,7 +557,7 @@ class CompanyNameResult(BaseModel):
 
 class CompanyComparisonResult(BaseModel):
     is_same: bool
-    difference_type: str  # "exact", "minor", "critical"
+    difference_type: Literal["exact", "minor", "critical"]
     reasoning: str
 
 
