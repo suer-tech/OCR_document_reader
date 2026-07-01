@@ -43,13 +43,19 @@ MKL_NUM_THREADS=8
 TOKENIZERS_PARALLELISM=true
 ```
 
-### 3.1. DeepSeek OCR (настройки таймаутов и retry)
+### 3.1. GLM-OCR (настройки таймаутов и retry)
 
 ```ini
-# Таймаут (сек) на один запрос к DeepSeek OCR. Увеличен для сложных многостраничных документов.
-OCR_DEEPSEEK_TIMEOUT_SECONDS=500.0
-# Количество retries на одну страницу при ошибке/timeout DeepSeek OCR
-OCR_DEEPSEEK_PAGE_RETRIES=3
+# Движок OCR для сканированных страниц и картинок: tesseract или glm
+OCR_ENGINE=glm
+# Удаленный сервер Ollama для OCR
+OCR_OLLAMA_OCR_URL=https://mainwgpu.devbpm.ru/ollama/api/chat
+OCR_OLLAMA_OCR_MODEL=deepseek-ocr:latest
+OCR_OLLAMA_OCR_TOKEN=***
+# Таймаут (сек) на один запрос к GLM OCR
+OCR_GLM_TIMEOUT_SECONDS=500.0
+# Количество retries на одну страницу при ошибке/timeout GLM OCR
+OCR_GLM_PAGE_RETRIES=3
 ```
 
 > [!NOTE]

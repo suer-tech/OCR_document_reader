@@ -66,6 +66,29 @@ class TaxCreditorHeaderResult(BaseModel):
     reasoning: str
 
 
+class RtkCombinedResult(BaseModel):
+    creditor_inn: str | None = Field(
+        description="ИНН кредитора (10 или 12 цифр), либо null"
+    )
+    creditor_inn_confidence: float
+    creditor_inn_reasoning: str
+
+    commitments_count: int | None = Field(
+        description="Количество отдельных обязательств/договоров, или null"
+    )
+    amounts: list[float] | None = Field(
+        description="Список сумм для каждого обязательства, или null"
+    )
+    claims_amount_confidence: float
+    claims_amount_reasoning: str
+
+    grounds: str | None = Field(
+        description="Точное значение из списка допустимых оснований, либо null"
+    )
+    grounds_confidence: float
+    grounds_reasoning: str
+
+
 class GenericFieldResult(BaseModel):
     value: Any = Field(description="Извлеченное значение поля, либо null")
     confidence: float
@@ -540,6 +563,15 @@ agent_tax_creditor = Agent(
     model_settings=default_settings,
 )
 
+agent_rtk_combined = Agent(
+    model,
+    deps_type=str,
+    result_type=RtkCombinedResult,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
 # Compatibility aliases for legacy tests/code
 extraction_agent = agent_generic
 extraction_agent_with_tools = agent_generic_with_tools
@@ -668,7 +700,169 @@ async def _run_agent_extraction_impl(
             ordered_fields.remove("creditor_inn")
             ordered_fields.insert(0, "creditor_inn")
 
+    if profile_id == "rtk" and not is_tax_document:
+        combined_fields = ["creditor_inn", "claims_amount", "grounds"]
+        if all(f in fields_config for f in combined_fields):
+            logger.info("Executing combined RTK extraction for creditor_inn, claims_amount, grounds.")
+            combined_prompt_parts = []
+            for f in combined_fields:
+                f_instruction = fields_config[f].get("prompt_instruction", "")
+                combined_prompt_parts.append(
+                    f"--- FIELD: {f} ---\n{f_instruction}"
+                )
+            combined_instructions = "\n\n".join(combined_prompt_parts)
+            combined_prompt = (
+                f"Instruction: You are extracting multiple fields at once. Here are the specific instructions for each field:\n\n"
+                f"{combined_instructions}\n\n"
+                f"Document Text:\n{text[:10000]}"
+            )
+            
+            max_attempts = 3
+            combined_data = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = await agent_rtk_combined.run(combined_prompt, deps=text)
+                    combined_data = result.data
+                    break
+                except Exception as e:
+                    logger.warning(f"Combined RTK extraction attempt {attempt} failed: {e}")
+                    if attempt == max_attempts:
+                        logger.error("Combined RTK extraction completely failed. Falling back to individual extraction.")
+                    elif attempt == 2:
+                        await asyncio.sleep(15)
+            
+            if combined_data:
+                # 1. Store creditor_inn
+                inn_val = None
+                if combined_data.creditor_inn:
+                    inn_match = re.search(r"\d{10,12}", str(combined_data.creditor_inn))
+                    inn_val = inn_match.group(0) if inn_match else combined_data.creditor_inn
+                results["creditor_inn"] = {
+                    "value": inn_val,
+                    "confidence": combined_data.creditor_inn_confidence,
+                    "reasoning": combined_data.creditor_inn_reasoning,
+                    "source": "rtk_combined",
+                }
+                
+                # 2. Store claims_amount
+                amt_val = None
+                if (
+                    combined_data.commitments_count is not None
+                    and isinstance(combined_data.amounts, list)
+                    and len(combined_data.amounts) > 0
+                ):
+                    total = sum(combined_data.amounts)
+                    amt_val = f"{total:.2f}" if total > 0 else None
+                results["claims_amount"] = {
+                    "value": amt_val,
+                    "confidence": combined_data.claims_amount_confidence,
+                    "reasoning": combined_data.claims_amount_reasoning,
+                    "source": "rtk_combined",
+                }
+                
+                # 3. Validate and store grounds
+                grounds_val = None
+                grounds_conf = combined_data.grounds_confidence
+                grounds_reason = combined_data.grounds_reasoning
+                
+                grounds_def = fields_config["grounds"]
+                grounds_instruction = grounds_def.get("prompt_instruction", "")
+                parsed_grounds = re.findall(r'-\s*"([^"]+)"', grounds_instruction)
+                VALID_GROUNDS = (
+                    parsed_grounds
+                    if parsed_grounds
+                    else [
+                        "договор на предоставление коммунальных услуг",
+                        "кредитный договор",
+                        "соглашение о кредитовании",
+                        "договор потребительского микрозайма",
+                        "договор потребительского займа",
+                        "договор банковского счета",
+                        "договор энергоснабжения",
+                        "договор займа",
+                        "налоговая задолженность",
+                        "исполнительный лист",
+                        "исполнительный документ",
+                        "судебный приказ",
+                        "судебный акт",
+                        "административное правонарушение",
+                    ]
+                )
+                
+                clean_val_str = "null"
+                if combined_data.grounds:
+                    clean_val_str = str(combined_data.grounds).strip().lower().strip("'.\",")
+                
+                if clean_val_str not in ("null", "none", ""):
+                    matched_ground = None
+                    for vg in VALID_GROUNDS:
+                        if re.search(
+                            r"\b" + re.escape(vg.lower()) + r"(?:$|\b)",
+                            clean_val_str,
+                            re.IGNORECASE | re.UNICODE,
+                        ):
+                            matched_ground = vg
+                            break
+                    
+                    if matched_ground:
+                        grounds_val = matched_ground
+                    else:
+                        logger.warning(
+                            f"Grounds validation failed for combined result '{clean_val_str}'. Launching retry loop with agent_grounds."
+                        )
+                        current_prompt = (
+                            f"Instruction: {grounds_instruction}\n\nDocument Text:\n{text[:10000]}\n\n"
+                            f"CRITICAL WARNING: В предыдущей попытке было получено значение '{clean_val_str}', которое НЕ ЯВЛЯЕТСЯ точным совпадением.\n"
+                            f"Твой ответ должен СТРОГО соответствовать одному из этих значений: {', '.join(VALID_GROUNDS)}.\n"
+                            f"Если в тексте нет ничего похожего, верни null. Не придумывай свои варианты!"
+                        )
+                        for attempt in range(1, 3):
+                            try:
+                                grounds_result = await agent_grounds.run(current_prompt, deps=text)
+                                g_data = grounds_result.data
+                                g_clean = "null"
+                                if g_data.grounds:
+                                    g_clean = str(g_data.grounds).strip().lower().strip("'.\",")
+                                if g_clean in ("null", "none", ""):
+                                    grounds_val = None
+                                    grounds_conf = g_data.confidence
+                                    grounds_reason = g_data.reasoning
+                                    break
+                                g_match = None
+                                for vg in VALID_GROUNDS:
+                                    if re.search(
+                                        r"\b" + re.escape(vg.lower()) + r"(?:$|\b)",
+                                        g_clean,
+                                        re.IGNORECASE | re.UNICODE,
+                                    ):
+                                        g_match = vg
+                                        break
+                                if g_match:
+                                    grounds_val = g_match
+                                    grounds_conf = g_data.confidence
+                                    grounds_reason = g_data.reasoning
+                                    break
+                                else:
+                                    current_prompt = (
+                                        f"Instruction: {grounds_instruction}\n\nDocument Text:\n{text[:10000]}\n\n"
+                                        f"CRITICAL WARNING: В предыдущей попытке ты вернул значение '{g_clean}', которое НЕ ЯВЛЯЕТСЯ точным совпадением.\n"
+                                        f"Твой ответ должен СТРОГО соответствовать одному из этих значений: {', '.join(VALID_GROUNDS)}.\n"
+                                        f"Если в тексте нет ничего похожего, верни null. Не придумывай свои варианты!"
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Grounds retry attempt {attempt} failed: {e}")
+                
+                results["grounds"] = {
+                    "value": grounds_val,
+                    "confidence": grounds_conf,
+                    "reasoning": grounds_reason,
+                    "source": "rtk_combined",
+                }
+
     for field_name in ordered_fields:
+        if field_name in results:
+            logger.info(f"Field {field_name} already populated (likely from combined extraction), skipping.")
+            continue
         field_def = fields_config[field_name]
         extraction_method = field_def.get("extraction_method", "llm")
         logger.info(f"Extracting field {field_name} using method {extraction_method}")
@@ -1021,6 +1215,105 @@ async def _run_agent_extraction_impl(
                                 if creditor_attempt < CREDITOR_RETRIES:
                                     continue
                             break
+
+                    if (not val or val == "Ошибка распознавания") and profile_id == "rtk" and not is_tax_document:
+                        logger.info("Creditor not found or recognition error. Initiating fallback search for INN and creditor.")
+                        inn_fallback_prompt = (
+                            "Поищи актуальный ИНН в тексте документа еще раз. "
+                            "Рекомендуется использовать инструмент search_creditor_inn передав в него имя кредитора/заявителя."
+                        )
+                        max_attempts = 3
+                        new_inn_val = None
+                        for attempt in range(1, max_attempts + 1):
+                            try:
+                                inn_result = await agent_creditor_inn.run(f"Instruction: {inn_fallback_prompt}\n\nDocument Text:\n{text[:10000]}", deps=text)
+                                new_inn = inn_result.data.INN
+                                if new_inn:
+                                    inn_match = re.search(r"\d{10,12}", str(new_inn))
+                                    new_inn_val = inn_match.group(0) if inn_match else new_inn
+                                    if new_inn_val:
+                                        logger.info(f"Fallback extracted new INN: {new_inn_val}")
+                                        results["creditor_inn"] = {
+                                            "value": new_inn_val,
+                                            "confidence": inn_result.data.confidence,
+                                            "reasoning": inn_result.data.reasoning + " | fallback search",
+                                            "source": "rtk_fallback_inn"
+                                        }
+                                break
+                            except Exception as e:
+                                logger.warning(f"Fallback INN extraction attempt {attempt} failed: {e}")
+                                if attempt == max_attempts:
+                                    logger.error("Fallback INN extraction completely failed.")
+                                elif attempt == 2:
+                                    await asyncio.sleep(15)
+                                    
+                        if new_inn_val:
+                            fallback_creditor_prompt = (
+                                f"ВНИМАНИЕ! Найден уточненный ИНН кредитора: {new_inn_val}\n"
+                                f"Используй этот ИНН для вызова инструмента search_creditor_name.\n\n"
+                                f"Дождись ответа от инструмента и запиши полученное официальное наименование в поле 'creditor_final'.\n\n"
+                                f"Ни в коем случае не возвращай null!\n\n"
+                                f"Instruction: {field_def.get('prompt_instruction', '')}\n\nDocument Text:\n{text[:10000]}"
+                            )
+                            for attempt in range(1, max_attempts + 1):
+                                try:
+                                    cred_res = await agent_creditor.run(fallback_creditor_prompt, deps=text)
+                                    data = cred_res.data
+                                    
+                                    tool_called = False
+                                    try:
+                                        for msg in cred_res.all_messages():
+                                            if hasattr(msg, "parts"):
+                                                for part in msg.parts:
+                                                    if hasattr(part, "tool_name") and getattr(part, "tool_name") == "search_creditor_name":
+                                                        tool_called = True
+                                    except Exception:
+                                        pass
+                                        
+                                    if not tool_called:
+                                        cleaned_inn = "".join(c for c in str(new_inn_val) if c.isdigit())
+                                        if len(cleaned_inn) in (10, 12):
+                                            logger.info(f"Fallback LLM hallucinated. Forcing manual call for INN: {cleaned_inn}")
+                                            tool_result_text = await asyncio.wait_for(asyncio.to_thread(_search_by_inn, cleaned_inn), timeout=25) or "Company name not found"
+                                            forced_prompt = (
+                                                f"{fallback_creditor_prompt}\n\n"
+                                                f"ВНИМАНИЕ! Ты проигнорировал требование вызвать инструмент поиска имени по ИНН. Я вызвал его принудительно.\n"
+                                                f"Результат поиска по ИНН {cleaned_inn}:\n{tool_result_text}\n"
+                                                f"Учитывая эти данные поиска, извлеки корректное официальное наименование кредитора и верни JSON."
+                                            )
+                                            cred_res = await agent_creditor.run(forced_prompt, deps=text)
+                                            data = cred_res.data
+                                    
+                                    val = _clean_llm_string(data.creditor_final)
+                                    confidence = data.confidence
+                                    reasoning = data.reasoning + " | fallback retry"
+                                    
+                                    if val:
+                                        cleaned_inn = "".join(c for c in str(new_inn_val) if c.isdigit())
+                                        if len(cleaned_inn) in (10, 12):
+                                            web_search_text = await asyncio.wait_for(asyncio.to_thread(_search_by_inn, cleaned_inn), timeout=25)
+                                            if web_search_text:
+                                                web_company_name = await extract_company_name_from_search(cleaned_inn, web_search_text)
+                                                if web_company_name:
+                                                    web_company_name = _clean_llm_string(web_company_name)
+                                                    comp_res = await compare_company_names(val, web_company_name)
+                                                    if comp_res.is_same:
+                                                        logger.info(f"Fallback match: '{val}' and '{web_company_name}'")
+                                                    elif comp_res.difference_type == "minor":
+                                                        logger.info(f"Fallback minor diff. Replacing '{val}' with '{web_company_name}'")
+                                                        val = web_company_name
+                                                    else:
+                                                        logger.warning(f"Fallback critical mismatch: doc='{val}', web='{web_company_name}'.")
+                                                        val = "Ошибка распознавания"
+                                                        confidence = 0.0
+                                                        reasoning = f"{reasoning} | CRITICAL MISMATCH with registry for INN {cleaned_inn} (internet: {web_company_name})."
+                                    break
+                                except Exception as e:
+                                    logger.warning(f"Fallback creditor attempt {attempt} failed: {e}")
+                                    if attempt == max_attempts:
+                                        logger.error("Fallback creditor completely failed.")
+                                    elif attempt == 2:
+                                        await asyncio.sleep(15)
 
                 elif field_name == "claims_amount":
                     agent = agent_claims_amount

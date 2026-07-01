@@ -18,3 +18,9 @@ Timestamp,Note,Accuracy (%),Avg Time (s),Total Time (s),Errors
 20260701_114123,RouterAI Single Document Test,0.00,113.67,113.67,0
 20260701_114400,RouterAI Single Document Test v2,75.00,444.41,444.41,0
 20260701_120402,RouterAI Custom Creditor Extraction Test,100.00,114.20,114.20,0
+20260701_153415,Single document run,0.00,59.60,59.60,1
+20260701_153611,Single document run,100.00,136.84,136.84,0
+20260701_160155,Combined extraction run,100.00,95.64,95.64,0
+20260701_162552,Simultaneous 10 documents burst,72.50,98.27,982.75,0
+20260701_164409,VTB1 single test,75.00,56.03,56.03,0
+20260701_170646,Drive Click Fallback Test,100.00,67.53,67.53,0

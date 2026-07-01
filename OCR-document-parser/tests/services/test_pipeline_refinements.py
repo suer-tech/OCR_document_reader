@@ -266,3 +266,64 @@ async def test_rtk_creditor_uses_company_name_schema_for_inn_web_search():
     assert res["creditor"]["confidence"] == 0.9
     mock_company_name_run.assert_awaited_once()
     mock_creditor_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rtk_combined_extraction():
+    fields_config = {
+        "creditor": {
+            "extraction_method": "llm_with_tools",
+            "prompt_instruction": "Extract creditor",
+        },
+        "creditor_inn": {
+            "extraction_method": "llm_with_tools",
+            "prompt_instruction": "Extract INN",
+        },
+        "claims_amount": {
+            "extraction_method": "llm_claims_amount",
+            "prompt_instruction": "Extract sums",
+        },
+        "grounds": {
+            "extraction_method": "llm",
+            "prompt_instruction": 'Extract grounds, VALID_GROUNDS: - "кредитный договор"',
+        },
+    }
+
+    from ocr_platform.services.extraction_agent import RtkCombinedResult
+
+    mock_combined_run = AsyncMock(
+        return_value=make_mock_result(
+            RtkCombinedResult(
+                creditor_inn="7730233723",
+                creditor_inn_confidence=0.95,
+                creditor_inn_reasoning="inn found in combined",
+                commitments_count=2,
+                amounts=[100000.0, 50000.0],
+                claims_amount_confidence=0.9,
+                claims_amount_reasoning="sums found",
+                grounds="кредитный договор",
+                grounds_confidence=0.95,
+                grounds_reasoning="credit grounds",
+            )
+        )
+    )
+
+    mock_company_name_run = AsyncMock(
+        return_value=make_mock_result(
+            CompanyNameResult(company_name="OOO Romashka", reasoning="registry name")
+        )
+    )
+
+    with patch.object(extraction_agent.agent_rtk_combined, "run", mock_combined_run), \
+         patch.object(extraction_agent.company_name_extraction_agent, "run", mock_company_name_run), \
+         patch("ocr_platform.services.extraction_agent._search_by_inn", return_value="Registry Info: OOO Romashka"):
+
+        res = await run_agent_extraction("test text", fields_config, profile_id="rtk")
+
+    assert res["creditor_inn"]["value"] == "7730233723"
+    assert res["claims_amount"]["value"] == "150000.00"
+    assert res["grounds"]["value"] == "кредитный договор"
+    assert res["creditor"]["value"] == "OOO Romashka"
+    
+    mock_combined_run.assert_awaited_once()
+    mock_company_name_run.assert_awaited_once()
