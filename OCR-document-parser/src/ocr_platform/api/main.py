@@ -438,16 +438,24 @@ def create_app() -> FastAPI:
         structured_version_id = str(structured.id) if structured else None
 
         fields = {}
-        if structured and isinstance(structured.data, dict):
-            for name, value in structured.data.items():
-                if isinstance(value, dict):
-                    fields[name] = schemas.FieldValue(
-                        name=name,
-                        value=value.get("value"),
-                        reasoning=value.get("reasoning"),
-                        confidence=value.get("confidence"),
-                        source=value.get("source"),
-                    )
+        if structured and structured.data:
+            data_dict = structured.data
+            if isinstance(data_dict, str):
+                import json
+                try:
+                    data_dict = json.loads(data_dict)
+                except Exception:
+                    data_dict = {}
+            if isinstance(data_dict, dict):
+                for name, value in data_dict.items():
+                    if isinstance(value, dict):
+                        fields[name] = schemas.FieldValue(
+                            name=name,
+                            value=value.get("value"),
+                            reasoning=value.get("reasoning"),
+                            confidence=value.get("confidence"),
+                            source=value.get("source"),
+                        )
                 else:
                     fields[name] = schemas.FieldValue(name=name, value=value)
 

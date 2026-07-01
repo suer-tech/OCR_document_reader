@@ -12,7 +12,81 @@ from pdf2image import convert_from_path
 from ocr_platform.config.settings import get_settings
 from ocr_platform.observability.logging import get_logger
 
+import concurrent.futures
+
 logger = get_logger(__name__)
+
+def _process_page(i: int, img: Image.Image, model: str, url: str, headers: dict, timeout: float, max_page_retries: int) -> str:
+    last_exception = None
+    for attempt in range(max_page_retries):
+        try:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG")
+            img_bytes = buf.getvalue()
+            
+            b64_image = base64.b64encode(img_bytes).decode("utf-8")
+
+            payload = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Extract the text in the image.",
+                        "images": [b64_image]
+                    }
+                ],
+                "stream": False,
+                "options": {
+                    "num_ctx": 8192,
+                    "num_predict": 4096,
+                    "temperature": 0.1,
+                    "repeat_penalty": 1.2,
+                    "repeat_last_n": 128
+                }
+            }
+
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Ollama server returned status code {response.status_code} for page {i}"
+                )
+
+            resp_data = response.json()
+            page_text = resp_data.get("message", {}).get("content", "").strip()
+            logger.info(
+                "glm_ocr_page_completed",
+                page=i,
+                attempt=attempt + 1,
+                text_length=len(page_text),
+            )
+            return page_text
+
+        except Exception as exc:
+            last_exception = exc
+            if attempt < max_page_retries - 1:
+                backoff = 2.0 ** attempt
+                logger.warning(
+                    "glm_ocr_page_retry",
+                    page=i,
+                    attempt=attempt + 1,
+                    max_retries=max_page_retries,
+                    backoff_seconds=backoff,
+                    error=str(exc),
+                )
+                _time.sleep(backoff)
+            else:
+                logger.error(
+                    "glm_ocr_page_failed_all_retries",
+                    page=i,
+                    attempts=max_page_retries,
+                    error=str(exc),
+                )
+
+    raise RuntimeError(
+        f"GLM OCR failed on page {i} after {max_page_retries} retries: {last_exception}"
+    ) from last_exception
+
 
 
 def run_glm_ocr(file_path: str) -> str:
@@ -78,72 +152,15 @@ def run_glm_ocr(file_path: str) -> str:
     if settings.ollama_ocr_token:
         headers["Authorization"] = f"Bearer {settings.ollama_ocr_token}"
 
-    for i, img in enumerate(images_to_process):
-        last_exception: Exception | None = None
-        for attempt in range(max_page_retries):
-            try:
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG")
-                img_bytes = buf.getvalue()
-                
-                b64_image = base64.b64encode(img_bytes).decode("utf-8")
-
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "Extract the text in the image.",
-                            "images": [b64_image]
-                        }
-                    ],
-                    "stream": False
-                }
-
-                response = requests.post(url, json=payload, headers=headers, timeout=timeout)
-                
-                if response.status_code != 200:
-                    raise RuntimeError(
-                        f"Ollama server returned status code {response.status_code} for page {i}"
-                    )
-
-                resp_data = response.json()
-                page_text = resp_data.get("message", {}).get("content", "").strip()
-                extracted_pages.append(page_text)
-                logger.info(
-                    "glm_ocr_page_completed",
-                    page=i,
-                    attempt=attempt + 1,
-                    text_length=len(page_text),
-                )
-                last_exception = None
-                break
-
-            except Exception as exc:
-                last_exception = exc
-                if attempt < max_page_retries - 1:
-                    backoff = 2.0 ** attempt
-                    logger.warning(
-                        "glm_ocr_page_retry",
-                        page=i,
-                        attempt=attempt + 1,
-                        max_retries=max_page_retries,
-                        backoff_seconds=backoff,
-                        error=str(exc),
-                    )
-                    _time.sleep(backoff)
-                else:
-                    logger.error(
-                        "glm_ocr_page_failed_all_retries",
-                        page=i,
-                        attempts=max_page_retries,
-                        error=str(exc),
-                    )
-
-        if last_exception is not None:
-            raise RuntimeError(
-                f"GLM OCR failed on page {i} after {max_page_retries} retries: {last_exception}"
-            ) from last_exception
+    if images_to_process:
+        max_workers = min(len(images_to_process), 10)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(_process_page, i, img, model, url, headers, timeout, max_page_retries)
+                for i, img in enumerate(images_to_process)
+            ]
+            for future in futures:
+                extracted_pages.append(future.result())
 
     extracted_text = "\n\n".join(extracted_pages).strip()
     

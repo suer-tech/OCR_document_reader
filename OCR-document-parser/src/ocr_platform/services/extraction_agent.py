@@ -3,6 +3,7 @@ import re
 import tempfile
 import os
 import json
+from pathlib import Path
 from typing import Any, Dict
 
 from bs4 import BeautifulSoup
@@ -234,7 +235,24 @@ class OpenCodeCLIAgentModel(AgentModel):
             
         try:
             prompt_instruction = "IMPORTANT: Return ONLY raw JSON. No markdown blocks, no other text."
-            command = f'opencode run --model {self.model_name} "{prompt_instruction}" -f "{temp_file_path}" --format json'
+            
+            schema_title = None
+            schema_content = ""
+            if self.result_tools and hasattr(self.result_tools[0], 'parameters_json_schema'):
+                schema_title = self.result_tools[0].parameters_json_schema.get('title')
+            
+            if schema_title:
+                schema_path = Path(__file__).parent.parent / 'config' / 'pipelines' / 'schemas' / f'{schema_title}.json'
+                if schema_path.exists():
+                    with open(schema_path, 'r', encoding='utf-8') as f:
+                        schema_content = f.read()
+                    prompt_instruction += f"\n\nCRITICAL: Your final output MUST be a valid JSON object matching this JSON Schema. DO NOT output any thinking process. DO NOT use <think> tags. Return ONLY the JSON object. No other text is allowed.\nSCHEMA:\n{schema_content}"
+
+            # Вписываем инструкцию в файл, чтобы избежать проблем с кавычками в командной строке
+            with open(temp_file_path, 'a', encoding='utf-8') as f:
+                f.write("\n\n" + prompt_instruction)
+
+            command = f'chcp 65001 >NUL && opencode run --model {self.model_name} "Please process the instructions in the attached file." -f "{temp_file_path}" --format json'
             
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -244,23 +262,45 @@ class OpenCodeCLIAgentModel(AgentModel):
             )
             
             final_text = ""
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-                
-                line_str = line.decode('utf-8', errors='replace').strip()
-                if not line_str:
-                    continue
+            
+            async def read_output():
+                nonlocal final_text
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
                     
+                    line_str = line.decode('utf-8', errors='replace').strip()
+                    if not line_str:
+                        continue
+                        
+                    try:
+                        data = json.loads(line_str)
+                        if data.get("type") == "textDelta":
+                            final_text += data.get("textDelta", "")
+                        elif data.get("type") == "text" and "part" in data and data["part"].get("type") == "text":
+                            final_text += data["part"]["text"]
+                    except json.JSONDecodeError:
+                        # Capture non-JSON output which might be an error message
+                        logger.error(f"OpenCodeCLI raw output: {line_str}")
+                        if "Free usage exceeded" in line_str or "Insufficient Balance" in line_str:
+                            raise RuntimeError(f"OpenCode API limit reached: {line_str}")
+                await process.wait()
+
+            try:
+                await asyncio.wait_for(read_output(), timeout=180.0)
+            except asyncio.TimeoutError:
                 try:
-                    data = json.loads(line_str)
-                    if data.get("type") == "text" and "part" in data and data["part"].get("type") == "text":
-                        final_text += data["part"]["text"]
-                except json.JSONDecodeError:
+                    process.kill()
+                except Exception:
                     pass
-                    
-            await process.wait()
+                raise TimeoutError("OpenCode CLI execution timed out after 180 seconds")
+            
+            # Извлекаем JSON из текста (на случай если модель добавила <think> или другой текст)
+            import re
+            json_match = re.search(r'(\{.*\})', final_text, re.DOTALL)
+            if json_match:
+                final_text = json_match.group(1)
             
             # Clean up the output string if it contains markdown formatting
             final_text = final_text.strip()
@@ -1108,5 +1148,38 @@ async def _run_agent_extraction_impl(
                     "reasoning": str(e),
                     "source": extraction_method,
                 }
+
+    # Final pass: if creditor_inn is null/missing, but creditor is found, force web search
+    creditor_inn_info = results.get("creditor_inn")
+    creditor_info = results.get("creditor")
+    
+    if creditor_info and creditor_info.get("value"):
+        inn_val = creditor_inn_info.get("value") if creditor_inn_info else None
+        if not inn_val:
+            cred_name = creditor_info.get("value")
+            logger.info(f"creditor_inn is missing/null, but creditor '{cred_name}' is found. Forcing search_creditor_inn tool call.")
+            try:
+                # search_creditor_inn is synchronous and ignores ctx
+                found_inn = search_creditor_inn(None, cred_name)
+                
+                # Update the result if something was found, or even if not found (to record the attempt)
+                if found_inn and "Not found" not in found_inn:
+                    results["creditor_inn"] = {
+                        "value": found_inn,
+                        "confidence": 0.9,
+                        "reasoning": f"Forced internet search by creditor name '{cred_name}' yielded INN {found_inn}.",
+                        "source": "tool_fallback"
+                    }
+                    logger.info(f"Successfully found INN via fallback: {found_inn}")
+                else:
+                    results["creditor_inn"] = {
+                        "value": None,
+                        "confidence": 0.0,
+                        "reasoning": f"Forced internet search by creditor name '{cred_name}' yielded no results.",
+                        "source": "tool_fallback"
+                    }
+                    logger.info(f"Fallback search for INN returned no valid results.")
+            except Exception as e:
+                logger.warning(f"Forced search_creditor_inn failed: {e}")
 
     return results

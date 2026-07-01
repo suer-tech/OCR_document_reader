@@ -101,16 +101,12 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
     try:
         query = f"{creditor_name} ИНН"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        socket.setdefaulttimeout(10)
-        try:
-            resp = requests.post(
-                "https://html.duckduckgo.com/html/",
-                data={"q": query},
-                headers=headers,
-                timeout=10,
-            )
-        finally:
-            socket.setdefaulttimeout(None)
+        resp = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},
+            headers=headers,
+            timeout=10,
+        )
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all("a", class_="result__snippet")[:5]:
@@ -161,6 +157,14 @@ def _search_by_inn(inn: str) -> str | None:
             page_url = r.get("href", "")
             if page_url:
                 texts.append(f"Source URL: {page_url}\n")
+                
+        # Validate that the search result is relevant (contains 'инн' or the actual inn number)
+        if texts:
+            combined_text = "".join(texts).lower()
+            if "инн" not in combined_text and inn not in combined_text:
+                logger.info("ddg_search_results_rejected", reason="Missing 'инн' keyword and INN number", inn=inn)
+                texts = []
+                
     except Exception as exc:
         logger.warning("ddg_search_failed_in_name_search", error=str(exc))
 
@@ -190,6 +194,14 @@ def _search_by_inn(inn: str) -> str | None:
                         title = title_elem.text.strip()
                         snippet = snippet_elem.text.strip()
                         texts.append(f"Title: {title}\nSnippet: {snippet}\n")
+                        
+                # Validate HTML fallback results
+                if texts:
+                    combined_text = "".join(texts).lower()
+                    if "инн" not in combined_text and inn not in combined_text:
+                        logger.info("ddg_html_results_rejected", reason="Missing 'инн' keyword and INN number", inn=inn)
+                        texts = []
+                        
         except Exception as exc:
             logger.warning("ddg_html_fallback_failed", error=str(exc))
 
