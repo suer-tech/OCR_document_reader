@@ -24,3 +24,4 @@ Timestamp,Note,Accuracy (%),Avg Time (s),Total Time (s),Errors
 20260701_162552,Simultaneous 10 documents burst,72.50,98.27,982.75,0
 20260701_164409,VTB1 single test,75.00,56.03,56.03,0
 20260701_170646,Drive Click Fallback Test,100.00,67.53,67.53,0
+20260701_180201,Yandex Studio Test,100.00,71.31,71.31,0

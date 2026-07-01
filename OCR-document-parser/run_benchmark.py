@@ -7,8 +7,8 @@ def main():
     print("Starting API Server in background...")
     server_process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "src.ocr_platform.api.main:app", "--host", "127.0.0.1", "--port", "8000"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
         text=True
     )
     

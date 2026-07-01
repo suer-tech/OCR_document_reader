@@ -223,12 +223,24 @@ class CustomOpenAIModel(OpenAIModel):
 
 
 from pydantic_ai.models import Model, AgentModel
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ModelRequest, SystemPromptPart, UserPromptPart, ToolReturnPart, RetryPromptPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponse,
+    TextPart,
+    ModelRequest,
+    SystemPromptPart,
+    UserPromptPart,
+    ToolReturnPart,
+    RetryPromptPart,
+)
 from pydantic_ai.usage import Usage
 from pydantic_ai.tools import ToolDefinition
 
+
 class OpenCodeCLIAgentModel(AgentModel):
-    def __init__(self, model_name: str, result_tools: list[ToolDefinition] | None = None):
+    def __init__(
+        self, model_name: str, result_tools: list[ToolDefinition] | None = None
+    ):
         self.model_name = model_name
         self.result_tools = result_tools or []
 
@@ -244,70 +256,93 @@ class OpenCodeCLIAgentModel(AgentModel):
                     elif isinstance(part, UserPromptPart):
                         prompt_lines.append(f"USER: {part.content}")
                     elif isinstance(part, ToolReturnPart):
-                        prompt_lines.append(f"TOOL RETURN ({part.tool_name}): {part.content}")
+                        prompt_lines.append(
+                            f"TOOL RETURN ({part.tool_name}): {part.content}"
+                        )
                     elif isinstance(part, RetryPromptPart):
                         prompt_lines.append(f"RETRY PROMPT: {part.content}")
                     elif isinstance(part, TextPart):
                         prompt_lines.append(f"TEXT: {part.content}")
-        
+
         prompt_text = "\n\n".join(prompt_lines)
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
             f.write(prompt_text)
             temp_file_path = f.name
-            
+
         try:
-            prompt_instruction = "IMPORTANT: Return ONLY raw JSON. No markdown blocks, no other text."
-            
+            prompt_instruction = (
+                "IMPORTANT: Return ONLY raw JSON. No markdown blocks, no other text."
+            )
+
             schema_title = None
             schema_content = ""
-            if self.result_tools and hasattr(self.result_tools[0], 'parameters_json_schema'):
-                schema_title = self.result_tools[0].parameters_json_schema.get('title')
-            
+            if self.result_tools and hasattr(
+                self.result_tools[0], "parameters_json_schema"
+            ):
+                schema_title = self.result_tools[0].parameters_json_schema.get("title")
+
             if schema_title:
-                schema_path = Path(__file__).parent.parent / 'config' / 'pipelines' / 'schemas' / f'{schema_title}.json'
+                schema_path = (
+                    Path(__file__).parent.parent
+                    / "config"
+                    / "pipelines"
+                    / "schemas"
+                    / f"{schema_title}.json"
+                )
                 if schema_path.exists():
-                    with open(schema_path, 'r', encoding='utf-8') as f:
+                    with open(schema_path, "r", encoding="utf-8") as f:
                         schema_content = f.read()
                     prompt_instruction += f"\n\nCRITICAL: Your final output MUST be a valid JSON object matching this JSON Schema. DO NOT output any thinking process. DO NOT use <think> tags. Return ONLY the JSON object. No other text is allowed.\nSCHEMA:\n{schema_content}"
 
             # Вписываем инструкцию в файл, чтобы избежать проблем с кавычками в командной строке
-            with open(temp_file_path, 'a', encoding='utf-8') as f:
+            with open(temp_file_path, "a", encoding="utf-8") as f:
                 f.write("\n\n" + prompt_instruction)
 
             command = f'chcp 65001 >NUL && opencode run --model {self.model_name} "Please process the instructions in the attached file." -f "{temp_file_path}" --format json'
-            
+
             process = await asyncio.create_subprocess_shell(
                 command,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT
+                stderr=asyncio.subprocess.STDOUT,
             )
-            
+
             final_text = ""
-            
+
             async def read_output():
                 nonlocal final_text
                 while True:
                     line = await process.stdout.readline()
                     if not line:
                         break
-                    
-                    line_str = line.decode('utf-8', errors='replace').strip()
+
+                    line_str = line.decode("utf-8", errors="replace").strip()
                     if not line_str:
                         continue
-                        
+
                     try:
                         data = json.loads(line_str)
                         if data.get("type") == "textDelta":
                             final_text += data.get("textDelta", "")
-                        elif data.get("type") == "text" and "part" in data and data["part"].get("type") == "text":
+                        elif (
+                            data.get("type") == "text"
+                            and "part" in data
+                            and data["part"].get("type") == "text"
+                        ):
                             final_text += data["part"]["text"]
                     except json.JSONDecodeError:
                         # Capture non-JSON output which might be an error message
                         logger.error(f"OpenCodeCLI raw output: {line_str}")
-                        if "Free usage exceeded" in line_str or "Insufficient Balance" in line_str:
-                            raise RuntimeError(f"OpenCode API limit reached: {line_str}")
+                        if (
+                            "Free usage exceeded" in line_str
+                            or "Insufficient Balance" in line_str
+                        ):
+                            raise RuntimeError(
+                                f"OpenCode API limit reached: {line_str}"
+                            )
                 await process.wait()
 
             try:
@@ -318,13 +353,14 @@ class OpenCodeCLIAgentModel(AgentModel):
                 except Exception:
                     pass
                 raise TimeoutError("OpenCode CLI execution timed out after 180 seconds")
-            
+
             # Извлекаем JSON из текста (на случай если модель добавила <think> или другой текст)
             import re
-            json_match = re.search(r'(\{.*\})', final_text, re.DOTALL)
+
+            json_match = re.search(r"(\{.*\})", final_text, re.DOTALL)
             if json_match:
                 final_text = json_match.group(1)
-            
+
             # Clean up the output string if it contains markdown formatting
             final_text = final_text.strip()
             if final_text.startswith("```json"):
@@ -332,27 +368,37 @@ class OpenCodeCLIAgentModel(AgentModel):
             if final_text.endswith("```"):
                 final_text = final_text[:-3]
             final_text = final_text.strip()
-            
+
             logger.info(f"OpenCodeCLIModel final extracted text: {final_text}")
-            
+
             # If Pydantic AI expects a structured result tool, return a ToolCallPart
             if self.result_tools:
                 try:
                     args_dict = json.loads(final_text)
                     tool_name = self.result_tools[0].name
                     from pydantic_ai.messages import ToolCallPart
-                    return ModelResponse(parts=[ToolCallPart.from_raw_args(tool_name=tool_name, args=args_dict)]), Usage()
+
+                    return ModelResponse(
+                        parts=[
+                            ToolCallPart.from_raw_args(
+                                tool_name=tool_name, args=args_dict
+                            )
+                        ]
+                    ), Usage()
                 except Exception as e:
-                    logger.warning(f"Failed to parse JSON for ToolCallPart: {e}. Falling back to TextPart.")
-            
+                    logger.warning(
+                        f"Failed to parse JSON for ToolCallPart: {e}. Falling back to TextPart."
+                    )
+
             return ModelResponse(parts=[TextPart(content=final_text)]), Usage()
-            
+
         finally:
             if os.path.exists(temp_file_path):
                 try:
                     os.remove(temp_file_path)
                 except Exception:
                     pass
+
 
 class OpenCodeCLIModel(Model):
     def __init__(self, model_name: str = "opencode/deepseek-v4-flash-free"):
@@ -373,20 +419,24 @@ class OpenCodeCLIModel(Model):
     def name(self) -> str:
         return self.model_name
 
+
 import contextvars
 
-_active_model: contextvars.ContextVar['Model'] = contextvars.ContextVar(
-    '_active_model',
+_active_model: contextvars.ContextVar["Model"] = contextvars.ContextVar(
+    "_active_model",
     default=OpenCodeCLIModel("opencode/deepseek-v4-flash-free"),
 )
 
 
-def resolve_llm_model(profile_config: dict | None = None) -> 'Model':
+def resolve_llm_model(profile_config: dict | None = None) -> "Model":
     """
     Build a pydantic-ai Model based on profile_config['models']['llm_extraction'].
     Supported providers:
       - 'opencode' → OpenCodeCLIModel (local CLI agent)
       - 'ollama'   → OpenAIModel pointing to remote Ollama /v1 endpoint
+      - 'router_ai' → OpenAIModel pointing to routerai.ru/api/v1
+      - 'openrouter' → OpenAIModel pointing to openrouter.ai/api/v1
+      - 'yandex_studio' → OpenAIModel pointing to ai.api.cloud.yandex.net/v1 (Yandex AI Studio)
     Falls back to OpenCode if no profile_config is provided.
     """
     if profile_config is None:
@@ -408,18 +458,20 @@ def resolve_llm_model(profile_config: dict | None = None) -> 'Model':
             base_url = base_url[:-9]
         if not base_url.endswith("/v1"):
             base_url = f"{base_url}/v1"
-            
+
         timeout_seconds = float(llm_cfg.get("timeout_seconds", 600.0))
-        logger.info(f"Resolved LLM provider: ollama, model: {model_name}, base_url: {base_url}, timeout: {timeout_seconds}s")
-        
+        logger.info(
+            f"Resolved LLM provider: ollama, model: {model_name}, base_url: {base_url}, timeout: {timeout_seconds}s"
+        )
+
         # Create a custom HTTPX client to bypass the default 5/10 min timeouts
         http_client = httpx.AsyncClient(timeout=timeout_seconds)
         async_openai_client = AsyncOpenAI(
             base_url=base_url,
             api_key=settings.ollama_ocr_token or "ollama",
-            http_client=http_client
+            http_client=http_client,
         )
-        
+
         return PydanticOpenAIModel(
             model_name or "qwen3.6:27b",
             openai_client=async_openai_client,
@@ -430,21 +482,89 @@ def resolve_llm_model(profile_config: dict | None = None) -> 'Model':
         from openai import AsyncOpenAI
 
         settings = get_settings()
-        base_url = os.environ.get("OCR_ROUTER_AI_BASE_URL") or settings.router_ai_base_url or "https://routerai.ru/api/v1"
+        base_url = (
+            os.environ.get("OCR_ROUTER_AI_BASE_URL")
+            or settings.router_ai_base_url
+            or "https://routerai.ru/api/v1"
+        )
         api_key = os.environ.get("OCR_ROUTER_AI_API_KEY") or settings.router_ai_api_key
 
         if not api_key:
-            raise ValueError("OCR_ROUTER_AI_API_KEY is not set in environment or settings")
+            raise ValueError(
+                "OCR_ROUTER_AI_API_KEY is not set in environment or settings"
+            )
 
         timeout_seconds = float(llm_cfg.get("timeout_seconds", 180.0))
         model_id = model_name or "deepseek/deepseek-v4-flash"
-        logger.info(f"Resolved LLM provider: router_ai, model: {model_id}, base_url: {base_url}, timeout: {timeout_seconds}s")
+        logger.info(
+            f"Resolved LLM provider: router_ai, model: {model_id}, base_url: {base_url}, timeout: {timeout_seconds}s"
+        )
+
+        http_client = httpx.AsyncClient(timeout=timeout_seconds)
+        async_openai_client = AsyncOpenAI(
+            base_url=base_url, api_key=api_key, http_client=http_client
+        )
+        return PydanticOpenAIModel(
+            model_id,
+            openai_client=async_openai_client,
+        )
+    elif provider == "openrouter":
+        from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
+        import httpx
+        from openai import AsyncOpenAI
+
+        settings = get_settings()
+        base_url = "https://openrouter.ai/api/v1"
+        api_key = os.environ.get("OPENROUTER_API_KEY") or settings.openrouter_api_key
+
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY is not set in environment or settings")
+
+        timeout_seconds = float(llm_cfg.get("timeout_seconds", 180.0))
+        logger.info(
+            f"Resolved LLM provider: openrouter, model: {model_name}, base_url: {base_url}, timeout: {timeout_seconds}s"
+        )
+
+        http_client = httpx.AsyncClient(timeout=timeout_seconds)
+        async_openai_client = AsyncOpenAI(
+            base_url=base_url, api_key=api_key, http_client=http_client
+        )
+        return PydanticOpenAIModel(
+            model_name or "openai/gpt-4o-mini",
+            openai_client=async_openai_client,
+        )
+    elif provider == "yandex_studio":
+        from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
+        import httpx
+        from openai import AsyncOpenAI
+
+        settings = get_settings()
+        base_url = (
+            os.environ.get("OCR_YANDEX_STUDIO_BASE_URL")
+            or settings.yandex_studio_base_url
+            or "https://ai.api.cloud.yandex.net/v1"
+        )
+        api_key = (
+            os.environ.get("OCR_YANDEX_STUDIO_API_KEY")
+            or settings.yandex_studio_api_key
+        )
+
+        if not api_key:
+            raise ValueError(
+                "OCR_YANDEX_STUDIO_API_KEY is not set in environment or settings"
+            )
+
+        timeout_seconds = float(llm_cfg.get("timeout_seconds", 180.0))
+        model_id = model_name or "gpt://b1gf6vai2af80k10pig0/deepseek-v4-flash/latest"
+        logger.info(
+            f"Resolved LLM provider: yandex_studio, model: {model_id}, base_url: {base_url}, timeout: {timeout_seconds}s"
+        )
 
         http_client = httpx.AsyncClient(timeout=timeout_seconds)
         async_openai_client = AsyncOpenAI(
             base_url=base_url,
             api_key=api_key,
-            http_client=http_client
+            http_client=http_client,
         )
         return PydanticOpenAIModel(
             model_id,
@@ -666,7 +786,10 @@ async def compare_company_names(
 
 
 async def run_agent_extraction(
-    text: str, fields_config: Dict[str, Any], profile_id: str | None = None, profile_config: dict | None = None
+    text: str,
+    fields_config: Dict[str, Any],
+    profile_id: str | None = None,
+    profile_config: dict | None = None,
 ) -> Dict[str, dict]:
     # Resolve and activate the LLM model based on profile config
     resolved_model = resolve_llm_model(profile_config)
@@ -703,20 +826,20 @@ async def _run_agent_extraction_impl(
     if profile_id == "rtk" and not is_tax_document:
         combined_fields = ["creditor_inn", "claims_amount", "grounds"]
         if all(f in fields_config for f in combined_fields):
-            logger.info("Executing combined RTK extraction for creditor_inn, claims_amount, grounds.")
+            logger.info(
+                "Executing combined RTK extraction for creditor_inn, claims_amount, grounds."
+            )
             combined_prompt_parts = []
             for f in combined_fields:
                 f_instruction = fields_config[f].get("prompt_instruction", "")
-                combined_prompt_parts.append(
-                    f"--- FIELD: {f} ---\n{f_instruction}"
-                )
+                combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
             combined_instructions = "\n\n".join(combined_prompt_parts)
             combined_prompt = (
                 f"Instruction: You are extracting multiple fields at once. Here are the specific instructions for each field:\n\n"
                 f"{combined_instructions}\n\n"
                 f"Document Text:\n{text[:10000]}"
             )
-            
+
             max_attempts = 3
             combined_data = None
             for attempt in range(1, max_attempts + 1):
@@ -725,25 +848,31 @@ async def _run_agent_extraction_impl(
                     combined_data = result.data
                     break
                 except Exception as e:
-                    logger.warning(f"Combined RTK extraction attempt {attempt} failed: {e}")
+                    logger.warning(
+                        f"Combined RTK extraction attempt {attempt} failed: {e}"
+                    )
                     if attempt == max_attempts:
-                        logger.error("Combined RTK extraction completely failed. Falling back to individual extraction.")
+                        logger.error(
+                            "Combined RTK extraction completely failed. Falling back to individual extraction."
+                        )
                     elif attempt == 2:
                         await asyncio.sleep(15)
-            
+
             if combined_data:
                 # 1. Store creditor_inn
                 inn_val = None
                 if combined_data.creditor_inn:
                     inn_match = re.search(r"\d{10,12}", str(combined_data.creditor_inn))
-                    inn_val = inn_match.group(0) if inn_match else combined_data.creditor_inn
+                    inn_val = (
+                        inn_match.group(0) if inn_match else combined_data.creditor_inn
+                    )
                 results["creditor_inn"] = {
                     "value": inn_val,
                     "confidence": combined_data.creditor_inn_confidence,
                     "reasoning": combined_data.creditor_inn_reasoning,
                     "source": "rtk_combined",
                 }
-                
+
                 # 2. Store claims_amount
                 amt_val = None
                 if (
@@ -759,12 +888,12 @@ async def _run_agent_extraction_impl(
                     "reasoning": combined_data.claims_amount_reasoning,
                     "source": "rtk_combined",
                 }
-                
+
                 # 3. Validate and store grounds
                 grounds_val = None
                 grounds_conf = combined_data.grounds_confidence
                 grounds_reason = combined_data.grounds_reasoning
-                
+
                 grounds_def = fields_config["grounds"]
                 grounds_instruction = grounds_def.get("prompt_instruction", "")
                 parsed_grounds = re.findall(r'-\s*"([^"]+)"', grounds_instruction)
@@ -788,11 +917,13 @@ async def _run_agent_extraction_impl(
                         "административное правонарушение",
                     ]
                 )
-                
+
                 clean_val_str = "null"
                 if combined_data.grounds:
-                    clean_val_str = str(combined_data.grounds).strip().lower().strip("'.\",")
-                
+                    clean_val_str = (
+                        str(combined_data.grounds).strip().lower().strip("'.\",")
+                    )
+
                 if clean_val_str not in ("null", "none", ""):
                     matched_ground = None
                     for vg in VALID_GROUNDS:
@@ -803,7 +934,7 @@ async def _run_agent_extraction_impl(
                         ):
                             matched_ground = vg
                             break
-                    
+
                     if matched_ground:
                         grounds_val = matched_ground
                     else:
@@ -818,11 +949,18 @@ async def _run_agent_extraction_impl(
                         )
                         for attempt in range(1, 3):
                             try:
-                                grounds_result = await agent_grounds.run(current_prompt, deps=text)
+                                grounds_result = await agent_grounds.run(
+                                    current_prompt, deps=text
+                                )
                                 g_data = grounds_result.data
                                 g_clean = "null"
                                 if g_data.grounds:
-                                    g_clean = str(g_data.grounds).strip().lower().strip("'.\",")
+                                    g_clean = (
+                                        str(g_data.grounds)
+                                        .strip()
+                                        .lower()
+                                        .strip("'.\",")
+                                    )
                                 if g_clean in ("null", "none", ""):
                                     grounds_val = None
                                     grounds_conf = g_data.confidence
@@ -850,8 +988,10 @@ async def _run_agent_extraction_impl(
                                         f"Если в тексте нет ничего похожего, верни null. Не придумывай свои варианты!"
                                     )
                             except Exception as e:
-                                logger.warning(f"Grounds retry attempt {attempt} failed: {e}")
-                
+                                logger.warning(
+                                    f"Grounds retry attempt {attempt} failed: {e}"
+                                )
+
                 results["grounds"] = {
                     "value": grounds_val,
                     "confidence": grounds_conf,
@@ -861,12 +1001,13 @@ async def _run_agent_extraction_impl(
 
     for field_name in ordered_fields:
         if field_name in results:
-            logger.info(f"Field {field_name} already populated (likely from combined extraction), skipping.")
+            logger.info(
+                f"Field {field_name} already populated (likely from combined extraction), skipping."
+            )
             continue
         field_def = fields_config[field_name]
         extraction_method = field_def.get("extraction_method", "llm")
         logger.info(f"Extracting field {field_name} using method {extraction_method}")
-
 
         if profile_id == "court_decision_ru" and field_name in [
             "case_number",
@@ -973,17 +1114,28 @@ async def _run_agent_extraction_impl(
                         confidence = 0.0
                         reasoning = ""
                         if known_inn:
-                            cleaned_inn = "".join(c for c in str(known_inn) if c.isdigit())
+                            cleaned_inn = "".join(
+                                c for c in str(known_inn) if c.isdigit()
+                            )
                             if len(cleaned_inn) in (10, 12):
-                                logger.info(f"Custom creditor extraction for RTK non-tax document. Using INN: {cleaned_inn}")
-                                web_search_text = await asyncio.wait_for(
-                                    asyncio.to_thread(_search_by_inn, cleaned_inn),
-                                    timeout=25,
-                                ) or "Company name not found"
-                                
-                                prompt_tmpl = field_def.get("prompt_instruction_inn_web_search")
+                                logger.info(
+                                    f"Custom creditor extraction for RTK non-tax document. Using INN: {cleaned_inn}"
+                                )
+                                web_search_text = (
+                                    await asyncio.wait_for(
+                                        asyncio.to_thread(_search_by_inn, cleaned_inn),
+                                        timeout=25,
+                                    )
+                                    or "Company name not found"
+                                )
+
+                                prompt_tmpl = field_def.get(
+                                    "prompt_instruction_inn_web_search"
+                                )
                                 if prompt_tmpl:
-                                    prompt = prompt_tmpl.format(inn=cleaned_inn, web_search_text=web_search_text)
+                                    prompt = prompt_tmpl.format(
+                                        inn=cleaned_inn, web_search_text=web_search_text
+                                    )
                                 else:
                                     prompt = (
                                         f"Выдели официальное наименование кредитора/организации по ИНН: {cleaned_inn} исключительно на основе результатов интернет-поиска.\n\n"
@@ -995,17 +1147,21 @@ async def _run_agent_extraction_impl(
                                         f"- reasoning: краткое объяснение, из каких строк поиска взято наименование\n"
                                     )
                                 try:
-                                    result = await company_name_extraction_agent.run(prompt)
+                                    result = await company_name_extraction_agent.run(
+                                        prompt
+                                    )
                                     data = result.data
                                     val = _clean_llm_string(data.company_name)
                                     confidence = 0.9 if val else 0.0
                                     reasoning = f"{data.reasoning} | Extracted directly from web search results by INN {cleaned_inn} without reading document text."
                                 except Exception as e:
-                                    logger.warning(f"Custom creditor extraction failed: {e}")
+                                    logger.warning(
+                                        f"Custom creditor extraction failed: {e}"
+                                    )
                                     val = None
                                     confidence = 0.0
                                     reasoning = f"Failed custom extraction: {e}"
-                        
+
                         results[field_name] = {
                             "value": val,
                             "confidence": confidence,
@@ -1088,6 +1244,7 @@ async def _run_agent_extraction_impl(
                                 break
                             except Exception as e:
                                 import traceback
+
                                 logger.warning(
                                     f"LLM call attempt {attempt} failed for field creditor: {e}\n{traceback.format_exc()}"
                                 )
@@ -1216,8 +1373,14 @@ async def _run_agent_extraction_impl(
                                     continue
                             break
 
-                    if (not val or val == "Ошибка распознавания") and profile_id == "rtk" and not is_tax_document:
-                        logger.info("Creditor not found or recognition error. Initiating fallback search for INN and creditor.")
+                    if (
+                        (not val or val == "Ошибка распознавания")
+                        and profile_id == "rtk"
+                        and not is_tax_document
+                    ):
+                        logger.info(
+                            "Creditor not found or recognition error. Initiating fallback search for INN and creditor."
+                        )
                         inn_fallback_prompt = (
                             "Поищи актуальный ИНН в тексте документа еще раз. "
                             "Рекомендуется использовать инструмент search_creditor_inn передав в него имя кредитора/заявителя."
@@ -1226,27 +1389,39 @@ async def _run_agent_extraction_impl(
                         new_inn_val = None
                         for attempt in range(1, max_attempts + 1):
                             try:
-                                inn_result = await agent_creditor_inn.run(f"Instruction: {inn_fallback_prompt}\n\nDocument Text:\n{text[:10000]}", deps=text)
+                                inn_result = await agent_creditor_inn.run(
+                                    f"Instruction: {inn_fallback_prompt}\n\nDocument Text:\n{text[:10000]}",
+                                    deps=text,
+                                )
                                 new_inn = inn_result.data.INN
                                 if new_inn:
                                     inn_match = re.search(r"\d{10,12}", str(new_inn))
-                                    new_inn_val = inn_match.group(0) if inn_match else new_inn
+                                    new_inn_val = (
+                                        inn_match.group(0) if inn_match else new_inn
+                                    )
                                     if new_inn_val:
-                                        logger.info(f"Fallback extracted new INN: {new_inn_val}")
+                                        logger.info(
+                                            f"Fallback extracted new INN: {new_inn_val}"
+                                        )
                                         results["creditor_inn"] = {
                                             "value": new_inn_val,
                                             "confidence": inn_result.data.confidence,
-                                            "reasoning": inn_result.data.reasoning + " | fallback search",
-                                            "source": "rtk_fallback_inn"
+                                            "reasoning": inn_result.data.reasoning
+                                            + " | fallback search",
+                                            "source": "rtk_fallback_inn",
                                         }
                                 break
                             except Exception as e:
-                                logger.warning(f"Fallback INN extraction attempt {attempt} failed: {e}")
+                                logger.warning(
+                                    f"Fallback INN extraction attempt {attempt} failed: {e}"
+                                )
                                 if attempt == max_attempts:
-                                    logger.error("Fallback INN extraction completely failed.")
+                                    logger.error(
+                                        "Fallback INN extraction completely failed."
+                                    )
                                 elif attempt == 2:
                                     await asyncio.sleep(15)
-                                    
+
                         if new_inn_val:
                             fallback_creditor_prompt = (
                                 f"ВНИМАНИЕ! Найден уточненный ИНН кредитора: {new_inn_val}\n"
@@ -1257,61 +1432,111 @@ async def _run_agent_extraction_impl(
                             )
                             for attempt in range(1, max_attempts + 1):
                                 try:
-                                    cred_res = await agent_creditor.run(fallback_creditor_prompt, deps=text)
+                                    cred_res = await agent_creditor.run(
+                                        fallback_creditor_prompt, deps=text
+                                    )
                                     data = cred_res.data
-                                    
+
                                     tool_called = False
                                     try:
                                         for msg in cred_res.all_messages():
                                             if hasattr(msg, "parts"):
                                                 for part in msg.parts:
-                                                    if hasattr(part, "tool_name") and getattr(part, "tool_name") == "search_creditor_name":
+                                                    if (
+                                                        hasattr(part, "tool_name")
+                                                        and getattr(part, "tool_name")
+                                                        == "search_creditor_name"
+                                                    ):
                                                         tool_called = True
                                     except Exception:
                                         pass
-                                        
+
                                     if not tool_called:
-                                        cleaned_inn = "".join(c for c in str(new_inn_val) if c.isdigit())
+                                        cleaned_inn = "".join(
+                                            c for c in str(new_inn_val) if c.isdigit()
+                                        )
                                         if len(cleaned_inn) in (10, 12):
-                                            logger.info(f"Fallback LLM hallucinated. Forcing manual call for INN: {cleaned_inn}")
-                                            tool_result_text = await asyncio.wait_for(asyncio.to_thread(_search_by_inn, cleaned_inn), timeout=25) or "Company name not found"
+                                            logger.info(
+                                                f"Fallback LLM hallucinated. Forcing manual call for INN: {cleaned_inn}"
+                                            )
+                                            tool_result_text = (
+                                                await asyncio.wait_for(
+                                                    asyncio.to_thread(
+                                                        _search_by_inn, cleaned_inn
+                                                    ),
+                                                    timeout=25,
+                                                )
+                                                or "Company name not found"
+                                            )
                                             forced_prompt = (
                                                 f"{fallback_creditor_prompt}\n\n"
                                                 f"ВНИМАНИЕ! Ты проигнорировал требование вызвать инструмент поиска имени по ИНН. Я вызвал его принудительно.\n"
                                                 f"Результат поиска по ИНН {cleaned_inn}:\n{tool_result_text}\n"
                                                 f"Учитывая эти данные поиска, извлеки корректное официальное наименование кредитора и верни JSON."
                                             )
-                                            cred_res = await agent_creditor.run(forced_prompt, deps=text)
+                                            cred_res = await agent_creditor.run(
+                                                forced_prompt, deps=text
+                                            )
                                             data = cred_res.data
-                                    
+
                                     val = _clean_llm_string(data.creditor_final)
                                     confidence = data.confidence
                                     reasoning = data.reasoning + " | fallback retry"
-                                    
+
                                     if val:
-                                        cleaned_inn = "".join(c for c in str(new_inn_val) if c.isdigit())
+                                        cleaned_inn = "".join(
+                                            c for c in str(new_inn_val) if c.isdigit()
+                                        )
                                         if len(cleaned_inn) in (10, 12):
-                                            web_search_text = await asyncio.wait_for(asyncio.to_thread(_search_by_inn, cleaned_inn), timeout=25)
+                                            web_search_text = await asyncio.wait_for(
+                                                asyncio.to_thread(
+                                                    _search_by_inn, cleaned_inn
+                                                ),
+                                                timeout=25,
+                                            )
                                             if web_search_text:
-                                                web_company_name = await extract_company_name_from_search(cleaned_inn, web_search_text)
+                                                web_company_name = await extract_company_name_from_search(
+                                                    cleaned_inn, web_search_text
+                                                )
                                                 if web_company_name:
-                                                    web_company_name = _clean_llm_string(web_company_name)
-                                                    comp_res = await compare_company_names(val, web_company_name)
+                                                    web_company_name = (
+                                                        _clean_llm_string(
+                                                            web_company_name
+                                                        )
+                                                    )
+                                                    comp_res = (
+                                                        await compare_company_names(
+                                                            val, web_company_name
+                                                        )
+                                                    )
                                                     if comp_res.is_same:
-                                                        logger.info(f"Fallback match: '{val}' and '{web_company_name}'")
-                                                    elif comp_res.difference_type == "minor":
-                                                        logger.info(f"Fallback minor diff. Replacing '{val}' with '{web_company_name}'")
+                                                        logger.info(
+                                                            f"Fallback match: '{val}' and '{web_company_name}'"
+                                                        )
+                                                    elif (
+                                                        comp_res.difference_type
+                                                        == "minor"
+                                                    ):
+                                                        logger.info(
+                                                            f"Fallback minor diff. Replacing '{val}' with '{web_company_name}'"
+                                                        )
                                                         val = web_company_name
                                                     else:
-                                                        logger.warning(f"Fallback critical mismatch: doc='{val}', web='{web_company_name}'.")
+                                                        logger.warning(
+                                                            f"Fallback critical mismatch: doc='{val}', web='{web_company_name}'."
+                                                        )
                                                         val = "Ошибка распознавания"
                                                         confidence = 0.0
                                                         reasoning = f"{reasoning} | CRITICAL MISMATCH with registry for INN {cleaned_inn} (internet: {web_company_name})."
                                     break
                                 except Exception as e:
-                                    logger.warning(f"Fallback creditor attempt {attempt} failed: {e}")
+                                    logger.warning(
+                                        f"Fallback creditor attempt {attempt} failed: {e}"
+                                    )
                                     if attempt == max_attempts:
-                                        logger.error("Fallback creditor completely failed.")
+                                        logger.error(
+                                            "Fallback creditor completely failed."
+                                        )
                                     elif attempt == 2:
                                         await asyncio.sleep(15)
 
@@ -1523,23 +1748,25 @@ async def _run_agent_extraction_impl(
     # Final pass: if creditor_inn is null/missing, but creditor is found, force web search
     creditor_inn_info = results.get("creditor_inn")
     creditor_info = results.get("creditor")
-    
+
     if creditor_info and creditor_info.get("value"):
         inn_val = creditor_inn_info.get("value") if creditor_inn_info else None
         if not inn_val:
             cred_name = creditor_info.get("value")
-            logger.info(f"creditor_inn is missing/null, but creditor '{cred_name}' is found. Forcing search_creditor_inn tool call.")
+            logger.info(
+                f"creditor_inn is missing/null, but creditor '{cred_name}' is found. Forcing search_creditor_inn tool call."
+            )
             try:
                 # search_creditor_inn is synchronous and ignores ctx
                 found_inn = search_creditor_inn(None, cred_name)
-                
+
                 # Update the result if something was found, or even if not found (to record the attempt)
                 if found_inn and "Not found" not in found_inn:
                     results["creditor_inn"] = {
                         "value": found_inn,
                         "confidence": 0.9,
                         "reasoning": f"Forced internet search by creditor name '{cred_name}' yielded INN {found_inn}.",
-                        "source": "tool_fallback"
+                        "source": "tool_fallback",
                     }
                     logger.info(f"Successfully found INN via fallback: {found_inn}")
                 else:
@@ -1547,7 +1774,7 @@ async def _run_agent_extraction_impl(
                         "value": None,
                         "confidence": 0.0,
                         "reasoning": f"Forced internet search by creditor name '{cred_name}' yielded no results.",
-                        "source": "tool_fallback"
+                        "source": "tool_fallback",
                     }
                     logger.info(f"Fallback search for INN returned no valid results.")
             except Exception as e:
