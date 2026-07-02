@@ -507,6 +507,16 @@ _active_model: contextvars.ContextVar["Model"] = contextvars.ContextVar(
     "_active_model",
     default=OpenCodeCLIModel("opencode/deepseek-v4-flash-free"),
 )
+_active_temperature: contextvars.ContextVar[float] = contextvars.ContextVar(
+    "_active_temperature", default=0.5
+)
+
+
+def _active_model_settings() -> ModelSettings:
+    return ModelSettings(
+        temperature=_active_temperature.get(),
+        timeout=180.0,
+    )
 
 
 def resolve_llm_model(profile_config: dict | None = None) -> "Model":
@@ -965,12 +975,23 @@ async def run_agent_extraction(
     # Resolve and activate the LLM model based on profile config
     resolved_model = resolve_llm_model(profile_config)
     token = _active_model.set(resolved_model)
+
+    llm_cfg = (
+        profile_config.get("models", {}).get("llm_extraction", {})
+        if profile_config
+        else {}
+    )
+    temp = float(llm_cfg.get("temperature", 0.5))
+    temp_token = _active_temperature.set(temp)
+    logger.info(f"Set active temperature={temp} from profile config")
+
     try:
         return await _run_agent_extraction_impl(
             text, fields_config, profile_id, storage_path
         )
     finally:
         _active_model.reset(token)
+        _active_temperature.reset(temp_token)
 
 
 async def _run_agent_extraction_impl(
@@ -1020,7 +1041,11 @@ async def _run_agent_extraction_impl(
             combined_data = None
             for attempt in range(1, max_attempts + 1):
                 try:
-                    result = await agent_rtk_combined.run(combined_prompt, deps=text)
+                    result = await agent_rtk_combined.run(
+                        combined_prompt,
+                        deps=text,
+                        model_settings=_active_model_settings(),
+                    )
                     combined_data = result.data
                     break
                 except Exception as e:
@@ -1145,7 +1170,9 @@ async def _run_agent_extraction_impl(
                         for attempt in range(1, 3):
                             try:
                                 grounds_result = await agent_grounds.run(
-                                    current_prompt, deps=text
+                                    current_prompt,
+                                    deps=text,
+                                    model_settings=_active_model_settings(),
                                 )
                                 g_data = grounds_result.data
                                 g_clean = "null"
@@ -1217,10 +1244,13 @@ async def _run_agent_extraction_impl(
             for attempt in range(1, max_attempts + 1):
                 try:
                     result = await agent_rtk_tax_combined.run(
-                        combined_prompt, deps=text
+                        combined_prompt,
+                        deps=text,
+                        model_settings=_active_model_settings(),
                     )
                     combined_data = result.data
                     break
+
                 except Exception as e:
                     logger.warning(
                         f"Combined tax extraction attempt {attempt} failed: {e}"
@@ -1327,7 +1357,9 @@ async def _run_agent_extraction_impl(
             for attempt in range(1, max_attempts + 1):
                 try:
                     result = await agent_court_decision_combined.run(
-                        combined_prompt, deps=text
+                        combined_prompt,
+                        deps=text,
+                        model_settings=_active_model_settings(),
                     )
                     combined_data = result.data
                     break
@@ -1580,7 +1612,11 @@ async def _run_agent_extraction_impl(
                         reasoning = ""
                         for attempt in range(1, max_attempts + 1):
                             try:
-                                result = await agent.run(base_prompt, deps=text)
+                                result = await agent.run(
+                                    base_prompt,
+                                    deps=text,
+                                    model_settings=_active_model_settings(),
+                                )
                                 val = result.data.creditor_header
                                 confidence = result.data.confidence
                                 reasoning = result.data.reasoning
@@ -1636,7 +1672,11 @@ async def _run_agent_extraction_impl(
                         max_attempts = 3
                         for attempt in range(1, max_attempts + 1):
                             try:
-                                result = await agent.run(current_prompt, deps=text)
+                                result = await agent.run(
+                                    current_prompt,
+                                    deps=text,
+                                    model_settings=_active_model_settings(),
+                                )
                                 break
                             except Exception as e:
                                 import traceback
@@ -1689,7 +1729,11 @@ async def _run_agent_extraction_impl(
                                     f"Учитывая эти данные поиска, извлеки корректное официальное наименование кредитора и верни JSON."
                                 )
                                 try:
-                                    result = await agent.run(forced_prompt, deps=text)
+                                    result = await agent.run(
+                                        forced_prompt,
+                                        deps=text,
+                                        model_settings=_active_model_settings(),
+                                    )
                                 except Exception as e:
                                     logger.warning(
                                         f"Forced LLM call failed for field creditor: {e}"
@@ -1788,6 +1832,7 @@ async def _run_agent_extraction_impl(
                                 inn_result = await agent_creditor_inn.run(
                                     f"Instruction: {inn_fallback_prompt}\n\nDocument Text:\n{text[:10000]}",
                                     deps=text,
+                                    model_settings=_active_model_settings(),
                                 )
                                 new_inn = inn_result.data.INN
                                 if new_inn:
@@ -1829,9 +1874,20 @@ async def _run_agent_extraction_impl(
                             for attempt in range(1, max_attempts + 1):
                                 try:
                                     cred_res = await agent_creditor.run(
-                                        fallback_creditor_prompt, deps=text
+                                        fallback_creditor_prompt, deps=text, model_settings=_active_model_settings()
                                     )
                                     data = cred_res.data
+
+                                    tool_called = False
+                                    try:
+                                        for attempt_cred in range(1, 4):
+                                            if attempt_cred > 1:
+                                                await asyncio.sleep(15)
+                                            try:
+                                                cred_res = await agent_creditor.run(
+                                                    retry_prompt, deps=text, model_settings=_active_model_settings()
+                                                )
+                                                data = cred_res.data
 
                                     tool_called = False
                                     try:
@@ -1941,7 +1997,11 @@ async def _run_agent_extraction_impl(
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         try:
-                            result = await agent.run(base_prompt, deps=text)
+                            result = await agent.run(
+                                base_prompt,
+                                deps=text,
+                                model_settings=_active_model_settings(),
+                            )
                             break
                         except Exception as e:
                             logger.warning(
@@ -2000,7 +2060,11 @@ async def _run_agent_extraction_impl(
 
                     for attempt in range(1, max_attempts + 1):
                         try:
-                            result = await agent.run(current_prompt, deps=text)
+                            result = await agent.run(
+                                current_prompt,
+                                deps=text,
+                                model_settings=_active_model_settings(),
+                            )
                         except Exception as e:
                             logger.warning(
                                 f"LLM call attempt {attempt} failed for field grounds: {e}"
@@ -2067,7 +2131,11 @@ async def _run_agent_extraction_impl(
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         try:
-                            result = await agent.run(base_prompt, deps=text)
+                            result = await agent.run(
+                                base_prompt,
+                                deps=text,
+                                model_settings=_active_model_settings(),
+                            )
                             break
                         except Exception as e:
                             logger.warning(
@@ -2101,7 +2169,11 @@ async def _run_agent_extraction_impl(
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         try:
-                            result = await agent.run(base_prompt, deps=text)
+                            result = await agent.run(
+                                base_prompt,
+                                deps=text,
+                                model_settings=_active_model_settings(),
+                            )
                             break
                         except Exception as e:
                             logger.warning(
