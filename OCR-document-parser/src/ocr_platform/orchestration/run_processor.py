@@ -256,6 +256,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 profile_id=profile_id,
                 pipeline_run_id=pipeline_run_id,
                 document_id=document_id,
+                storage_path=storage_path,
             )
             fields["processing_started_at"] = (
                 processing_started_at.isoformat() if processing_started_at else None

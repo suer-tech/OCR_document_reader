@@ -82,6 +82,10 @@ class RtkCombinedResult(BaseModel):
     claims_amount_confidence: float
     claims_amount_reasoning: str
 
+    has_text_distortions: bool = Field(
+        description="True, если текст документа содержит искажения/ошибки OCR, из-за которых суммы или другие цифры могут быть прочитаны неверно. False, если текст чёткий и все суммы читаются однозначно."
+    )
+
     grounds: str | None = Field(
         description="Точное значение из списка допустимых оснований, либо null"
     )
@@ -621,6 +625,159 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
         return OpenCodeCLIModel(opencode_model)
 
 
+async def _correct_text_via_vision(storage_path: str) -> str | None:
+    """Send PDF to router_ai/google/gemini-2.5-flash-lite for text correction."""
+    import base64
+
+    logger.info("vision_fallback_started", storage_path=storage_path)
+    try:
+        with open(storage_path, "rb") as f:
+            pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        logger.error("vision_fallback_read_failed", error=str(e))
+        return None
+
+    settings = get_settings()
+    base_url = (
+        os.environ.get("OCR_ROUTER_AI_BASE_URL")
+        or settings.router_ai_base_url
+        or "https://routerai.ru/api/v1"
+    )
+    api_key = os.environ.get("OCR_ROUTER_AI_API_KEY") or settings.router_ai_api_key
+    if not api_key:
+        logger.error("vision_fallback_no_api_key")
+        return None
+
+    try:
+        import httpx
+        from openai import AsyncOpenAI
+
+        http_client = httpx.AsyncClient(timeout=120.0)
+        client = AsyncOpenAI(
+            base_url=base_url, api_key=api_key, http_client=http_client
+        )
+        try:
+            resp = await client.chat.completions.create(
+                model="google/gemini-2.5-flash-lite",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:application/pdf;base64,{pdf_b64}"
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Этот документ был извлечён с помощью OCR, и в тексте есть искажения/ошибки. "
+                                    "Посмотри на оригинальный PDF-документ и верни ПОЛНЫЙ текст документа без искажений, "
+                                    "исправляя все ошибки OCR. Сохрани структуру документа."
+                                ),
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=32768,
+                temperature=0.0,
+            )
+            corrected = resp.choices[0].message.content
+            if corrected and corrected.strip():
+                logger.info("vision_fallback_succeeded", text_length=len(corrected))
+                return corrected.strip()
+            logger.warning("vision_fallback_empty_response")
+            return None
+        finally:
+            await http_client.aclose()
+    except Exception as e:
+        logger.error("vision_fallback_api_failed", error=str(e))
+        return None
+
+
+async def _re_extract_claims_amount(corrected_text: str) -> dict | None:
+    """Extract claims_amount from corrected text using router_ai/deepseek-v4-flash."""
+    from pydantic_ai import Agent as PydanticAgent
+
+    settings = get_settings()
+    base_url = (
+        os.environ.get("OCR_ROUTER_AI_BASE_URL")
+        or settings.router_ai_base_url
+        or "https://routerai.ru/api/v1"
+    )
+    api_key = os.environ.get("OCR_ROUTER_AI_API_KEY") or settings.router_ai_api_key
+    if not api_key:
+        logger.error("re_extract_no_api_key")
+        return None
+
+    try:
+        import httpx
+        from openai import AsyncOpenAI
+        from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
+
+        http_client = httpx.AsyncClient(timeout=120.0)
+        openai_client = AsyncOpenAI(
+            base_url=base_url, api_key=api_key, http_client=http_client
+        )
+
+        class ClaimsReExtractResult(BaseModel):
+            commitments_count: int | None = Field(
+                description="Количество отдельных обязательств/договоров, или null"
+            )
+            amounts: list[float] | None = Field(
+                description="Список сумм для каждого обязательства, или null"
+            )
+            confidence: float
+            reasoning: str
+
+        fallback_model = PydanticOpenAIModel(
+            "deepseek/deepseek-v4-flash", openai_client=openai_client
+        )
+        agent = PydanticAgent(
+            fallback_model,
+            result_type=ClaimsReExtractResult,
+            retries=2,
+            system_prompt=(
+                "Ты — эксперт по извлечению данных из текстов судебных документов. "
+                "Извлеки сведения о сумме требований кредитора."
+            ),
+            model_settings=ModelSettings(temperature=0.0, timeout=120.0),
+        )
+        try:
+            result = await agent.run(
+                f"Instruction: Извлеки количество обязательств/договоров и суммы по каждому из текста документа.\n\n"
+                f"Document Text:\n{corrected_text[:15000]}"
+            )
+            data = result.data
+            if (
+                data.commitments_count is not None
+                and data.amounts
+                and len(data.amounts) > 0
+            ):
+                total = sum(data.amounts)
+                amt_val = f"{total:.2f}" if total > 0 else None
+            else:
+                amt_val = None
+            logger.info(
+                "re_extract_succeeded", value=amt_val, confidence=data.confidence
+            )
+            return {
+                "value": amt_val,
+                "confidence": data.confidence,
+                "reasoning": f"[Vision fallback] {data.reasoning}",
+                "source": "rtk_combined_vision_fallback",
+            }
+        except Exception as e:
+            logger.error("re_extract_failed", error=str(e))
+            return None
+        finally:
+            await http_client.aclose()
+    except Exception as e:
+        logger.error("re_extract_setup_failed", error=str(e))
+        return None
+
+
 class DynamicModel(Model):
     """Proxy Model that delegates to whichever real Model is set in _active_model ContextVar."""
 
@@ -843,18 +1000,24 @@ async def run_agent_extraction(
     fields_config: Dict[str, Any],
     profile_id: str | None = None,
     profile_config: dict | None = None,
+    storage_path: str | None = None,
 ) -> Dict[str, dict]:
     # Resolve and activate the LLM model based on profile config
     resolved_model = resolve_llm_model(profile_config)
     token = _active_model.set(resolved_model)
     try:
-        return await _run_agent_extraction_impl(text, fields_config, profile_id)
+        return await _run_agent_extraction_impl(
+            text, fields_config, profile_id, storage_path
+        )
     finally:
         _active_model.reset(token)
 
 
 async def _run_agent_extraction_impl(
-    text: str, fields_config: Dict[str, Any], profile_id: str | None = None
+    text: str,
+    fields_config: Dict[str, Any],
+    profile_id: str | None = None,
+    storage_path: str | None = None,
 ) -> Dict[str, dict]:
     results = {}
 
@@ -942,7 +1105,15 @@ async def _run_agent_extraction_impl(
                     "source": "rtk_combined",
                 }
 
-                # 3. Validate and store grounds
+                if combined_data.has_text_distortions and storage_path:
+                    logger.info("vision_fallback_triggered", storage_path=storage_path)
+                    corrected_text = await _correct_text_via_vision(storage_path)
+                    if corrected_text:
+                        fallback_result = await _re_extract_claims_amount(
+                            corrected_text
+                        )
+                        if fallback_result:
+                            results["claims_amount"] = fallback_result
                 grounds_val = None
                 grounds_conf = combined_data.grounds_confidence
                 grounds_reason = combined_data.grounds_reasoning
