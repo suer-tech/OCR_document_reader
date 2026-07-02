@@ -157,14 +157,18 @@ def _search_by_inn(inn: str) -> str | None:
             page_url = r.get("href", "")
             if page_url:
                 texts.append(f"Source URL: {page_url}\n")
-                
+
         # Validate that the search result is relevant (contains 'инн' or the actual inn number)
         if texts:
             combined_text = "".join(texts).lower()
             if "инн" not in combined_text and inn not in combined_text:
-                logger.info("ddg_search_results_rejected", reason="Missing 'инн' keyword and INN number", inn=inn)
+                logger.info(
+                    "ddg_search_results_rejected",
+                    reason="Missing 'инн' keyword and INN number",
+                    inn=inn,
+                )
                 texts = []
-                
+
     except Exception as exc:
         logger.warning("ddg_search_failed_in_name_search", error=str(exc))
 
@@ -194,16 +198,55 @@ def _search_by_inn(inn: str) -> str | None:
                         title = title_elem.text.strip()
                         snippet = snippet_elem.text.strip()
                         texts.append(f"Title: {title}\nSnippet: {snippet}\n")
-                        
+
                 # Validate HTML fallback results
                 if texts:
                     combined_text = "".join(texts).lower()
                     if "инн" not in combined_text and inn not in combined_text:
-                        logger.info("ddg_html_results_rejected", reason="Missing 'инн' keyword and INN number", inn=inn)
+                        logger.info(
+                            "ddg_html_results_rejected",
+                            reason="Missing 'инн' keyword and INN number",
+                            inn=inn,
+                        )
                         texts = []
-                        
+
         except Exception as exc:
             logger.warning("ddg_html_fallback_failed", error=str(exc))
+
+    # --- Step 3: Прямой запрос к list-org (всегда, как дополнительный источник) ---
+    logger.info("fetching_list_org_for_name", inn=inn)
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        url = f"https://www.list-org.com/search?type=inn&val={inn}"
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            import re
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            org_names = set()
+            for match in re.finditer(
+                r"(ООО|ПКО|АО|ЗАО|ОАО)\s[^<]{3,80}(?=<)", resp.text
+            ):
+                name = match.group(0).strip()
+                if name not in org_names:
+                    org_names.add(name)
+                    texts.append(f"Title: {name}\nSnippet: Организация с ИНН {inn}\n")
+                    texts.append(
+                        f"Source URL: https://www.list-org.com/search?type=inn&val={inn}\n"
+                    )
+            if not org_names:
+                h1 = soup.find("h1")
+                if h1:
+                    texts.append(
+                        f"Title: {h1.get_text(strip=True)}\nSnippet: Результат поиска по ИНН {inn}\n"
+                    )
+                    texts.append(
+                        f"Source URL: https://www.list-org.com/search?type=inn&val={inn}\n"
+                    )
+    except Exception as exc:
+        logger.warning("list_org_fallback_failed", error=str(exc))
 
     if not texts:
         return None
