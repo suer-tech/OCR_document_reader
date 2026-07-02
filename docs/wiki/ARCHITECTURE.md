@@ -30,13 +30,13 @@
 - Определение профиля обработки по типу документа (Routing).
 - Исполнение шагов пайплайна согласно YAML-конфигурации.
 - Запись событий пайплайна (start/finish/error) в базу данных.
+- **Кэширование распознанного текста**: Перед запуском OCR проверяет наличие записи `TextVersion` для документа. Если текст уже был извлечен ранее, оркестратор восстанавливает его напрямую из БД, предотвращая повторные тяжелые вызовы OCR.
 
 ### 1.3. Сервисы (`src/ocr_platform/services`)
 **Ответственность:**
-- Бизнес-логика и вызовы ML/AI сервисов.
-- **`ocr_service.py`**: Извлечение текста (pdfplumber) и запуск OCR (DeepSeek OCR, Tesseract).
-- **`document_intel_service.py`**: Запуск NLP-экстрактора для получения структурированных полей.
-- **`extraction_agent.py`**: Запуск LLM-агентов (PydanticAI) для извлечения полей со строгой типизацией (Structured Outputs).
+- **`ocr_service.py`**: Извлечение текста (pdfplumber, pymupdf) и запуск OCR (GLM-OCR c fallback-цепочкой на Tesseract).
+- **`document_intel_service.py`**: Единый сервис диспетчеризации экстракции полей, перенаправляющий вызовы к `extraction_agent.py`.
+- **`extraction_agent.py`**: Запуск LLM-агентов (PydanticAI) для извлечения полей со строгой типизацией (Structured Outputs) через провайдеров `opencode` (DeepSeek CLI), `ollama` (v1 API) и `router_ai` (routerai.ru). Поддерживает объединенный агентный запрос `agent_rtk_combined` (для извлечения `creditor_inn`, `claims_amount` и `grounds` за один проход) с целью экономии токенов.
 - **`validation_service.py`**: Проверка форматов (ИНН, даты, суммы) и согласованности.
 - **`quality_service.py`**: Подсчет Quality Score.
 

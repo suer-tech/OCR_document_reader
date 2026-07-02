@@ -1,0 +1,27 @@
+Timestamp,Note,Accuracy (%),Avg Time (s),Total Time (s),Errors
+20260630_140124,Parallel GLM test 1 doc,0.00,0.29,0.29,1
+20260630_141506,Parallel GLM test 1 doc,0.00,218.17,218.17,0
+20260630_142454,Parallel GLM test 1 doc (glm-ocr:latest),0.00,203.90,203.90,0
+20260630_143253,GLM test temp=0,0.00,354.68,354.68,0
+20260630_144302,Parallel deepseek-ocr test temp=0.1,0.00,175.49,175.49,0
+20260630_145353,Encoding fix GLM test,0.00,179.61,179.61,0
+20260630_145848,Final test with deepseek-ocr,0.00,193.66,193.66,0
+20260630_151239,Final test with deepseek-ocr,0.00,193.66,193.66,0
+20260630_151637,Test after API fix,0.00,149.32,149.32,0
+20260630_152108,Final test with script fixed,75.00,157.45,157.45,0
+20260630_153032,Benchmark on 20 documents,71.25,130.06,2601.15,0
+20260630_171935,Default Run,66.67,21.94,438.88,17
+20260630_184634,Run 1 - initial,67.86,178.78,8938.79,1
+20260630_224507,Run 2 - after 3h,67.86,1399.25,69962.41,36
+20260630_224348,Run 2 - after 3h,69.64,1405.79,70289.57,36
+20260701_113958,RouterAI Single Document Test,0.00,57.95,57.95,1
+20260701_114123,RouterAI Single Document Test,0.00,113.67,113.67,0
+20260701_114400,RouterAI Single Document Test v2,75.00,444.41,444.41,0
+20260701_120402,RouterAI Custom Creditor Extraction Test,100.00,114.20,114.20,0
+20260701_153415,Single document run,0.00,59.60,59.60,1
+20260701_153611,Single document run,100.00,136.84,136.84,0
+20260701_160155,Combined extraction run,100.00,95.64,95.64,0
+20260701_162552,Simultaneous 10 documents burst,72.50,98.27,982.75,0
+20260701_164409,VTB1 single test,75.00,56.03,56.03,0
+20260701_170646,Drive Click Fallback Test,100.00,67.53,67.53,0
+20260701_180201,Yandex Studio Test,100.00,71.31,71.31,0

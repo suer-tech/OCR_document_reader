@@ -7,7 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="OCR_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="OCR_", env_file=".env", extra="ignore"
+    )
 
     app_name: str = "OCR Document Parser"
 
@@ -32,6 +34,10 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    router_ai_api_key: str | None = None
+    router_ai_base_url: str = "https://routerai.ru/api/v1"
+    yandex_studio_api_key: str | None = None
+    yandex_studio_base_url: str = "https://ai.api.cloud.yandex.net/v1"
 
     # Используется как общий fallback, если список fallback-моделей
     # не задан в YAML-конфиге конкретного шага.
@@ -50,10 +56,18 @@ class Settings(BaseSettings):
     ocr_engine: str = Field(default="tesseract", validation_alias="OCR_ENGINE")
 
     # Удаленный сервер Ollama для OCR
-    ollama_ocr_url: str = Field(default="http://localhost:11434", validation_alias="OCR_OLLAMA_OCR_URL")
-    ollama_ocr_model: str = Field(default="glm-ocr", validation_alias="OCR_OLLAMA_OCR_MODEL")
-    ollama_ocr_token: str | None = Field(default=None, validation_alias="OCR_OLLAMA_OCR_TOKEN")
-    glm_timeout_seconds: float = Field(default=500.0, validation_alias="OCR_GLM_TIMEOUT_SECONDS")
+    ollama_ocr_url: str = Field(
+        default="http://localhost:11434", validation_alias="OCR_OLLAMA_OCR_URL"
+    )
+    ollama_ocr_model: str = Field(
+        default="glm-ocr", validation_alias="OCR_OLLAMA_OCR_MODEL"
+    )
+    ollama_ocr_token: str | None = Field(
+        default=None, validation_alias="OCR_OLLAMA_OCR_TOKEN"
+    )
+    glm_timeout_seconds: float = Field(
+        default=500.0, validation_alias="OCR_GLM_TIMEOUT_SECONDS"
+    )
 
     # Максимальное количество retries на одну страницу GLM OCR.
     glm_page_retries: int = Field(default=3, validation_alias="OCR_GLM_PAGE_RETRIES")
@@ -62,4 +76,3 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-

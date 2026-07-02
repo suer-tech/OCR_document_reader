@@ -119,21 +119,44 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             requested_document_type = doc.document_type
             content_type = file_rec.file_type
             storage_path = file_rec.storage_path
-        # Извлечение текста: pdfplumber → pymupdf → OCR (для PDF без текстового слоя)
-        import asyncio
+        # Сначала проверим, нет ли уже извлеченного текста в БД для этого документа (после предыдущих попыток)
+        extracted_text = None
+        ocr_was_used = False
+        ocr_latency_ms = None
+        text_source = "database_cache"
 
-        (
-            extracted_text,
-            ocr_was_used,
-            ocr_latency_ms,
-            text_source,
-        ) = await asyncio.to_thread(
-            ocr_service.extract_text_at_ingest,
-            storage_path,
-            content_type,
-            document_id=document_id,
-            pipeline_run_id=pipeline_run_id,
-        )
+        with repository.get_session() as session:
+            existing_txt = (
+                session.query(models.TextVersion)
+                .filter(models.TextVersion.document_id == document_id)
+                .order_by(models.TextVersion.id.desc())
+                .first()
+            )
+            if existing_txt and existing_txt.text.strip():
+                extracted_text = existing_txt.text
+                logger.info(
+                    "restored_text_from_db",
+                    document_id=document_id,
+                    pipeline_run_id=pipeline_run_id,
+                    text_length=len(extracted_text),
+                )
+
+        if not extracted_text:
+            # Извлечение текста: pdfplumber → pymupdf → OCR (для PDF без текстового слоя)
+            import asyncio
+
+            (
+                extracted_text,
+                ocr_was_used,
+                ocr_latency_ms,
+                text_source,
+            ) = await asyncio.to_thread(
+                ocr_service.extract_text_at_ingest,
+                storage_path,
+                content_type,
+                document_id=document_id,
+                pipeline_run_id=pipeline_run_id,
+            )
         detection_text = extracted_text
 
         if ocr_was_used:
@@ -210,13 +233,22 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             if not file_rec:
                 raise HTTPException(status_code=500, detail="file record not found")
 
-            text_version = models.TextVersion(
-                document_id=document_id,
-                pipeline_run_id=pipeline_run_id,
-                text=text,
+            existing_run_txt = (
+                session.query(models.TextVersion)
+                .filter(models.TextVersion.pipeline_run_id == pipeline_run_id)
+                .first()
             )
-            session.add(text_version)
-            session.commit()
+            if not existing_run_txt:
+                text_version = models.TextVersion(
+                    document_id=document_id,
+                    pipeline_run_id=pipeline_run_id,
+                    text=text,
+                )
+                session.add(text_version)
+                session.commit()
+            else:
+                existing_run_txt.text = text
+                session.commit()
 
             fields = await document_intel_service.simple_extract_fields(
                 text=text,
