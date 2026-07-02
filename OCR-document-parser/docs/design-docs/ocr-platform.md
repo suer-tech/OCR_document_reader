@@ -317,15 +317,15 @@ llm_extraction:
 
 Для профиля `rtk` используется комбинированный запрос, извлекающий поля `creditor_inn`, `claims_amount`, `grounds` одним вызовом LLM. Результат парсится через Pydantic-схему `RtkCombinedResult`, которая включает поле `has_text_distortions`.
 
-### Vision-fallback для claims_amount
+### Vision-fallback при искажениях текста
 
 Если LLM обнаружила искажения текста (`has_text_distortions = true`), запускается fallback:
 
-1. PDF-файл читается с диска по `storage_path`
-2. Отправляется в **router_ai / google/gemini-2.5-flash-lite** через OpenAI-compatible vision API
-3. Gemini возвращает исправленный текст документа
-4. Из исправленного текста повторно извлекается `claims_amount` через **router_ai / deepseek/deepseek-v4-flash**
-5. Результат перезаписывает исходное значение `claims_amount`
+1. PDF-файл читается с диска по `storage_path` и отправляется в **router_ai / google/gemini-2.5-flash-lite** через OpenAI-compatible vision API
+2. Gemini возвращает исправленный текст документа
+3. Все поля извлекаются заново из исправленного текста через **router_ai / deepseek/deepseek-v4-flash** (полный перезапуск экстракции)
+4. Исправленный текст сохраняется в БД (обновляется `TextVersion`)
+5. Результаты экстракции возвращаются как обычно
 
 ### Поиск названия кредитора по ИНН
 
