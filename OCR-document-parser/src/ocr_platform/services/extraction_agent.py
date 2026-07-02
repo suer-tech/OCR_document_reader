@@ -175,6 +175,10 @@ class CourtDecisionResult(BaseModel):
     resolutive_part_confidence: float
     resolutive_part_reasoning: str
 
+    has_text_distortions: bool = Field(
+        description="True, если текст документа содержит искажения/ошибки OCR, из-за которых суммы или другие цифры могут быть прочитаны неверно. False, если текст чёткий и все суммы читаются однозначно."
+    )
+
 
 # Alias for backwards compatibility with tests
 FieldResult = GenericFieldResult
@@ -1426,6 +1430,29 @@ async def _run_agent_extraction_impl(
                         "reasoning": reason,
                         "source": "court_decision_combined",
                     }
+
+                if combined_data.has_text_distortions and storage_path:
+                    logger.info(
+                        "vision_fallback_triggered_court", storage_path=storage_path
+                    )
+                    corrected_text = await _correct_text_via_vision(storage_path)
+                    if corrected_text:
+                        override_config = {
+                            "models": {
+                                "llm_extraction": {
+                                    "provider": "router_ai",
+                                    "model": "deepseek/deepseek-v4-flash",
+                                    "temperature": 0.0,
+                                    "timeout_seconds": 180.0,
+                                }
+                            }
+                        }
+                        fallback_fields = await run_agent_extraction(
+                            corrected_text, fields_config, profile_id, override_config
+                        )
+                        if fallback_fields:
+                            fallback_fields["_raw_text"] = corrected_text
+                            return fallback_fields
 
     for field_name in ordered_fields:
         if field_name in results:
