@@ -257,13 +257,9 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 pipeline_run_id=pipeline_run_id,
                 document_id=document_id,
             )
-            fields["processing_started_at"] = {
-                "value": processing_started_at.isoformat()
-                if processing_started_at
-                else None,
-                "reasoning": "System timestamp",
-                "confidence": 1.0,
-            }
+            fields["processing_started_at"] = (
+                processing_started_at.isoformat() if processing_started_at else None
+            )
             validation_status, validation_issues = validation_service.validate_fields(
                 fields, profile_id, profile_config
             )
