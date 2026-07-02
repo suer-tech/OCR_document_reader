@@ -44,6 +44,7 @@ services:
     volumes:
       - app-data:/app/data
       - app-logs:/app/logs
+      - ../документы:/документы:ro
     ports:
       - "127.0.0.1:8000:8000" # Доступно локально на сервере (проксируется наружу через Nginx)
     depends_on:
@@ -97,6 +98,7 @@ services:
     volumes:
       - app-data:/app/data
       - app-logs:/app/logs
+      - ../документы:/документы:ro
     depends_on:
       postgres:
         condition: service_healthy
