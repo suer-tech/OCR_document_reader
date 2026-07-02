@@ -26,6 +26,7 @@ COPY pyproject.toml README.md /app/
 COPY src /app/src
 COPY models /app/models
 COPY observability /app/observability
+COPY scripts /app/scripts
 
 RUN pip install --no-cache-dir -e ".[nlp]"
 
