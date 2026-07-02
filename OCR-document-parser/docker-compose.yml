@@ -59,7 +59,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ocr-worker
     restart: always
     command: ocr-pipeline-worker
     deploy:

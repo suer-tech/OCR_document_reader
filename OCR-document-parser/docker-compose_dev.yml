@@ -56,7 +56,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ocr-worker
     command: ocr-pipeline-worker
     deploy:
       resources:
