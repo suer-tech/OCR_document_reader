@@ -283,3 +283,85 @@
 - автоматическая генерация предложений по улучшению правил на основе накопленных исправлений;
 - подключение дополнительных моделей для активного обучения.
 
+## LLM-провайдеры
+
+Система поддерживает несколько LLM-провайдеров для извлечения полей. Провайдер указывается в YAML-профиле в секции `models.llm_extraction`:
+
+| Провайдер | `provider` | Базовая модель | API |
+|---|---|---|---|
+| OpenAI | `openai` | `gpt-4o-mini` | `api.openai.com/v1` |
+| OpenRouter | `openrouter` | любая | `openrouter.ai/api/v1` |
+| Router AI | `router_ai` | `deepseek/deepseek-v4-flash` | `routerai.ru/api/v1` |
+| Yandex Studio | `yandex_studio` | `gpt://<каталог>/<модель>/latest` | `ai.api.cloud.yandex.net/v1` |
+| Ollama | `ollama` | любая | локальный `/v1` |
+| OpenCode CLI | `opencode` | `opencode/deepseek-v4-flash-free` | CLI-режим (без HTTP) |
+
+Пример конфигурации Yandex Studio:
+
+```yaml
+llm_extraction:
+  provider: yandex_studio
+  model: gpt://b1gf6vai2af80k10pig0/deepseek-v4-flash/latest
+  temperature: 0.0
+  timeout_seconds: 180.0
+```
+
+Переменные окружения для провайдеров:
+
+| Провайдер | Переменная API-ключа | Переменная base_url |
+|---|---|---|
+| Router AI | `OCR_ROUTER_AI_API_KEY` | `OCR_ROUTER_AI_BASE_URL` |
+| Yandex Studio | `OCR_YANDEX_STUDIO_API_KEY` | `OCR_YANDEX_STUDIO_BASE_URL` |
+
+### Комбинированная экстракция (RTK)
+
+Для профиля `rtk` используется комбинированный запрос, извлекающий поля `creditor_inn`, `claims_amount`, `grounds` одним вызовом LLM. Результат парсится через Pydantic-схему `RtkCombinedResult`, которая включает поле `has_text_distortions`.
+
+### Vision-fallback для claims_amount
+
+Если LLM обнаружила искажения текста (`has_text_distortions = true`), запускается fallback:
+
+1. PDF-файл читается с диска по `storage_path`
+2. Отправляется в **router_ai / google/gemini-2.5-flash-lite** через OpenAI-compatible vision API
+3. Gemini возвращает исправленный текст документа
+4. Из исправленного текста повторно извлекается `claims_amount` через **router_ai / deepseek/deepseek-v4-flash**
+5. Результат перезаписывает исходное значение `claims_amount`
+
+### Поиск названия кредитора по ИНН
+
+Инструмент `search_creditor_name` (доступен LLM-агентам) ищет название организации по ИНН через два источника:
+
+1. **DuckDuckGo** — поиск `ИНН <номер> реквизиты организация`
+2. **list-org.com** — прямой запрос по ИНН, парсинг названия из HTML
+
+Если DuckDuckGo не дал конкретного результата (только общие страницы ФНС), list-org доставляет точное наименование.
+
+## Бенчмарк
+
+Скрипт `scripts/benchmark.py` запускает тестирование точности извлечения полей:
+
+```bash
+docker exec ocr-api python scripts/benchmark.py \
+  --api-url http://localhost:8000 \
+  --concurrency 10 \
+  --note "Описание теста" \
+  --limit 50
+```
+
+Параметры:
+- `--concurrency N` — количество параллельных запросов к API
+- `--limit N` — ограничение по числу документов (0 = все)
+- `--note "..."` — метка для отчёта
+
+Отчёт формируется в `reports/rtk_benchmark_<datetime>.md`. Для несовпавших полей отображается колонка **Размышления LLM** с результатами рассуждений модели.
+
+### Масштабирование worker
+
+Для параллельной обработки документов можно запустить несколько worker-контейнеров:
+
+```bash
+docker compose up -d --scale worker=10
+```
+
+Каждый worker забирает 1 задачу из очереди RabbitMQ (`prefetch_count=1`). Все workers используют общую базу данных.
+
