@@ -315,18 +315,21 @@ llm_extraction:
 | Router AI | `OCR_ROUTER_AI_API_KEY` | `OCR_ROUTER_AI_BASE_URL` |
 | Yandex Studio | `OCR_YANDEX_STUDIO_API_KEY` | `OCR_YANDEX_STUDIO_BASE_URL` |
 
-### Комбинированная экстракция (RTK)
+### Комбинированная экстракция
 
-Для профиля `rtk` используется комбинированный запрос, извлекающий несколько полей одним вызовом LLM:
+Для всех профилей используется комбинированный запрос (одна Pydantic-схема, один вызов LLM):
 
-- **Обычный документ** — поля `creditor_inn`, `claims_amount`, `grounds` через `agent_rtk_combined` (схема `RtkCombinedResult`)
-- **Налоговый документ (ФНС)** — поля `creditor`, `creditor_inn`, `claims_amount`, `grounds` через `agent_rtk_tax_combined` (схема `RtkTaxCombinedResult` с `creditor_header` вместо поиска названия)
+| Профиль | Агент | Схема | Поля |
+|---|---|---|---|
+| `rtk` (обычный) | `agent_rtk_combined` | `RtkCombinedResult` | `creditor_inn`, `claims_amount`, `grounds` |
+| `rtk` (ФНС) | `agent_rtk_tax_combined` | `RtkTaxCombinedResult` | `creditor` (из шапки), `creditor_inn`, `claims_amount`, `grounds` |
+| `court_decision_ru` | `agent_court_decision_combined` | `CourtDecisionResult` | `debtor_full_name`, `debtor_inn`, `judge_full_name`, `court_name`, `procedure_type`, `motivating_part`, `resolutive_part` |
 
-Обе схемы включают поле `has_text_distortions`. Если оно `true`, срабатывает vision-fallback.
+Все схемы включают поле `has_text_distortions`. Если оно `true`, срабатывает vision-fallback.
 
 ### Vision-fallback при искажениях текста
 
-Если LLM обнаружила искажения текста (`has_text_distortions = true`), запускается fallback:
+Все схемы всех профилей включают поле `has_text_distortions`. Если оно `true`, срабатывает vision-fallback:
 
 1. PDF-файл читается с диска по `storage_path` и отправляется в **router_ai / google/gemini-2.5-flash-lite** через OpenAI-compatible vision API
 2. Gemini возвращает исправленный текст документа
