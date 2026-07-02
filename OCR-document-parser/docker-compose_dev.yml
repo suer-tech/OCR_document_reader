@@ -43,6 +43,7 @@ services:
     volumes:
       - app-data:/app/data
       - app-logs:/app/logs
+      - ../документы:/документы:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -93,6 +94,7 @@ services:
     volumes:
       - app-data:/app/data
       - app-logs:/app/logs
+      - ../документы:/документы:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
