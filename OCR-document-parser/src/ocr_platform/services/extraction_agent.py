@@ -158,7 +158,7 @@ class CourtDecisionResult(BaseModel):
     court_name_reasoning: str
 
     procedure_type: str | None = Field(
-        description="Тип процедуры банкротства: 'реализация имущества граждан', 'реструктуризация долгов', либо null"
+        description="Тип процедуры банкротства: 'реализация имущества гражданина', 'реструктуризация долгов', либо null"
     )
     procedure_type_confidence: float
     procedure_type_reasoning: str
