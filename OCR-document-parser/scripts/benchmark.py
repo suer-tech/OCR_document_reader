@@ -248,7 +248,16 @@ async def main():
                 else:
                     fields_data = res.get("fields", {})
                     for f_name, f_val in fields_data.items():
-                        extracted_fields[f_name] = f_val.get("value")
+                        if isinstance(f_val, dict):
+                            extracted_fields[f_name] = {
+                                "value": f_val.get("value"),
+                                "reasoning": f_val.get("reasoning"),
+                            }
+                        else:
+                            extracted_fields[f_name] = {
+                                "value": f_val,
+                                "reasoning": None,
+                            }
                 return filename, {
                     "expected": expected,
                     "extracted": extracted_fields,
@@ -302,17 +311,34 @@ async def main():
             doc_correct = 0
 
             markdown.append(
-                "| Поле | Ожидаемое значение | Извлеченное значение | Результат |"
+                "| Поле | Ожидаемое значение | Извлеченное значение | Результат | Размышления LLM |"
             )
-            markdown.append("| --- | --- | --- | --- |")
+            markdown.append("| --- | --- | --- | --- | --- |")
 
             for field in doc_fields:
                 exp_val = expected.get(field)
-                ext_val = extracted.get(field)
+                field_data = extracted.get(field, {})
+                ext_val = (
+                    field_data.get("value")
+                    if isinstance(field_data, dict)
+                    else field_data
+                )
+                reasoning = (
+                    field_data.get("reasoning")
+                    if isinstance(field_data, dict)
+                    else None
+                )
                 is_ok = compare_values(field, exp_val, ext_val)
 
                 status_str = "✅ Совпало" if is_ok else "❌ Не совпало"
-                markdown.append(f"| `{field}` | {exp_val} | {ext_val} | {status_str} |")
+                reasoning_str = (
+                    f"<details><summary> reasoning</summary>{reasoning}</details>"
+                    if reasoning and not is_ok
+                    else ""
+                )
+                markdown.append(
+                    f"| `{field}` | {exp_val} | {ext_val} | {status_str} | {reasoning_str} |"
+                )
 
                 total_fields += 1
                 if is_ok:
