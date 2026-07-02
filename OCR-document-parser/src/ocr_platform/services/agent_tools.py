@@ -227,7 +227,8 @@ def _search_by_inn(inn: str) -> str | None:
             soup = BeautifulSoup(resp.text, "html.parser")
             org_names = set()
             for match in re.finditer(
-                r"(ООО|ПКО|АО|ЗАО|ОАО)\s[^<]{3,80}(?=<)", resp.text
+                r"(ООО|ПКО|АО|ЗАО|ОАО|ПАО|СКПК|КПК|ЖСК|ТСЖ|ГУП|МУП|НКО|АНО|МФО|МКК|ИП)\s[^<]{3,80}(?=<)",
+                resp.text,
             ):
                 name = match.group(0).strip()
                 if name not in org_names:
