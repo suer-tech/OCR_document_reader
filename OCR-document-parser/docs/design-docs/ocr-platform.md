@@ -315,7 +315,12 @@ llm_extraction:
 
 ### Комбинированная экстракция (RTK)
 
-Для профиля `rtk` используется комбинированный запрос, извлекающий поля `creditor_inn`, `claims_amount`, `grounds` одним вызовом LLM. Результат парсится через Pydantic-схему `RtkCombinedResult`, которая включает поле `has_text_distortions`.
+Для профиля `rtk` используется комбинированный запрос, извлекающий несколько полей одним вызовом LLM:
+
+- **Обычный документ** — поля `creditor_inn`, `claims_amount`, `grounds` через `agent_rtk_combined` (схема `RtkCombinedResult`)
+- **Налоговый документ (ФНС)** — поля `creditor`, `creditor_inn`, `claims_amount`, `grounds` через `agent_rtk_tax_combined` (схема `RtkTaxCombinedResult` с `creditor_header` вместо поиска названия)
+
+Обе схемы включают поле `has_text_distortions`. Если оно `true`, срабатывает vision-fallback.
 
 ### Vision-fallback при искажениях текста
 
