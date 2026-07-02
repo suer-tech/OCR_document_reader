@@ -258,6 +258,22 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 document_id=document_id,
                 storage_path=storage_path,
             )
+            corrected_text = fields.pop("_raw_text", None)
+            if corrected_text:
+                logger.info(
+                    "vision_fallback_text_saved",
+                    pipeline_run_id=pipeline_run_id,
+                    text_length=len(corrected_text),
+                )
+                with repository.get_session() as session:
+                    existing_txt = (
+                        session.query(models.TextVersion)
+                        .filter(models.TextVersion.pipeline_run_id == pipeline_run_id)
+                        .first()
+                    )
+                    if existing_txt:
+                        existing_txt.text = corrected_text
+                        session.commit()
             fields["processing_started_at"] = (
                 processing_started_at.isoformat() if processing_started_at else None
             )
