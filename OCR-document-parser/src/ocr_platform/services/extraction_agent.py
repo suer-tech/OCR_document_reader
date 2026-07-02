@@ -93,6 +93,39 @@ class RtkCombinedResult(BaseModel):
     grounds_reasoning: str
 
 
+class RtkTaxCombinedResult(BaseModel):
+    creditor_header: str | None = Field(
+        description="Наименование налоговой из шапки документа или null"
+    )
+    creditor_header_confidence: float
+    creditor_header_reasoning: str
+
+    creditor_inn: str | None = Field(
+        description="ИНН кредитора (10 или 12 цифр), либо null"
+    )
+    creditor_inn_confidence: float
+    creditor_inn_reasoning: str
+
+    commitments_count: int | None = Field(
+        description="Количество отдельных обязательств/договоров, или null"
+    )
+    amounts: list[float] | None = Field(
+        description="Список сумм для каждого обязательства, или null"
+    )
+    claims_amount_confidence: float
+    claims_amount_reasoning: str
+
+    has_text_distortions: bool = Field(
+        description="True, если текст документа содержит искажения/ошибки OCR, из-за которых суммы или другие цифры могут быть прочитаны неверно. False, если текст чёткий и все суммы читаются однозначно."
+    )
+
+    grounds: str | None = Field(
+        description="Точное значение из списка допустимых оснований, либо null"
+    )
+    grounds_confidence: float
+    grounds_reasoning: str
+
+
 class GenericFieldResult(BaseModel):
     value: Any = Field(description="Извлеченное значение поля, либо null")
     confidence: float
@@ -811,6 +844,15 @@ agent_rtk_combined = Agent(
     model_settings=default_settings,
 )
 
+agent_rtk_tax_combined = Agent(
+    model,
+    deps_type=str,
+    result_type=RtkTaxCombinedResult,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
 agent_court_decision_combined = Agent(
     model,
     deps_type=str,
@@ -1151,6 +1193,107 @@ async def _run_agent_extraction_impl(
                     "reasoning": grounds_reason,
                     "source": "rtk_combined",
                 }
+
+    if profile_id == "rtk" and is_tax_document:
+        tax_combined_fields = ["creditor", "creditor_inn", "claims_amount", "grounds"]
+        if all(f in fields_config for f in tax_combined_fields):
+            logger.info(
+                "Executing combined tax extraction for creditor, creditor_inn, claims_amount, grounds."
+            )
+            combined_prompt_parts = []
+            for f in tax_combined_fields:
+                f_instruction = fields_config[f].get("prompt_instruction", "")
+                combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
+            combined_instructions = "\n\n".join(combined_prompt_parts)
+            combined_prompt = (
+                f"Instruction: You are extracting multiple fields at once from a tax document. "
+                f"Here are the specific instructions for each field:\n\n"
+                f"{combined_instructions}\n\n"
+                f"Document Text:\n{text[:10000]}"
+            )
+
+            max_attempts = 3
+            combined_data = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = await agent_rtk_tax_combined.run(
+                        combined_prompt, deps=text
+                    )
+                    combined_data = result.data
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Combined tax extraction attempt {attempt} failed: {e}"
+                    )
+                    if attempt == max_attempts:
+                        logger.error(
+                            "Combined tax extraction completely failed. Falling back to individual extraction."
+                        )
+                    elif attempt == 2:
+                        await asyncio.sleep(15)
+
+            if combined_data:
+                results["creditor"] = {
+                    "value": combined_data.creditor_header,
+                    "confidence": combined_data.creditor_header_confidence,
+                    "reasoning": combined_data.creditor_header_reasoning,
+                    "source": "rtk_tax_combined",
+                }
+                inn_val = None
+                if combined_data.creditor_inn:
+                    inn_match = re.search(r"\d{10,12}", str(combined_data.creditor_inn))
+                    inn_val = (
+                        inn_match.group(0) if inn_match else combined_data.creditor_inn
+                    )
+                results["creditor_inn"] = {
+                    "value": inn_val,
+                    "confidence": combined_data.creditor_inn_confidence,
+                    "reasoning": combined_data.creditor_inn_reasoning,
+                    "source": "rtk_tax_combined",
+                }
+                amt_val = None
+                if (
+                    combined_data.commitments_count is not None
+                    and isinstance(combined_data.amounts, list)
+                    and len(combined_data.amounts) > 0
+                ):
+                    total = sum(combined_data.amounts)
+                    amt_val = f"{total:.2f}" if total > 0 else None
+                results["claims_amount"] = {
+                    "value": amt_val,
+                    "confidence": combined_data.claims_amount_confidence,
+                    "reasoning": combined_data.claims_amount_reasoning,
+                    "source": "rtk_tax_combined",
+                }
+                results["grounds"] = {
+                    "value": combined_data.grounds,
+                    "confidence": combined_data.grounds_confidence,
+                    "reasoning": combined_data.grounds_reasoning,
+                    "source": "rtk_tax_combined",
+                }
+
+                if combined_data.has_text_distortions and storage_path:
+                    logger.info(
+                        "vision_fallback_triggered_tax", storage_path=storage_path
+                    )
+                    corrected_text = await _correct_text_via_vision(storage_path)
+                    if corrected_text:
+                        override_config = {
+                            "models": {
+                                "llm_extraction": {
+                                    "provider": "router_ai",
+                                    "model": "deepseek/deepseek-v4-flash",
+                                    "temperature": 0.0,
+                                    "timeout_seconds": 180.0,
+                                }
+                            }
+                        }
+                        fallback_fields = await run_agent_extraction(
+                            corrected_text, fields_config, profile_id, override_config
+                        )
+                        if fallback_fields:
+                            fallback_fields["_raw_text"] = corrected_text
+                            return fallback_fields
 
     if profile_id == "court_decision_ru":
         llm_fields = [
