@@ -516,7 +516,7 @@ _active_temperature: contextvars.ContextVar[float] = contextvars.ContextVar(
 )
 
 
-def _active_model_settings() -> ModelSettings:
+def _active_model_settings():
     return ModelSettings(
         temperature=_active_temperature.get(),
         timeout=180.0,
