@@ -95,6 +95,50 @@ class GenericFieldResult(BaseModel):
     reasoning: str | None
 
 
+class CourtDecisionResult(BaseModel):
+    debtor_full_name: str | None = Field(
+        description="ФИО должника в именительном падеже, формат 'Фамилия Имя Отчество', либо null"
+    )
+    debtor_full_name_confidence: float
+    debtor_full_name_reasoning: str
+
+    debtor_inn: str | None = Field(
+        description="ИНН должника (10 или 12 цифр), либо null"
+    )
+    debtor_inn_confidence: float
+    debtor_inn_reasoning: str
+
+    judge_full_name: str | None = Field(
+        description="ФИО судьи в формате 'Фамилия И.О.' или 'Фамилия Имя Отчество', либо null"
+    )
+    judge_full_name_confidence: float
+    judge_full_name_reasoning: str
+
+    court_name: str | None = Field(
+        description="Полное название арбитражного суда, либо null"
+    )
+    court_name_confidence: float
+    court_name_reasoning: str
+
+    procedure_type: str | None = Field(
+        description="Тип процедуры банкротства: 'реализация имущества граждан', 'реструктуризация долгов', либо null"
+    )
+    procedure_type_confidence: float
+    procedure_type_reasoning: str
+
+    motivating_part: str | None = Field(
+        description="Текст мотивировочной части судебного решения (между 'УСТАНОВИЛ' и 'РЕШИЛ'), либо null"
+    )
+    motivating_part_confidence: float
+    motivating_part_reasoning: str
+
+    resolutive_part: str | None = Field(
+        description="Текст резолютивной части (после 'РЕШИЛ'/'ОПРЕДЕЛИЛ'), либо null"
+    )
+    resolutive_part_confidence: float
+    resolutive_part_reasoning: str
+
+
 # Alias for backwards compatibility with tests
 FieldResult = GenericFieldResult
 
@@ -692,6 +736,15 @@ agent_rtk_combined = Agent(
     model_settings=default_settings,
 )
 
+agent_court_decision_combined = Agent(
+    model,
+    deps_type=str,
+    result_type=CourtDecisionResult,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
 # Compatibility aliases for legacy tests/code
 extraction_agent = agent_generic
 extraction_agent_with_tools = agent_generic_with_tools
@@ -998,6 +1051,106 @@ async def _run_agent_extraction_impl(
                     "reasoning": grounds_reason,
                     "source": "rtk_combined",
                 }
+
+    if profile_id == "court_decision_ru":
+        llm_fields = [
+            "debtor_full_name",
+            "debtor_inn",
+            "judge_full_name",
+            "court_name",
+            "procedure_type",
+            "motivating_part",
+            "resolutive_part",
+        ]
+        present_fields = [f for f in llm_fields if f in fields_config]
+        if present_fields:
+            logger.info(
+                f"Executing combined court_decision extraction for {len(present_fields)} fields: {present_fields}"
+            )
+            combined_prompt_parts = []
+            for f in present_fields:
+                f_instruction = fields_config[f].get("prompt_instruction", "")
+                combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
+            combined_instructions = "\n\n".join(combined_prompt_parts)
+            combined_prompt = (
+                f"Instruction: You are extracting multiple fields at once from a court decision document. "
+                f"Here are the specific instructions for each field:\n\n"
+                f"{combined_instructions}\n\n"
+                f"Document Text:\n{text}"
+            )
+
+            max_attempts = 3
+            combined_data = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = await agent_court_decision_combined.run(
+                        combined_prompt, deps=text
+                    )
+                    combined_data = result.data
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Combined court_decision extraction attempt {attempt} failed: {e}"
+                    )
+                    if attempt == max_attempts:
+                        logger.error(
+                            "Combined court_decision extraction completely failed. Falling back to individual extraction."
+                        )
+                    elif attempt == 2:
+                        await asyncio.sleep(15)
+
+            if combined_data:
+                field_mapping = {
+                    "debtor_full_name": (
+                        "debtor_full_name",
+                        "debtor_full_name_confidence",
+                        "debtor_full_name_reasoning",
+                    ),
+                    "debtor_inn": (
+                        "debtor_inn",
+                        "debtor_inn_confidence",
+                        "debtor_inn_reasoning",
+                    ),
+                    "judge_full_name": (
+                        "judge_full_name",
+                        "judge_full_name_confidence",
+                        "judge_full_name_reasoning",
+                    ),
+                    "court_name": (
+                        "court_name",
+                        "court_name_confidence",
+                        "court_name_reasoning",
+                    ),
+                    "procedure_type": (
+                        "procedure_type",
+                        "procedure_type_confidence",
+                        "procedure_type_reasoning",
+                    ),
+                    "motivating_part": (
+                        "motivating_part",
+                        "motivating_part_confidence",
+                        "motivating_part_reasoning",
+                    ),
+                    "resolutive_part": (
+                        "resolutive_part",
+                        "resolutive_part_confidence",
+                        "resolutive_part_reasoning",
+                    ),
+                }
+                for field_name in present_fields:
+                    val_attr, conf_attr, reason_attr = field_mapping[field_name]
+                    val = getattr(combined_data, val_attr, None)
+                    conf = getattr(combined_data, conf_attr, 0.0)
+                    reason = getattr(combined_data, reason_attr, "")
+                    if field_name == "debtor_inn" and val:
+                        inn_match = re.search(r"\d{10,12}", str(val))
+                        val = inn_match.group(0) if inn_match else val
+                    results[field_name] = {
+                        "value": val,
+                        "confidence": conf,
+                        "reasoning": reason,
+                        "source": "court_decision_combined",
+                    }
 
     for field_name in ordered_fields:
         if field_name in results:

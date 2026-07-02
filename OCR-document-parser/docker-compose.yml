@@ -29,6 +29,10 @@ services:
       OCR_OPENROUTER_API_KEY: ${OCR_OPENROUTER_API_KEY:-}
       OCR_OPENAI_BASE_URL: ${OCR_OPENAI_BASE_URL:-https://api.openai.com/v1}
       OCR_OPENROUTER_BASE_URL: ${OCR_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OCR_ROUTER_AI_API_KEY: ${OCR_ROUTER_AI_API_KEY:-}
+      OCR_ROUTER_AI_BASE_URL: ${OCR_ROUTER_AI_BASE_URL:-https://routerai.ru/api/v1}
+      OCR_YANDEX_STUDIO_API_KEY: ${OCR_YANDEX_STUDIO_API_KEY:-}
+      OCR_YANDEX_STUDIO_BASE_URL: ${OCR_YANDEX_STUDIO_BASE_URL:-https://ai.api.cloud.yandex.net/v1}
       OCR_ENGINE: ${OCR_ENGINE:-tesseract}
       OCR_OLLAMA_OCR_URL: ${OCR_OLLAMA_OCR_URL:-http://localhost:11434}
       OCR_OLLAMA_OCR_MODEL: ${OCR_OLLAMA_OCR_MODEL:-glm-ocr}
@@ -79,6 +83,10 @@ services:
       OCR_OPENROUTER_API_KEY: ${OCR_OPENROUTER_API_KEY:-}
       OCR_OPENAI_BASE_URL: ${OCR_OPENAI_BASE_URL:-https://api.openai.com/v1}
       OCR_OPENROUTER_BASE_URL: ${OCR_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OCR_ROUTER_AI_API_KEY: ${OCR_ROUTER_AI_API_KEY:-}
+      OCR_ROUTER_AI_BASE_URL: ${OCR_ROUTER_AI_BASE_URL:-https://routerai.ru/api/v1}
+      OCR_YANDEX_STUDIO_API_KEY: ${OCR_YANDEX_STUDIO_API_KEY:-}
+      OCR_YANDEX_STUDIO_BASE_URL: ${OCR_YANDEX_STUDIO_BASE_URL:-https://ai.api.cloud.yandex.net/v1}
       OCR_ENGINE: ${OCR_ENGINE:-tesseract}
       OCR_OLLAMA_OCR_URL: ${OCR_OLLAMA_OCR_URL:-http://localhost:11434}
       OCR_OLLAMA_OCR_MODEL: ${OCR_OLLAMA_OCR_MODEL:-glm-ocr}

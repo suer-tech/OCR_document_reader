@@ -14,8 +14,8 @@ models:
     provider: openrouter
     model: openai/gpt-oss-120b
   llm_extraction:
-    provider: yandex_studio
-    model: gpt://b1gf6vai2af80k10pig0/deepseek-v4-flash/latest
+    provider: router_ai
+    model: deepseek/deepseek-v4-flash
     temperature: 0.0
     timeout_seconds: 180.0
 
