@@ -296,7 +296,7 @@
 | Ollama | `ollama` | любая | локальный `/v1` |
 | OpenCode CLI | `opencode` | `opencode/deepseek-v4-flash-free` | CLI-режим (без HTTP) |
 
-Пример конфигурации Yandex Studio:
+Пример конфигурации Yandex Studio с температурой 0.0 (значение по умолчанию — 0.5):
 
 ```yaml
 llm_extraction:
@@ -305,6 +305,8 @@ llm_extraction:
   temperature: 0.0
   timeout_seconds: 180.0
 ```
+
+Температура читается из YAML-профиля и передаётся во все вызовы LLM через model_settings. Если не указана — используется 0.5.
 
 Переменные окружения для провайдеров:
 
