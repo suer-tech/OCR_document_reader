@@ -1874,20 +1874,25 @@ async def _run_agent_extraction_impl(
                             for attempt in range(1, max_attempts + 1):
                                 try:
                                     cred_res = await agent_creditor.run(
-                                        fallback_creditor_prompt, deps=text, model_settings=_active_model_settings()
+                                        fallback_creditor_prompt,
+                                        deps=text,
+                                        model_settings=_active_model_settings(),
                                     )
                                     data = cred_res.data
 
                                     tool_called = False
-                                    try:
-                                        for attempt_cred in range(1, 4):
-                                            if attempt_cred > 1:
-                                                await asyncio.sleep(15)
-                                            try:
-                                                cred_res = await agent_creditor.run(
-                                                    retry_prompt, deps=text, model_settings=_active_model_settings()
-                                                )
-                                                data = cred_res.data
+                                    for attempt_cred in range(1, 4):
+                                        if attempt_cred > 1:
+                                            await asyncio.sleep(15)
+                                        try:
+                                            cred_res = await agent_creditor.run(
+                                                retry_prompt,
+                                                deps=text,
+                                                model_settings=_active_model_settings(),
+                                            )
+                                            data = cred_res.data
+                                        except Exception:
+                                            pass
 
                                     tool_called = False
                                     try:
