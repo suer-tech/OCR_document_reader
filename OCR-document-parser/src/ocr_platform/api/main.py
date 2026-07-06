@@ -23,14 +23,23 @@ def _infer_content_type(filename: str, content_type: str) -> str:
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     if ext in ("pdf",) or "pdf" in content_type.lower():
         return "pdf"
-    if ext in ("png", "jpg", "jpeg", "gif", "bmp", "webp") or content_type.lower().startswith("image/"):
+    if ext in (
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "bmp",
+        "webp",
+    ) or content_type.lower().startswith("image/"):
         return "image"
     if ext in ("txt",) or content_type.lower().startswith("text/"):
         return "text"
     return "unknown"
 
 
-def _build_idempotency_key(content_hash: str, source_type: str, external_id: str | None) -> str:
+def _build_idempotency_key(
+    content_hash: str, source_type: str, external_id: str | None
+) -> str:
     raw_key = f"{content_hash}:{source_type}:{external_id or ''}"
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
@@ -46,6 +55,7 @@ def _resolve_initial_profile_id(requested_document_type: str | None) -> str:
         return "unknown"
     try:
         from ocr_platform.orchestration.router import load_router_config
+
         router_cfg = load_router_config()
         mapping = router_cfg.get("document_type_to_profile", {})
         doc_type_clean = requested_document_type.strip()
@@ -77,7 +87,12 @@ def create_app() -> FastAPI:
         """.strip(),
     )
 
-    @app.get("/health", response_model=schemas.HealthResponse, tags=["Служебные"], include_in_schema=False)
+    @app.get(
+        "/health",
+        response_model=schemas.HealthResponse,
+        tags=["Служебные"],
+        include_in_schema=False,
+    )
     async def health() -> schemas.HealthResponse:
         return schemas.HealthResponse(status="ok")
 
@@ -90,14 +105,22 @@ def create_app() -> FastAPI:
         description="Загружает документ в платформу в формате base64 внутри JSON. В ответ вы получаете `pipeline_run_id`, который нужно использовать для проверки статуса на Шаге 2.",
         include_in_schema=False,
     )
-    async def ingest_document(request: schemas.IngestDocumentRequest) -> schemas.IngestDocumentResponse:
+    async def ingest_document(
+        request: schemas.IngestDocumentRequest,
+    ) -> schemas.IngestDocumentResponse:
         inc_request("/documents/ingest")
 
-        external_id = request.external_id or str(request.meta.get("external_id", "")).strip() or None
+        external_id = (
+            request.external_id
+            or str(request.meta.get("external_id", "")).strip()
+            or None
+        )
         try:
             content_bytes = base64.b64decode(request.content_base64)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail="content_base64 is invalid") from exc
+            raise HTTPException(
+                status_code=400, detail="content_base64 is invalid"
+            ) from exc
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         idempotency_key = request.idempotency_key or _build_idempotency_key(
             content_hash=content_hash,
@@ -155,7 +178,8 @@ def create_app() -> FastAPI:
                         profile_id=initial_profile_id,
                         status="queued",
                         idempotency_key=idempotency_key,
-                        webhook_url=request.webhook_url or request.meta.get("webhook_url"),
+                        webhook_url=request.webhook_url
+                        or request.meta.get("webhook_url"),
                     )
                 )
                 session.flush()
@@ -180,7 +204,9 @@ def create_app() -> FastAPI:
                 )
                 if not existing:
                     logger.exception("Unexpected IntegrityError during ingest_document")
-                    raise HTTPException(status_code=409, detail="duplicate ingest detected")
+                    raise HTTPException(
+                        status_code=409, detail="duplicate ingest detected"
+                    )
                 run = session.get(models.PipelineRun, existing.pipeline_run_id)
                 status = run.status if run else "queued"
                 return schemas.IngestDocumentResponse(
@@ -201,7 +227,9 @@ def create_app() -> FastAPI:
                     run.finished_at = datetime.utcnow()
                     session.commit()
             logger.exception("ingest_enqueue_failed", pipeline_run_id=pipeline_run_id)
-            raise HTTPException(status_code=503, detail="failed to enqueue pipeline run") from exc
+            raise HTTPException(
+                status_code=503, detail="failed to enqueue pipeline run"
+            ) from exc
 
         logger.info(
             "ingest_enqueued",
@@ -230,11 +258,18 @@ def create_app() -> FastAPI:
     )
     async def upload_document(
         file: UploadFile = File(..., description="PDF, изображение или текстовый файл"),
-        source_type: str = Form("external", description="Источник: crm, email, portal, external, other"),
-        document_type: str = Form(..., description="Тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), unknown (Неизвестно/Автоопределение)"),
+        source_type: str = Form(
+            "external", description="Источник: crm, email, portal, external, other"
+        ),
+        document_type: str = Form(
+            ...,
+            description="Тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), unknown (Неизвестно/Автоопределение)",
+        ),
         idempotency_key: str = Form(..., description="Ключ идемпотентности"),
         external_id: str | None = Form(None, description="Внешний идентификатор"),
-        webhook_url: str | None = Form(None, description="URL для отправки вебхука по готовности"),
+        webhook_url: str | None = Form(
+            None, description="URL для отправки вебхука по готовности"
+        ),
     ) -> schemas.IngestDocumentResponse:
         inc_request("/documents/upload")
 
@@ -349,7 +384,9 @@ def create_app() -> FastAPI:
                     run.finished_at = datetime.utcnow()
                     session.commit()
             logger.exception("ingest_enqueue_failed", pipeline_run_id=pipeline_run_id)
-            raise HTTPException(status_code=503, detail="failed to enqueue pipeline run") from exc
+            raise HTTPException(
+                status_code=503, detail="failed to enqueue pipeline run"
+            ) from exc
 
         logger.info(
             "ingest_uploaded",
@@ -368,13 +405,15 @@ def create_app() -> FastAPI:
         )
 
     @app.get(
-        "/pipeline-runs/{pipeline_run_id}", 
+        "/pipeline-runs/{pipeline_run_id}",
         response_model=schemas.PipelineRunStatusResponse,
         tags=["2. Статус обработки"],
         summary="Шаг 2. Проверка статуса (Polling)",
-        description="Проверяет статус асинхронной задачи по `pipeline_run_id`. Рекомендуется опрашивать этот метод с задержкой (например, раз в 3-5 секунд), пока статус не станет `done`."
+        description="Проверяет статус асинхронной задачи по `pipeline_run_id`. Рекомендуется опрашивать этот метод с задержкой (например, раз в 3-5 секунд), пока статус не станет `done`.",
     )
-    async def get_pipeline_run_status(pipeline_run_id: str) -> schemas.PipelineRunStatusResponse:
+    async def get_pipeline_run_status(
+        pipeline_run_id: str,
+    ) -> schemas.PipelineRunStatusResponse:
         inc_request("/pipeline-runs/status")
         with repository.get_session() as session:
             run = session.get(models.PipelineRun, pipeline_run_id)
@@ -393,11 +432,11 @@ def create_app() -> FastAPI:
             )
 
     @app.get(
-        "/documents/{document_id}/result", 
+        "/documents/{document_id}/result",
         response_model=schemas.DocumentResultResponse,
         tags=["3. Получение результата"],
         summary="Шаг 3. Получение извлеченных данных",
-        description="Возвращает извлеченные поля (например, ФИО должника, номер дела), сырой текст и оценки качества. Вызывайте этот метод только после того, как статус обработки на Шаге 2 стал `done`."
+        description="Возвращает извлеченные поля (например, ФИО должника, номер дела), сырой текст и оценки качества. Вызывайте этот метод только после того, как статус обработки на Шаге 2 стал `done`.",
     )
     async def get_result(document_id: str) -> schemas.DocumentResultResponse:
         inc_request("/documents/result")
@@ -442,6 +481,7 @@ def create_app() -> FastAPI:
             data_dict = structured.data
             if isinstance(data_dict, str):
                 import json
+
                 try:
                     data_dict = json.loads(data_dict)
                 except Exception:
@@ -489,20 +529,26 @@ def create_app() -> FastAPI:
         )
 
     @app.post(
-        "/mlflow/backfill", 
+        "/mlflow/backfill",
         response_model=schemas.MlflowBackfillResponse,
         tags=["Служебные"],
         summary="Админ: Бэкфилл в MLflow",
         description="Синхронизирует исторические запуски с MLflow для аналитики. Не используется в основном бизнес-процессе.",
         include_in_schema=False,
     )
-    async def mlflow_backfill(request: schemas.MlflowBackfillRequest) -> schemas.MlflowBackfillResponse:
+    async def mlflow_backfill(
+        request: schemas.MlflowBackfillRequest,
+    ) -> schemas.MlflowBackfillResponse:
         inc_request("/mlflow/backfill")
         try:
-            result = backfill_pipeline_runs_to_mlflow(limit=request.limit, force=request.force)
+            result = backfill_pipeline_runs_to_mlflow(
+                limit=request.limit, force=request.force
+            )
         except Exception as exc:
             logger.exception("mlflow_backfill_failed")
-            raise HTTPException(status_code=500, detail=f"mlflow backfill failed: {exc}") from exc
+            raise HTTPException(
+                status_code=500, detail=f"mlflow backfill failed: {exc}"
+            ) from exc
 
         return schemas.MlflowBackfillResponse(
             total_candidates=result.total_candidates,
@@ -525,4 +571,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

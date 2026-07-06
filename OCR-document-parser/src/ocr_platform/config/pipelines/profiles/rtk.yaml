@@ -11,8 +11,9 @@ document_type: rtk
 
 models:
   ocr:
-    provider: openrouter
-    model: openai/gpt-oss-120b
+    provider: router_ai
+    model: google/gemini-2.5-flash
+    timeout_seconds: 300.0
   llm_extraction:
     provider: router_ai
     model: deepseek/deepseek-v4-flash

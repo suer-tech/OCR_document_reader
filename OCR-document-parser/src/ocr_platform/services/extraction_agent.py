@@ -528,7 +528,6 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
     Build a pydantic-ai Model based on profile_config['models']['llm_extraction'].
     Supported providers:
       - 'opencode' → OpenCodeCLIModel (local CLI agent)
-      - 'ollama'   → OpenAIModel pointing to remote Ollama /v1 endpoint
       - 'router_ai' → OpenAIModel pointing to routerai.ru/api/v1
       - 'openrouter' → OpenAIModel pointing to openrouter.ai/api/v1
       - 'yandex_studio' → OpenAIModel pointing to ai.api.cloud.yandex.net/v1 (Yandex AI Studio)
@@ -542,39 +541,10 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
     provider = llm_cfg.get("provider", "opencode").lower()
     model_name = llm_cfg.get("model", "")
 
-    if provider == "ollama":
+    if provider == "router_ai":
         from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
         import httpx
-        from openai import AsyncOpenAI
-
-        settings = get_settings()
-        base_url = settings.ollama_ocr_url.rstrip("/")
-        if base_url.endswith("/api/chat"):
-            base_url = base_url[:-9]
-        if not base_url.endswith("/v1"):
-            base_url = f"{base_url}/v1"
-
-        timeout_seconds = float(llm_cfg.get("timeout_seconds", 600.0))
-        logger.info(
-            f"Resolved LLM provider: ollama, model: {model_name}, base_url: {base_url}, timeout: {timeout_seconds}s"
-        )
-
-        # Create a custom HTTPX client to bypass the default 5/10 min timeouts
-        http_client = httpx.AsyncClient(timeout=timeout_seconds)
-        async_openai_client = AsyncOpenAI(
-            base_url=base_url,
-            api_key=settings.ollama_ocr_token or "ollama",
-            http_client=http_client,
-        )
-
-        return PydanticOpenAIModel(
-            model_name or "qwen3.6:27b",
-            openai_client=async_openai_client,
-        )
-    elif provider == "router_ai":
-        from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
-        import httpx
-        from openai import AsyncOpenAI
+        from langfuse.openai import AsyncOpenAI
 
         settings = get_settings()
         base_url = (
@@ -606,7 +576,7 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
     elif provider == "openrouter":
         from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
         import httpx
-        from openai import AsyncOpenAI
+        from langfuse.openai import AsyncOpenAI
 
         settings = get_settings()
         base_url = "https://openrouter.ai/api/v1"
@@ -631,7 +601,7 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
     elif provider == "yandex_studio":
         from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
         import httpx
-        from openai import AsyncOpenAI
+        from langfuse.openai import AsyncOpenAI
 
         settings = get_settings()
         base_url = (
@@ -697,7 +667,7 @@ async def _correct_text_via_vision(storage_path: str) -> str | None:
 
     try:
         import httpx
-        from openai import AsyncOpenAI
+        from langfuse.openai import AsyncOpenAI
 
         http_client = httpx.AsyncClient(timeout=120.0)
         client = AsyncOpenAI(
@@ -875,6 +845,17 @@ agent_court_decision_combined = Agent(
     system_prompt=SYSTEM_PROMPT,
     model_settings=default_settings,
 )
+
+# Attach tools to combined agents
+agent_rtk_combined.tool(search_creditor_inn)
+agent_rtk_combined.tool(search_creditor_name)
+
+agent_rtk_tax_combined.tool(search_creditor_inn)
+agent_rtk_tax_combined.tool(search_creditor_name)
+
+agent_court_decision_combined.tool(search_creditor_inn)
+agent_court_decision_combined.tool(search_creditor_name)
+
 
 # Compatibility aliases for legacy tests/code
 extraction_agent = agent_generic
@@ -1616,14 +1597,14 @@ async def _run_agent_extraction_impl(
                                     val = None
                                     confidence = 0.0
                                     reasoning = f"Failed custom extraction: {e}"
-
-                        results[field_name] = {
-                            "value": val,
-                            "confidence": confidence,
-                            "reasoning": reasoning,
-                            "source": "inn_web_search_only",
-                        }
-                        continue
+                                
+                                results[field_name] = {
+                                    "value": val,
+                                    "confidence": confidence,
+                                    "reasoning": reasoning,
+                                    "source": "inn_web_search_only",
+                                }
+                                continue
 
                     if is_tax_document:
                         prompt_instruction = """МЕТОДОЛОГИЯ АНАЛИЗА (SGR / Step-by-Step Reasoning):

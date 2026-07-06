@@ -6,8 +6,13 @@ from datetime import datetime
 from ocr_platform.config.settings import get_settings
 from ocr_platform.observability.logging import configure_logging, get_logger
 from ocr_platform.orchestration.run_processor import process_pipeline_run
-from ocr_platform.queueing.rabbitmq import IngestJob, consume_ingest_jobs, publish_ingest_job
+from ocr_platform.queueing.rabbitmq import (
+    IngestJob,
+    consume_ingest_jobs,
+    publish_ingest_job,
+)
 from ocr_platform.storage import models, repository
+from langfuse import get_client as get_langfuse_client
 
 logger = get_logger(__name__)
 
@@ -42,12 +47,15 @@ def _handle_job(job: IngestJob) -> None:
 
     try:
         asyncio.run(process_pipeline_run(job.pipeline_run_id))
+        get_langfuse_client().flush()
     except Exception as exc:
         next_attempt = job.attempt + 1
         error = f"{type(exc).__name__}: {exc}"
         if next_attempt <= max_retries:
             _set_retrying(job.pipeline_run_id, next_attempt, error)
-            publish_ingest_job(IngestJob(pipeline_run_id=job.pipeline_run_id, attempt=next_attempt))
+            publish_ingest_job(
+                IngestJob(pipeline_run_id=job.pipeline_run_id, attempt=next_attempt)
+            )
             logger.warning(
                 "pipeline_run_requeued",
                 pipeline_run_id=job.pipeline_run_id,
@@ -73,4 +81,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -6,6 +6,7 @@ from time import perf_counter
 from typing import Any
 
 import httpx
+from langfuse import observe
 
 from ocr_platform.config.settings import get_settings
 from ocr_platform.observability.logging import get_logger
@@ -91,6 +92,7 @@ def build_chat_completions_url(base_url: str) -> str:
     return f"{normalized}/chat/completions"
 
 
+@observe(as_type="generation")
 def call_llm_json_with_fallback(
     *,
     task_name: str,
@@ -248,6 +250,7 @@ def call_llm_json_with_fallback(
                     tags=mlflow_tags or {},
                     params=mlflow_params or {},
                 )
+                
                 return LlmJsonResult(
                     parsed=parsed,
                     winner_model=model_name,
@@ -312,6 +315,7 @@ def call_llm_json_with_fallback(
         tags=mlflow_tags or {},
         params=mlflow_params or {},
     )
+    
     return None
 
 

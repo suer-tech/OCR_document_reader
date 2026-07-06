@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 OCR_TEXT_ARTIFACT_MAX_LEN = 100_000
 
 # Источник извлечённого текста (для логирования)
-TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "glm"]
+TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "router_ai"]
 
 ContentType = Literal["pdf", "image", "text"]
 
@@ -158,32 +158,36 @@ def run_ocr(file_path: str, content_type: ContentType) -> str:
     return ""
 
 
-def run_ocr_with_engine(file_path: str, content_type: ContentType) -> tuple[str, TextSource]:
+def run_ocr_with_engine(file_path: str, content_type: ContentType, ocr_config: dict | None = None) -> tuple[str, TextSource]:
     """
-    Выполняет OCR с использованием выбранного движка (glm или tesseract).
+    Выполняет OCR с использованием выбранного движка (router_ai или tesseract).
     Применяет цепочки откатов (fallbacks) при возникновении сбоев:
-    - glm -> tesseract (прямой откат)
+    - router_ai -> tesseract (прямой откат)
     Возвращает (текст, источник_текста).
     """
     from ocr_platform.config.settings import get_settings
     settings = get_settings()
-    engine = settings.ocr_engine.lower()
+    
+    if ocr_config and "provider" in ocr_config:
+        engine = ocr_config["provider"].lower()
+    else:
+        engine = settings.ocr_engine.lower()
 
-    # Ступень 1: GLM OCR (удаленный GPU сервер)
-    if engine == "glm":
+    # Ступень 1: RouterAI OCR (API Gemini 2.5)
+    if engine == "router_ai":
         try:
-            from ocr_platform.services.glm_ocr_service import run_glm_ocr
-            text = run_glm_ocr(file_path)
+            from ocr_platform.services.router_ai_ocr_service import run_router_ai_ocr
+            text = run_router_ai_ocr(file_path, ocr_config)
             if text.strip():
-                return text, "glm"
-            logger.warning("glm_ocr_returned_empty_text", file_path=file_path)
+                return text, "router_ai"
+            logger.warning("router_ai_ocr_returned_empty_text", file_path=file_path)
         except Exception as exc:
             logger.warning(
-                "glm_ocr_failed_falling_back_to_tesseract",
+                "router_ai_ocr_failed_falling_back_to_tesseract",
                 file_path=file_path,
                 error=str(exc),
             )
-        # Если свалился glm, переходим напрямую к Tesseract
+        # Если свалился router_ai, переходим напрямую к Tesseract
         engine = "tesseract"
 
     # Ступень 3: Tesseract (легкий локальный OCR)
@@ -194,6 +198,7 @@ def extract_text_at_ingest(
     file_path: str,
     content_type: ContentType,
     *,
+    ocr_config: dict | None = None,
     document_id: str | None = None,
     pipeline_run_id: str | None = None,
 ) -> tuple[str, bool, float | None, TextSource]:
@@ -249,7 +254,7 @@ def extract_text_at_ingest(
             pipeline_run_id=pipeline_run_id,
         )
         t0 = perf_counter()
-        text, text_source = run_ocr_with_engine(file_path, content_type)
+        text, text_source = run_ocr_with_engine(file_path, content_type, ocr_config)
         ocr_latency_ms = (perf_counter() - t0) * 1000.0
         logger.info(
             "text_extraction_source",
@@ -270,7 +275,7 @@ def extract_text_at_ingest(
             pipeline_run_id=pipeline_run_id,
         )
         t0 = perf_counter()
-        text, text_source = run_ocr_with_engine(file_path, content_type)
+        text, text_source = run_ocr_with_engine(file_path, content_type, ocr_config)
         ocr_latency_ms = (perf_counter() - t0) * 1000.0
         logger.info(
             "text_extraction_source",

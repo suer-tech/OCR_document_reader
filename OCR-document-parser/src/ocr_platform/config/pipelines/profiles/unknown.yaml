@@ -10,11 +10,9 @@ document_type: unknown
 
 models:
   ocr:
-    provider: openrouter
-    model: deepseek/deepseek-v3.2-speciale
-    fallback_models:
-      - qwen/qwen3-vl-235b-a22b-thinking
-      - qwen/qwen3-235b-a22b-2507
+    provider: router_ai
+    model: google/gemini-2.5-flash
+    timeout_seconds: 300.0
 
 thresholds:
   technical_quality_min: 0.5

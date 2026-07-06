@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     # Каталог для файлов документов.
     storage_dir: str = "data/documents"
 
+    # Observability (Langfuse & MLflow)
+    langfuse_public_key: str | None = Field(
+        default=None, validation_alias="LANGFUSE_PUBLIC_KEY"
+    )
+    langfuse_secret_key: str | None = Field(
+        default=None, validation_alias="LANGFUSE_SECRET_KEY"
+    )
+    langfuse_host: str = Field(
+        default="https://cloud.langfuse.com", validation_alias="LANGFUSE_HOST"
+    )
+
     # MLflow (опционально).
     mlflow_tracking_uri: str | None = None
     mlflow_experiment_name: str = "ocr-pipeline"
@@ -52,25 +63,20 @@ class Settings(BaseSettings):
     rabbitmq_ingest_queue: str = "ocr.ingest"
     worker_max_retries: int = 3
 
-    # Движок OCR для сканированных страниц и картинок: tesseract или glm.
+    # DaData API for INN search
+    dadata_api_key: str | None = None
+    dadata_secret_key: str | None = None
+
+    # Движок OCR для сканированных страниц и картинок: tesseract или router_ai.
     ocr_engine: str = Field(default="tesseract", validation_alias="OCR_ENGINE")
 
-    # Удаленный сервер Ollama для OCR
-    ollama_ocr_url: str = Field(
-        default="http://localhost:11434", validation_alias="OCR_OLLAMA_OCR_URL"
+    # Настройки для OCR через RouterAI (Gemini)
+    router_ai_ocr_model: str = Field(
+        default="google/gemini-2.5-flash", validation_alias="OCR_ROUTER_AI_OCR_MODEL"
     )
-    ollama_ocr_model: str = Field(
-        default="glm-ocr", validation_alias="OCR_OLLAMA_OCR_MODEL"
+    router_ai_ocr_timeout_seconds: float = Field(
+        default=300.0, validation_alias="OCR_ROUTER_AI_OCR_TIMEOUT_SECONDS"
     )
-    ollama_ocr_token: str | None = Field(
-        default=None, validation_alias="OCR_OLLAMA_OCR_TOKEN"
-    )
-    glm_timeout_seconds: float = Field(
-        default=500.0, validation_alias="OCR_GLM_TIMEOUT_SECONDS"
-    )
-
-    # Максимальное количество retries на одну страницу GLM OCR.
-    glm_page_retries: int = Field(default=3, validation_alias="OCR_GLM_PAGE_RETRIES")
 
 
 @lru_cache(maxsize=1)

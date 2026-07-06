@@ -37,6 +37,7 @@ dependencies = [
     "duckduckgo-search>=6.2.0",
     "jsonschema>=4.23.0",
     "pydantic>=2.9.0",
+    "langfuse>=2.50.0",
 ]
 
 [project.scripts]

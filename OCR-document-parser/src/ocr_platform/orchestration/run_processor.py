@@ -142,6 +142,18 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 )
 
         if not extracted_text:
+            ocr_config = None
+            if requested_document_type:
+                temp_resolution = router.resolve_profile(
+                    source_type=source_type,
+                    requested_document_type=requested_document_type,
+                    detection_text=None,
+                    document_id=document_id,
+                    pipeline_run_id=pipeline_run_id,
+                )
+                temp_profile_config = router.load_profile(temp_resolution.profile_id)
+                ocr_config = temp_profile_config.get("models", {}).get("ocr")
+
             # Извлечение текста: pdfplumber → pymupdf → OCR (для PDF без текстового слоя)
             import asyncio
 
@@ -154,6 +166,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 ocr_service.extract_text_at_ingest,
                 storage_path,
                 content_type,
+                ocr_config=ocr_config,
                 document_id=document_id,
                 pipeline_run_id=pipeline_run_id,
             )
