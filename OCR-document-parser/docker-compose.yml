@@ -378,6 +378,7 @@ services:
 volumes:
   app-data:
   app-logs:
+  pg-data:
   rabbitmq-data:
   mlflow-data:
   mlflow-artifacts:
