@@ -43,19 +43,17 @@ MKL_NUM_THREADS=8
 TOKENIZERS_PARALLELISM=true
 ```
 
-### 3.1. GLM-OCR (настройки таймаутов и retry)
+### 3.1. RouterAI OCR (Gemini 2.5)
 
 ```ini
-# Движок OCR для сканированных страниц и картинок: tesseract или glm
-OCR_ENGINE=glm
-# Удаленный сервер Ollama для OCR
-OCR_OLLAMA_OCR_URL=https://mainwgpu.devbpm.ru/ollama/api/chat
-OCR_OLLAMA_OCR_MODEL=deepseek-ocr:latest
-OCR_OLLAMA_OCR_TOKEN=***
-# Таймаут (сек) на один запрос к GLM OCR
-OCR_GLM_TIMEOUT_SECONDS=500.0
-# Количество retries на одну страницу при ошибке/timeout GLM OCR
-OCR_GLM_PAGE_RETRIES=3
+# Движок OCR для сканированных страниц и картинок: tesseract или router_ai
+OCR_ENGINE=router_ai
+# Настройки RouterAI OCR
+OCR_ROUTER_AI_OCR_MODEL=google/gemini-2.5-flash
+OCR_ROUTER_AI_OCR_TIMEOUT_SECONDS=300.0
+# Общие настройки RouterAI (также используются для OCR)
+OCR_ROUTER_AI_BASE_URL=https://routerai.ru/api/v1
+OCR_ROUTER_AI_API_KEY=***
 ```
 
 > [!NOTE]

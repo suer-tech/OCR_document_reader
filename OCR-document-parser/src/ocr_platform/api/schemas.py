@@ -149,18 +149,24 @@ class DocumentResultResponse(BaseModel):
 В зависимости от типа документа ключи могут быть следующими:
 
 Для `court_decision` (Судебное решение):
-* `debtor_full_name` — ФИО должника
+* `debtor_full_name` — Объект с полями: `debtor_last_name` (Фамилия), `debtor_first_name` (Имя), `debtor_patronymic` (Отчество)
+* `debtor_gender` — Пол должника: "Мужской" или "Женский"
+* `debtor_birth_place` — Место рождения должника
+* `debtor_snils` — СНИЛС должника
+* `debtor_registration_address` — Адрес регистрации должника
 * `debtor_inn` — ИНН должника
 * `case_number` — Номер дела
 * `judge_full_name` — ФИО судьи
 * `court_name` — Название суда
-* `decision_date` — Дата решения
+* `decision_date` — Дата полного решения
+* `resolutive_part_date` — Дата резолютивной части
 * `procedure_type` — Тип процедуры (например, реализация имущества)
 * `procedure_end_date` — Дата окончания процедуры
 * `procedure_end_date_is_calculated` — Является ли дата окончания вычисленной (true/false)
 * `early_report_deadline` — Заблаговременное предоставление отчета ФУ
 * `motivating_part` — Мотивирующая часть судебного решения
 * `resolutive_part` — Резолютивная часть судебного решения
+* `document_basis` — Основание: "Решение" или "Определение"
 
 Для `rtk` (Заявление о включении в РТК):
 * `creditor` — Наименование кредитора
@@ -210,10 +216,14 @@ class DocumentResultResponse(BaseModel):
                     "fields": {
                         "debtor_full_name": {
                             "name": "debtor_full_name",
-                            "value": "Иванов Иван Иванович",
-                            "reasoning": "ФИО найдено в шапке после слова 'Должник:'",
+                            "value": {
+                                "debtor_last_name": "Иванов",
+                                "debtor_first_name": "Иван",
+                                "debtor_patronymic": "Иванович",
+                            },
+                            "reasoning": "ФИО найдено в шапке после слова 'Должник:'.",
                             "confidence": 0.98,
-                            "source": "nlp",
+                            "source": "court_decision_combined",
                         },
                         "debtor_inn": {
                             "name": "debtor_inn",

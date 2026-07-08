@@ -17,7 +17,7 @@
    **Обязательно к прочтению для агентов.** Жесткие правила написания кода, соблюдения слоев (API -> Orchestration -> Services) и обновления документации.
 
 3. [🧩 Компоненты и Пайплайны (COMPONENTS.md)](/docs/wiki/COMPONENTS.md)
-   Как работают движок маршрутизации, YAML-профили (например, `court_decision_ru.yaml`), DeepSeek OCR на Ollama,Tesseract OCR и предобученная модель BERT для извлечения сущностей.
+   Как работают движок маршрутизации, YAML-профили (например, `court_decision_ru.yaml`), RouterAI Gemini 2.5 OCR, Tesseract OCR и предобученная модель BERT для извлечения сущностей.
 
 4. [⚖️ Качество и Ручная Проверка (QUALITY_AND_REVIEW.md)](/docs/wiki/QUALITY_AND_REVIEW.md)
    Система скоринга качества документов (Quality Score), отправка документов на ручную верификацию и интеграция с MLflow.

@@ -8,6 +8,7 @@ from annotated_types import Ge, Le
 from pydantic import BaseModel, ConfigDict
 
 from ocr_platform.config.settings import get_settings
+from ocr_platform.observability.langfuse_prompts import get_doc_type_detection_prompt
 from ocr_platform.observability.logging import get_logger
 from ocr_platform.observability.mlflow_client import (
     mlflow_log_metric,
@@ -50,9 +51,13 @@ def _unknown_detection(source: str) -> DocumentTypeDetection:
 
 def _candidate_models() -> list[str]:
     settings = get_settings()
-    models = [m.strip() for m in settings.llm_default_fallback_models.split(",") if m.strip()]
+    models = [
+        m.strip() for m in settings.llm_default_fallback_models.split(",") if m.strip()
+    ]
     if not models:
-        models = [m.strip() for m in settings.openai_doc_type_models.split(",") if m.strip()]
+        models = [
+            m.strip() for m in settings.openai_doc_type_models.split(",") if m.strip()
+        ]
     if not models:
         return ["gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1"]
     return models[:3]
@@ -83,21 +88,23 @@ def _llm_detect_openrouter(
     settings = get_settings()
     llm_config = llm_config or {}
     allowed = sorted(set(allowed_types))
-    prompt = (
-        "Определи тип документа по тексту. "
-        "Верни JSON строго по переданной схеме. "
-        "Если не уверен, верни unknown."
-    )
+    prompt = get_doc_type_detection_prompt()
     provider = str(llm_config.get("provider", "openai"))
     primary_model = str(llm_config.get("model", "")).strip()
     cfg_fallback = llm_config.get("fallback_models", [])
-    fallback_models = [str(m).strip() for m in cfg_fallback if str(m).strip()] if isinstance(cfg_fallback, list) else []
+    fallback_models = (
+        [str(m).strip() for m in cfg_fallback if str(m).strip()]
+        if isinstance(cfg_fallback, list)
+        else []
+    )
     model_chain = [primary_model] if primary_model else []
     model_chain.extend([m for m in fallback_models if m and m not in model_chain])
     if not model_chain:
         model_chain = _candidate_models()
     temperature = float(llm_config.get("temperature", 0.0))
-    timeout_seconds = float(llm_config.get("timeout_seconds", settings.openai_timeout_seconds))
+    timeout_seconds = float(
+        llm_config.get("timeout_seconds", settings.openai_timeout_seconds)
+    )
 
     response_format = _build_json_schema(allowed)
     llm_result = call_llm_json_with_fallback(
@@ -171,11 +178,16 @@ def _log_detection_to_mlflow(
             mlflow_set_tag("detection_source", final_result.source)
             mlflow_set_tag("winner_model", final_result.model_name or "none")
             mlflow_log_param("allowed_types", ",".join(allowed_types))
-            mlflow_log_param("attempt_models", ",".join(a.get("model", "unknown") for a in attempts))
+            mlflow_log_param(
+                "attempt_models", ",".join(a.get("model", "unknown") for a in attempts)
+            )
             mlflow_log_param("attempt_count", len(attempts))
             mlflow_log_param("input_text_length", text_length)
             mlflow_log_metric("final_confidence", final_result.confidence)
-            mlflow_log_text(json.dumps(attempts, ensure_ascii=False, indent=2), "document_type_attempts.json")
+            mlflow_log_text(
+                json.dumps(attempts, ensure_ascii=False, indent=2),
+                "document_type_attempts.json",
+            )
     except Exception:
         pass
 

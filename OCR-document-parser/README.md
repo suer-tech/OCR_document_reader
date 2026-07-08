@@ -127,6 +127,23 @@ docker compose up -d --build
 docker compose down
 ```
 
+## Langfuse: Observability + Dataset Experiments
+
+В проекте настроена полная интеграция с Langfuse:
+
+- **Сквозная трассировка** пайплайнов (OCR → классификация → экстракция → валидация → quality scoring)
+- **Dataset + Experiments** для RTK-бенчмарка (52 PDF с ground truth)
+
+Документация и CLI: `docs/user-guide/langfuse.md`
+
+```bash
+# Загрузить датасет в Langfuse
+python scripts/langfuse_dataset.py sync
+
+# Прогнать эксперимент
+python scripts/langfuse_dataset.py run --name "Baseline" --api-url http://localhost:8000
+```
+
 ## API: ключевые эндпоинты
 
 - `POST /documents/ingest` — асинхронный ingest:

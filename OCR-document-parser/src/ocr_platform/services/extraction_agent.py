@@ -12,6 +12,8 @@ from pydantic_ai import Agent, RunContext
 from pydantic import BaseModel
 
 from ocr_platform.observability.logging import get_logger
+from langfuse import observe as _observe
+from langfuse._client.get_client import get_client as _get_lf_client
 
 logger = get_logger(__name__)
 
@@ -133,11 +135,41 @@ class GenericFieldResult(BaseModel):
 
 
 class CourtDecisionResult(BaseModel):
-    debtor_full_name: str | None = Field(
-        description="ФИО должника в именительном падеже, формат 'Фамилия Имя Отчество', либо null"
+    debtor_last_name: str | None = Field(
+        description="Фамилия должника в именительном падеже, либо null"
     )
-    debtor_full_name_confidence: float
-    debtor_full_name_reasoning: str
+    debtor_first_name: str | None = Field(
+        description="Имя должника в именительном падеже, либо null"
+    )
+    debtor_patronymic: str | None = Field(
+        description="Отчество должника в именительном падеже, либо null"
+    )
+    debtor_name_confidence: float
+    debtor_name_reasoning: str
+
+    debtor_gender: str | None = Field(
+        description="Пол должника: 'Мужской' или 'Женский', определяется по ФИО (имени и отчеству), либо null"
+    )
+    debtor_gender_confidence: float
+    debtor_gender_reasoning: str
+
+    debtor_birth_place: str | None = Field(
+        description="Место рождения должника (например, 'гор. Москва' или 'д. Ивановка'), либо null"
+    )
+    debtor_birth_place_confidence: float
+    debtor_birth_place_reasoning: str
+
+    debtor_snils: str | None = Field(
+        description="СНИЛС должника (формат 'XXX-XXX-XXX XX' или 'XXXXXXXXXXX'), либо null"
+    )
+    debtor_snils_confidence: float
+    debtor_snils_reasoning: str
+
+    debtor_registration_address: str | None = Field(
+        description="Адрес регистрации должника (например, 'г. Москва, ул. Ленина, д. 1, кв. 1'), либо null"
+    )
+    debtor_registration_address_confidence: float
+    debtor_registration_address_reasoning: str
 
     debtor_inn: str | None = Field(
         description="ИНН должника (10 или 12 цифр), либо null"
@@ -174,6 +206,24 @@ class CourtDecisionResult(BaseModel):
     )
     resolutive_part_confidence: float
     resolutive_part_reasoning: str
+
+    document_basis: str | None = Field(
+        description="Основание: 'Решение' (если документ содержит 'РЕШИЛ') или 'Определение' (если документ содержит 'ОПРЕДЕЛИЛ'), либо null"
+    )
+    document_basis_confidence: float
+    document_basis_reasoning: str
+
+    decision_date: str | None = Field(
+        description="Дата полного текста решения в формате ДД.ММ.ГГГГ, либо null. Ищи фразу 'Полный текст решения изготовлен' или 'Решение изготовлено'."
+    )
+    decision_date_confidence: float
+    decision_date_reasoning: str
+
+    resolutive_part_date: str | None = Field(
+        description="Дата резолютивной части решения в формате ДД.ММ.ГГГГ, либо null. Ищи фразу 'Резолютивная часть решения объявлена'."
+    )
+    resolutive_part_date_confidence: float
+    resolutive_part_date_reasoning: str
 
     has_text_distortions: bool = Field(
         description="True, если текст документа содержит искажения/ошибки OCR, из-за которых суммы или другие цифры могут быть прочитаны неверно. False, если текст чёткий и все суммы читаются однозначно."
@@ -370,13 +420,16 @@ class OpenCodeCLIAgentModel(AgentModel):
                 schema_title = self.result_tools[0].parameters_json_schema.get("title")
 
             if schema_title:
-                schema_path = (
-                    Path(__file__).parent.parent
-                    / "config"
-                    / "pipelines"
-                    / "schemas"
-                    / f"{schema_title}.json"
+                schemas_dir = (
+                    Path(__file__).parent.parent / "config" / "pipelines" / "schemas"
                 )
+                schema_path = schemas_dir / f"{schema_title}.json"
+                if not schema_path.exists():
+                    schema_path = schemas_dir / "rtk" / f"{schema_title}.json"
+                if not schema_path.exists():
+                    schema_path = (
+                        schemas_dir / "court_decision" / f"{schema_title}.json"
+                    )
                 if schema_path.exists():
                     with open(schema_path, "r", encoding="utf-8") as f:
                         schema_content = f.read()
@@ -688,11 +741,7 @@ async def _correct_text_via_vision(storage_path: str) -> str | None:
                             },
                             {
                                 "type": "text",
-                                "text": (
-                                    "Этот документ был извлечён с помощью OCR, и в тексте есть искажения/ошибки. "
-                                    "Посмотри на оригинальный PDF-документ и верни ПОЛНЫЙ текст документа без искажений, "
-                                    "исправляя все ошибки OCR. Сохрани структуру документа."
-                                ),
+                                "text": get_vision_fallback_prompt(),
                             },
                         ],
                     }
@@ -738,13 +787,15 @@ class DynamicModel(Model):
 model = DynamicModel()
 
 # Agents definitions
-SYSTEM_PROMPT = (
-    "You are an expert legal document analyst. "
-    "Extract the requested field accurately based on the provided text and instructions. "
-    "IMPORTANT: You MUST respond ONLY with raw, valid JSON matching the requested schema. "
-    "Do not wrap the JSON in markdown blocks like ```json ... ```. "
-    "Do not include any other text."
+from ocr_platform.observability.langfuse_prompts import (
+    get_extraction_system_prompt,
+    get_company_name_extraction_prompt,
+    get_company_comparison_prompt,
+    get_vision_fallback_prompt,
+    get_field_instruction,
 )
+
+SYSTEM_PROMPT = get_extraction_system_prompt()
 
 from pydantic_ai.settings import ModelSettings
 
@@ -881,27 +932,14 @@ class CompanyComparisonResult(BaseModel):
 company_name_extraction_agent = Agent(
     model,
     result_type=CompanyNameResult,
-    system_prompt=(
-        "You are an expert business registrar analyst. "
-        "Analyze only the provided search results to find the official company name or organization name corresponding to the given INN. "
-        "Use standard Russian legal-form abbreviations such as ООО, ПАО, АО, and ПКО, but do not abbreviate the entity's own name. "
-        "Return the name clearly in the company_name field. If no company name is found, return null."
-    ),
+    system_prompt=get_company_name_extraction_prompt(),
     model_settings=default_settings,
 )
 
 company_comparison_agent = Agent(
     model,
     result_type=CompanyComparisonResult,
-    system_prompt=(
-        "You are an expert entity resolution system. "
-        "Compare two organization names: one extracted from the document via OCR, and the other found in the official registry/internet by INN. "
-        "Determine if they represent the same legal entity/organization. "
-        "Classify the difference as:\n"
-        "- 'exact': the names are identical or have only minor formatting differences (e.g. quotes, lowercase/uppercase, spacing).\n"
-        "- 'minor': there are small typos/OCR errors (e.g. one or a few characters differ) or minor abbreviation differences (e.g. ООО vs Общество с ограниченной ответственностью), but they clearly refer to the same entity.\n"
-        "- 'critical': the names are completely different and refer to different entities."
-    ),
+    system_prompt=get_company_comparison_prompt(),
     model_settings=default_settings,
 )
 
@@ -950,6 +988,7 @@ async def compare_company_names(
     )
 
 
+@_observe(as_type="generation", capture_input=True, capture_output=True)
 async def run_agent_extraction(
     text: str,
     fields_config: Dict[str, Any],
@@ -959,6 +998,7 @@ async def run_agent_extraction(
 ) -> Dict[str, dict]:
     # Resolve and activate the LLM model based on profile config
     resolved_model = resolve_llm_model(profile_config)
+    _extraction_model_name = resolved_model.name()
     token = _active_model.set(resolved_model)
 
     llm_cfg = (
@@ -1013,7 +1053,11 @@ async def _run_agent_extraction_impl(
             )
             combined_prompt_parts = []
             for f in combined_fields:
-                f_instruction = fields_config[f].get("prompt_instruction", "")
+                f_instruction = get_field_instruction(
+                    profile_id,
+                    f,
+                    default=fields_config[f].get("prompt_instruction", ""),
+                )
                 combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
             combined_instructions = "\n\n".join(combined_prompt_parts)
             combined_prompt = (
@@ -1214,7 +1258,11 @@ async def _run_agent_extraction_impl(
             )
             combined_prompt_parts = []
             for f in tax_combined_fields:
-                f_instruction = fields_config[f].get("prompt_instruction", "")
+                f_instruction = get_field_instruction(
+                    profile_id or "rtk",
+                    f,
+                    default=fields_config[f].get("prompt_instruction", ""),
+                )
                 combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
             combined_instructions = "\n\n".join(combined_prompt_parts)
             combined_prompt = (
@@ -1327,7 +1375,11 @@ async def _run_agent_extraction_impl(
             )
             combined_prompt_parts = []
             for f in present_fields:
-                f_instruction = fields_config[f].get("prompt_instruction", "")
+                f_instruction = get_field_instruction(
+                    profile_id or "court_decision_ru",
+                    f,
+                    default=fields_config[f].get("prompt_instruction", ""),
+                )
                 combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
             combined_instructions = "\n\n".join(combined_prompt_parts)
             combined_prompt = (
@@ -1361,10 +1413,25 @@ async def _run_agent_extraction_impl(
 
             if combined_data:
                 field_mapping = {
-                    "debtor_full_name": (
-                        "debtor_full_name",
-                        "debtor_full_name_confidence",
-                        "debtor_full_name_reasoning",
+                    "debtor_gender": (
+                        "debtor_gender",
+                        "debtor_gender_confidence",
+                        "debtor_gender_reasoning",
+                    ),
+                    "debtor_birth_place": (
+                        "debtor_birth_place",
+                        "debtor_birth_place_confidence",
+                        "debtor_birth_place_reasoning",
+                    ),
+                    "debtor_snils": (
+                        "debtor_snils",
+                        "debtor_snils_confidence",
+                        "debtor_snils_reasoning",
+                    ),
+                    "debtor_registration_address": (
+                        "debtor_registration_address",
+                        "debtor_registration_address_confidence",
+                        "debtor_registration_address_reasoning",
                     ),
                     "debtor_inn": (
                         "debtor_inn",
@@ -1396,12 +1463,44 @@ async def _run_agent_extraction_impl(
                         "resolutive_part_confidence",
                         "resolutive_part_reasoning",
                     ),
+                    "document_basis": (
+                        "document_basis",
+                        "document_basis_confidence",
+                        "document_basis_reasoning",
+                    ),
+                    "decision_date": (
+                        "decision_date",
+                        "decision_date_confidence",
+                        "decision_date_reasoning",
+                    ),
+                    "resolutive_part_date": (
+                        "resolutive_part_date",
+                        "resolutive_part_date_confidence",
+                        "resolutive_part_date_reasoning",
+                    ),
                 }
                 for field_name in present_fields:
-                    val_attr, conf_attr, reason_attr = field_mapping[field_name]
-                    val = getattr(combined_data, val_attr, None)
-                    conf = getattr(combined_data, conf_attr, 0.0)
-                    reason = getattr(combined_data, reason_attr, "")
+                    if field_name == "debtor_full_name":
+                        val = {
+                            "debtor_last_name": getattr(
+                                combined_data, "debtor_last_name", None
+                            ),
+                            "debtor_first_name": getattr(
+                                combined_data, "debtor_first_name", None
+                            ),
+                            "debtor_patronymic": getattr(
+                                combined_data, "debtor_patronymic", None
+                            ),
+                        }
+                        if not val["debtor_last_name"] and not val["debtor_first_name"]:
+                            val = None
+                        conf = getattr(combined_data, "debtor_name_confidence", 0.0)
+                        reason = getattr(combined_data, "debtor_name_reasoning", "")
+                    else:
+                        val_attr, conf_attr, reason_attr = field_mapping[field_name]
+                        val = getattr(combined_data, val_attr, None)
+                        conf = getattr(combined_data, conf_attr, 0.0)
+                        reason = getattr(combined_data, reason_attr, "")
                     if field_name == "debtor_inn" and val:
                         inn_match = re.search(r"\d{10,12}", str(val))
                         val = inn_match.group(0) if inn_match else val
@@ -1447,7 +1546,6 @@ async def _run_agent_extraction_impl(
 
         if profile_id == "court_decision_ru" and field_name in [
             "case_number",
-            "decision_date",
             "procedure_end_date",
             "procedure_end_date_is_calculated",
             "early_report_deadline",
@@ -1462,14 +1560,6 @@ async def _run_agent_extraction_impl(
             val = None
             if field_name == "case_number":
                 val = extract_case_number(text)
-                results[field_name] = {
-                    "value": val,
-                    "confidence": 1.0 if val else 0.0,
-                    "reasoning": "Extracted via legacy regex",
-                    "source": "regex_legacy",
-                }
-            elif field_name == "decision_date":
-                val = extract_decision_date(text)
                 results[field_name] = {
                     "value": val,
                     "confidence": 1.0 if val else 0.0,
@@ -1528,7 +1618,11 @@ async def _run_agent_extraction_impl(
                 }
 
         elif extraction_method in ["llm", "llm_with_tools", "llm_claims_amount"]:
-            prompt_instruction = field_def.get("prompt_instruction", "")
+            prompt_instruction = get_field_instruction(
+                profile_id or "",
+                field_name,
+                default=field_def.get("prompt_instruction", ""),
+            )
             base_prompt = (
                 f"Instruction: {prompt_instruction}\n\nDocument Text:\n{text[:10000]}"
             )
@@ -1597,7 +1691,7 @@ async def _run_agent_extraction_impl(
                                     val = None
                                     confidence = 0.0
                                     reasoning = f"Failed custom extraction: {e}"
-                                
+
                                 results[field_name] = {
                                     "value": val,
                                     "confidence": confidence,
@@ -1607,10 +1701,14 @@ async def _run_agent_extraction_impl(
                                 continue
 
                     if is_tax_document:
-                        prompt_instruction = """МЕТОДОЛОГИЯ АНАЛИЗА (SGR / Step-by-Step Reasoning):
+                        prompt_instruction = get_field_instruction(
+                            profile_id or "rtk",
+                            "creditor_header",
+                            default="""МЕТОДОЛОГИЯ АНАЛИЗА (SGR / Step-by-Step Reasoning):
       Сначала выполни пошаговые рассуждения в поле "reasoning" строго следуя шагам:
       1. Шаг 1: Найди полное наименование и номер межрайонной налоговой инспекции в шапке документа. Обрати внимание что при наличии номера инспекции обзательно нужно найти к какому городу или области относится эта инспекция (например "МЕЖРАЙОННАЯ ИНСПЕКЦИЯ ФЕДЕРАЛЬНОЙ НАЛОГОВОЙ СЛУЖБЫ № 8 ПО САРАТОВСКОЙ ОБЛАСТИ").
-      2. Шаг 2. Верни значение в поле creditor_header, оцени confidence."""
+      2. Шаг 2. Верни значение в поле creditor_header, оцени confidence.""",
+                        )
                         base_prompt = f"Instruction: {prompt_instruction}\n\nDocument Text:\n{text[:10000]}"
 
                         agent = agent_tax_creditor
@@ -2260,5 +2358,11 @@ async def _run_agent_extraction_impl(
                     logger.info(f"Fallback search for INN returned no valid results.")
             except Exception as e:
                 logger.warning(f"Forced search_creditor_inn failed: {e}")
+
+    try:
+        lf = _get_lf_client()
+        lf.update_current_generation(model=_extraction_model_name)
+    except Exception:
+        logger.debug("langfuse_update_generation_skipped")
 
     return results

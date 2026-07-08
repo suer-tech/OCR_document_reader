@@ -34,9 +34,9 @@
 
 ### 1.3. Сервисы (`src/ocr_platform/services`)
 **Ответственность:**
-- **`ocr_service.py`**: Извлечение текста (pdfplumber, pymupdf) и запуск OCR (GLM-OCR c fallback-цепочкой на Tesseract).
+- **`ocr_service.py`**: Извлечение текста (pdfplumber, pymupdf) и запуск OCR (RouterAI Gemini OCR c fallback-цепочкой на Tesseract).
 - **`document_intel_service.py`**: Единый сервис диспетчеризации экстракции полей, перенаправляющий вызовы к `extraction_agent.py`.
-- **`extraction_agent.py`**: Запуск LLM-агентов (PydanticAI) для извлечения полей со строгой типизацией (Structured Outputs) через провайдеров `opencode` (DeepSeek CLI), `ollama` (v1 API) и `router_ai` (routerai.ru). Поддерживает объединенный агентный запрос `agent_rtk_combined` (для извлечения `creditor_inn`, `claims_amount` и `grounds` за один проход) с целью экономии токенов.
+- **`extraction_agent.py`**: Запуск LLM-агентов (PydanticAI) для извлечения полей со строгой типизацией (Structured Outputs) через провайдеров `opencode` (DeepSeek CLI) и `router_ai` (routerai.ru). Поддерживает объединенный агентный запрос `agent_rtk_combined` (для извлечения `creditor_inn`, `claims_amount` и `grounds` за один проход) с целью экономии токенов.
 - **`validation_service.py`**: Проверка форматов (ИНН, даты, суммы) и согласованности.
 - **`quality_service.py`**: Подсчет Quality Score.
 

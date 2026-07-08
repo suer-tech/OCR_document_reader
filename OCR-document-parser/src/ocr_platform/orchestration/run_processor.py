@@ -6,6 +6,7 @@ from time import perf_counter
 
 from fastapi import HTTPException
 
+from ocr_platform.observability.langfuse_tracing import get_pipeline_tracer
 from ocr_platform.observability.logging import get_logger
 from ocr_platform.observability.metrics import (
     inc_ingest_status,
@@ -23,6 +24,7 @@ from ocr_platform.observability.mlflow_client import (
     mlflow_run,
     mlflow_set_tag,
 )
+from ocr_platform.config.settings import get_settings
 from ocr_platform.orchestration import pipeline_engine, router
 from ocr_platform.services import (
     document_intel_service,
@@ -88,12 +90,20 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
     current_step = "resolve_profile"
     start = perf_counter()
 
+    tracer = get_pipeline_tracer()
+    tracer.start_trace(
+        "pipeline_run",
+        input={"pipeline_run_id": pipeline_run_id},
+        metadata={"pipeline_run_id": pipeline_run_id},
+    )
+
     try:
         with repository.get_session() as session:
             run = session.get(models.PipelineRun, pipeline_run_id)
             if not run:
                 raise HTTPException(status_code=404, detail="pipeline run not found")
             if run.status == "done":
+                tracer.flush()
                 return
 
             webhook_url = run.webhook_url
@@ -125,51 +135,77 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
         ocr_latency_ms = None
         text_source = "database_cache"
 
-        with repository.get_session() as session:
-            existing_txt = (
-                session.query(models.TextVersion)
-                .filter(models.TextVersion.document_id == document_id)
-                .order_by(models.TextVersion.id.desc())
-                .first()
-            )
-            if existing_txt and existing_txt.text.strip():
-                extracted_text = existing_txt.text
-                logger.info(
-                    "restored_text_from_db",
+        with tracer.span(
+            "text_extraction",
+            input={
+                "document_id": document_id,
+                "pipeline_run_id": pipeline_run_id,
+                "content_type": content_type,
+            },
+        ) as extraction_span:
+            with repository.get_session() as session:
+                existing_txt = (
+                    session.query(models.TextVersion)
+                    .filter(models.TextVersion.document_id == document_id)
+                    .order_by(models.TextVersion.id.desc())
+                    .first()
+                )
+                if existing_txt and existing_txt.text.strip():
+                    extracted_text = existing_txt.text
+                    logger.info(
+                        "restored_text_from_db",
+                        document_id=document_id,
+                        pipeline_run_id=pipeline_run_id,
+                        text_length=len(extracted_text),
+                    )
+
+            if not extracted_text:
+                ocr_config = None
+                if requested_document_type:
+                    temp_resolution = router.resolve_profile(
+                        source_type=source_type,
+                        requested_document_type=requested_document_type,
+                        detection_text=None,
+                        document_id=document_id,
+                        pipeline_run_id=pipeline_run_id,
+                    )
+                    temp_profile_config = router.load_profile(
+                        temp_resolution.profile_id
+                    )
+                    ocr_config = temp_profile_config.get("models", {}).get("ocr")
+
+                import asyncio
+
+                (
+                    extracted_text,
+                    ocr_was_used,
+                    ocr_latency_ms,
+                    text_source,
+                ) = await asyncio.to_thread(
+                    ocr_service.extract_text_at_ingest,
+                    storage_path,
+                    content_type,
+                    ocr_config=ocr_config,
                     document_id=document_id,
                     pipeline_run_id=pipeline_run_id,
-                    text_length=len(extracted_text),
                 )
 
-        if not extracted_text:
-            ocr_config = None
-            if requested_document_type:
-                temp_resolution = router.resolve_profile(
-                    source_type=source_type,
-                    requested_document_type=requested_document_type,
-                    detection_text=None,
-                    document_id=document_id,
-                    pipeline_run_id=pipeline_run_id,
+            if extraction_span is not None:
+                extraction_span.update(
+                    output={
+                        "text_length": len(extracted_text),
+                        "text_source": text_source,
+                        "ocr_was_used": ocr_was_used,
+                        "ocr_latency_ms": ocr_latency_ms,
+                    },
+                    metadata={
+                        "text_source": text_source,
+                        "ocr_was_used": ocr_was_used,
+                        "text_length": len(extracted_text),
+                        "document_id": document_id,
+                        "pipeline_run_id": pipeline_run_id,
+                    },
                 )
-                temp_profile_config = router.load_profile(temp_resolution.profile_id)
-                ocr_config = temp_profile_config.get("models", {}).get("ocr")
-
-            # Извлечение текста: pdfplumber → pymupdf → OCR (для PDF без текстового слоя)
-            import asyncio
-
-            (
-                extracted_text,
-                ocr_was_used,
-                ocr_latency_ms,
-                text_source,
-            ) = await asyncio.to_thread(
-                ocr_service.extract_text_at_ingest,
-                storage_path,
-                content_type,
-                ocr_config=ocr_config,
-                document_id=document_id,
-                pipeline_run_id=pipeline_run_id,
-            )
         detection_text = extracted_text
 
         if ocr_was_used:
@@ -206,24 +242,76 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     pipeline_run_id=pipeline_run_id,
                 )
 
-        resolution = router.resolve_profile(
-            source_type=source_type,
-            requested_document_type=requested_document_type,
-            detection_text=detection_text,
-            document_id=document_id,
-            pipeline_run_id=pipeline_run_id,
-        )
-        profile_id = resolution.profile_id
-        profile_config = router.load_profile(profile_id)
+        with tracer.span(
+            "document_classification",
+            input={
+                "source_type": source_type,
+                "requested_document_type": requested_document_type,
+                "document_id": document_id,
+                "pipeline_run_id": pipeline_run_id,
+            },
+        ) as classification_span:
+            resolution = router.resolve_profile(
+                source_type=source_type,
+                requested_document_type=requested_document_type,
+                detection_text=detection_text,
+                document_id=document_id,
+                pipeline_run_id=pipeline_run_id,
+            )
+            profile_id = resolution.profile_id
+            profile_config = router.load_profile(profile_id)
 
-        with repository.get_session() as session:
-            run = session.get(models.PipelineRun, pipeline_run_id)
-            doc = session.get(models.Document, document_id)
-            if not run or not doc:
-                raise HTTPException(status_code=404, detail="pipeline run not found")
-            run.profile_id = profile_id
-            doc.document_type = resolution.document_type
-            session.commit()
+            if classification_span is not None:
+                classification_span.update(
+                    output={
+                        "profile_id": profile_id,
+                        "document_type": resolution.document_type,
+                        "detection_source": resolution.detection_source,
+                        "confidence": resolution.confidence,
+                        "detection_model": resolution.detection_model,
+                    },
+                    metadata={
+                        "profile_id": profile_id,
+                        "document_type": resolution.document_type,
+                        "detection_source": resolution.detection_source,
+                        "detection_confidence": resolution.confidence,
+                        "detection_model": resolution.detection_model,
+                    },
+                )
+
+            with repository.get_session() as session:
+                run = session.get(models.PipelineRun, pipeline_run_id)
+                doc = session.get(models.Document, document_id)
+                if not run or not doc:
+                    raise HTTPException(
+                        status_code=404, detail="pipeline run not found"
+                    )
+                run.profile_id = profile_id
+                doc.document_type = resolution.document_type
+                session.commit()
+
+        tags = [
+            resolution.document_type,
+            resolution.profile_id,
+            source_type,
+            text_source,
+        ]
+        tracer.update_trace(
+            tags=tags,
+            metadata={
+                "document_type": resolution.document_type,
+                "profile_id": resolution.profile_id,
+                "source_type": source_type,
+                "content_type": content_type,
+                "detection_source": resolution.detection_source,
+                "detection_model": resolution.detection_model or "",
+                "detection_confidence": resolution.confidence,
+                "ocr_was_used": ocr_was_used,
+                "text_source": text_source,
+                "chars": len(extracted_text),
+                "ocr_engine": get_settings().ocr_engine,
+            },
+        )
 
         current_step = "run_pipeline"
         engine = router.build_pipeline_engine(profile_config)
@@ -232,7 +320,22 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             pipeline_run_id=pipeline_run_id,
             profile_id=profile_id,
         )
-        context = await engine.run(context)
+        with tracer.span(
+            "pipeline_engine",
+            input={
+                "profile_id": profile_id,
+                "steps_total": len(profile_config.get("pipeline", [])),
+            },
+        ) as engine_span:
+            context = await engine.run(context)
+            if engine_span is not None:
+                engine_span.update(
+                    output={"executed_steps": context.data.get("executed_steps", [])},
+                    metadata={
+                        "executed_steps": context.data.get("executed_steps", []),
+                        "profile_id": profile_id,
+                    },
+                )
 
         current_step = "process_pipeline_outputs"
         text = extracted_text
@@ -263,6 +366,15 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 existing_run_txt.text = text
                 session.commit()
 
+        with tracer.span(
+            "entity_extraction",
+            input={
+                "profile_id": profile_id,
+                "pipeline_run_id": pipeline_run_id,
+                "document_id": document_id,
+                "text_length": len(text),
+            },
+        ) as extraction_span:
             fields = await document_intel_service.simple_extract_fields(
                 text=text,
                 profile_config=profile_config,
@@ -287,16 +399,62 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     if existing_txt:
                         existing_txt.text = corrected_text
                         session.commit()
-            fields["processing_started_at"] = (
-                processing_started_at.isoformat() if processing_started_at else None
-            )
+            if extraction_span is not None:
+                extraction_span.update(
+                    output={
+                        "fields_count": len(fields),
+                        "vision_fallback_used": corrected_text is not None,
+                    },
+                    metadata={
+                        "fields_count": len(fields),
+                        "vision_fallback_used": corrected_text is not None,
+                        "profile_id": profile_id,
+                    },
+                )
+
+        fields["processing_started_at"] = (
+            processing_started_at.isoformat() if processing_started_at else None
+        )
+
+        with tracer.span("validation", metadata={"profile_id": profile_id}) as val_span:
             validation_status, validation_issues = validation_service.validate_fields(
                 fields, profile_id, profile_config
             )
+            if val_span is not None:
+                val_span.update(
+                    output={
+                        "validation_status": validation_status,
+                        "issues_count": len(validation_issues),
+                    },
+                    metadata={
+                        "validation_status": validation_status,
+                        "issues_count": len(validation_issues),
+                        "profile_id": profile_id,
+                    },
+                )
+
+        with tracer.span(
+            "quality_scoring", metadata={"profile_id": profile_id}
+        ) as quality_span:
             technical, semantic, overall = quality_service.compute_quality_scores(
                 text, fields
             )
+            if quality_span is not None:
+                quality_span.update(
+                    output={
+                        "technical_score": technical,
+                        "semantic_score": semantic,
+                        "overall_score": overall,
+                    },
+                    metadata={
+                        "technical_score": technical,
+                        "semantic_score": semantic,
+                        "overall_score": overall,
+                        "profile_id": profile_id,
+                    },
+                )
 
+        with repository.get_session() as session:
             structured = models.StructuredVersion(
                 document_id=document_id,
                 pipeline_run_id=pipeline_run_id,
@@ -417,6 +575,13 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 pipeline_run_id=pipeline_run_id,
             )
 
+        tracer.score(name="overall_quality", value=overall)
+        tracer.score(name="technical_quality", value=technical)
+        tracer.score(name="semantic_quality", value=semantic)
+        tracer.score(name="field_fill_rate", value=field_fill_rate)
+        tracer.score(name="validation_errors", value=validation_issue_count)
+        tracer.score(name="pipeline_success", value=1)
+
         logger.info(
             "pipeline_completed",
             document_id=document_id,
@@ -481,7 +646,10 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             }
             await _trigger_webhook_safely(webhook_url, webhook_payload)
 
+        tracer.flush()
+
     except Exception as exc:
+        tracer.score(name="pipeline_success", value=0)
         with repository.get_session() as session:
             run = session.get(models.PipelineRun, pipeline_run_id)
             if run:
@@ -508,4 +676,5 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 "finished_at": datetime.utcnow().isoformat(),
             }
             await _trigger_webhook_safely(webhook_url, webhook_payload)
+        tracer.flush()
         raise

@@ -57,4 +57,3 @@ def validate_fields(
         status = "errors"
 
     return status, issues
-

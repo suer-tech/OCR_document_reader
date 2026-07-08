@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 from langfuse import observe
+from langfuse._client.get_client import get_client as _get_langfuse_client
 
 from ocr_platform.config.settings import get_settings
 from ocr_platform.observability.logging import get_logger
@@ -73,7 +74,11 @@ def _extract_token_usage(response_json: dict[str, Any]) -> LlmTokenUsage | None:
         prompt_tokens = _normalize_token_count(usage.get("input_tokens"))
     if completion_tokens is None:
         completion_tokens = _normalize_token_count(usage.get("output_tokens"))
-    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+    if (
+        total_tokens is None
+        and prompt_tokens is not None
+        and completion_tokens is not None
+    ):
         total_tokens = prompt_tokens + completion_tokens
 
     if prompt_tokens is None and completion_tokens is None and total_tokens is None:
@@ -92,7 +97,7 @@ def build_chat_completions_url(base_url: str) -> str:
     return f"{normalized}/chat/completions"
 
 
-@observe(as_type="generation")
+@observe(as_type="generation", capture_input=True, capture_output=True)
 def call_llm_json_with_fallback(
     *,
     task_name: str,
@@ -112,7 +117,9 @@ def call_llm_json_with_fallback(
     mlflow_tags: dict[str, str] | None = None,
     mlflow_params: dict[str, Any] | None = None,
 ) -> LlmJsonResult | None:
-    resolved_api_key, resolved_base_url = _resolve_provider_credentials(provider, api_key, base_url)
+    resolved_api_key, resolved_base_url = _resolve_provider_credentials(
+        provider, api_key, base_url
+    )
     attempts: list[dict[str, Any]] = []
     call_started = perf_counter()
     normalized_profile_id = profile_id or "all"
@@ -182,7 +189,9 @@ def call_llm_json_with_fallback(
                 )
                 response.raise_for_status()
                 data = response.json()
-                response_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                response_text = (
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                )
                 parsed = json.loads(response_text)
                 usage = _extract_token_usage(data)
 
@@ -195,12 +204,16 @@ def call_llm_json_with_fallback(
                         "response_text": _truncate_text(response_text),
                         "token_usage": {
                             "prompt_tokens": usage.prompt_tokens if usage else None,
-                            "completion_tokens": usage.completion_tokens if usage else None,
+                            "completion_tokens": usage.completion_tokens
+                            if usage
+                            else None,
                             "total_tokens": usage.total_tokens if usage else None,
                         },
                     }
                 )
-                inc_llm_attempt(task_name=task_name, provider=provider, status="success")
+                inc_llm_attempt(
+                    task_name=task_name, provider=provider, status="success"
+                )
                 total_latency_ms = round((perf_counter() - call_started) * 1000, 2)
                 inc_llm_call(task_name=task_name, provider=provider, status="success")
                 observe_llm_call_latency(
@@ -250,7 +263,20 @@ def call_llm_json_with_fallback(
                     tags=mlflow_tags or {},
                     params=mlflow_params or {},
                 )
-                
+
+                try:
+                    lf = _get_langfuse_client()
+                    lf.update_current_generation(
+                        model=model_name,
+                        usage_details={
+                            "input": usage.prompt_tokens if usage else 0,
+                            "output": usage.completion_tokens if usage else 0,
+                        },
+                        model_parameters={"temperature": temperature},
+                    )
+                except Exception:
+                    logger.debug("langfuse_update_generation_skipped")
+
                 return LlmJsonResult(
                     parsed=parsed,
                     winner_model=model_name,
@@ -315,7 +341,7 @@ def call_llm_json_with_fallback(
         tags=mlflow_tags or {},
         params=mlflow_params or {},
     )
-    
+
     return None
 
 
@@ -353,19 +379,32 @@ def _log_llm_call_to_mlflow(
             for key, value in params.items():
                 mlflow_log_param(key, value)
             mlflow_log_metric("llm_attempt_count", len(attempts))
-            mlflow_log_metric("llm_failed_attempt_count", sum(1 for item in attempts if item.get("status") == "error"))
+            mlflow_log_metric(
+                "llm_failed_attempt_count",
+                sum(1 for item in attempts if item.get("status") == "error"),
+            )
             mlflow_log_metric("llm_success", 1.0 if winner_model else 0.0)
             if attempts:
-                total_latency_ms = sum(float(item.get("latency_ms", 0.0)) for item in attempts)
+                total_latency_ms = sum(
+                    float(item.get("latency_ms", 0.0)) for item in attempts
+                )
                 mlflow_log_metric("llm_total_latency_ms", total_latency_ms)
-                mlflow_log_metric("llm_avg_attempt_latency_ms", total_latency_ms / len(attempts))
+                mlflow_log_metric(
+                    "llm_avg_attempt_latency_ms", total_latency_ms / len(attempts)
+                )
             if token_usage is not None:
                 if token_usage.prompt_tokens is not None:
-                    mlflow_log_metric("llm_prompt_tokens", float(token_usage.prompt_tokens))
+                    mlflow_log_metric(
+                        "llm_prompt_tokens", float(token_usage.prompt_tokens)
+                    )
                 if token_usage.completion_tokens is not None:
-                    mlflow_log_metric("llm_completion_tokens", float(token_usage.completion_tokens))
+                    mlflow_log_metric(
+                        "llm_completion_tokens", float(token_usage.completion_tokens)
+                    )
                 if token_usage.total_tokens is not None:
-                    mlflow_log_metric("llm_total_tokens", float(token_usage.total_tokens))
+                    mlflow_log_metric(
+                        "llm_total_tokens", float(token_usage.total_tokens)
+                    )
             if avg_total_tokens is not None:
                 mlflow_log_metric("llm_avg_total_tokens_for_group", avg_total_tokens)
 
