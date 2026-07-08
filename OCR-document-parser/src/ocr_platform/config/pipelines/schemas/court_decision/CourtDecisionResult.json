@@ -1,0 +1,362 @@
+{
+  "properties": {
+    "debtor_last_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Фамилия должника в именительном падеже, либо null",
+      "title": "Debtor Last Name"
+    },
+    "debtor_first_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Имя должника в именительном падеже, либо null",
+      "title": "Debtor First Name"
+    },
+    "debtor_patronymic": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Отчество должника в именительном падеже, либо null",
+      "title": "Debtor Patronymic"
+    },
+    "debtor_name_confidence": {
+      "type": "number",
+      "title": "Debtor Name Confidence"
+    },
+    "debtor_name_reasoning": {
+      "type": "string",
+      "title": "Debtor Name Reasoning"
+    },
+    "debtor_gender": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Пол должника: 'Мужской' или 'Женский', определяется по ФИО (имени и отчеству), либо null",
+      "title": "Debtor Gender"
+    },
+    "debtor_gender_confidence": {
+      "type": "number",
+      "title": "Debtor Gender Confidence"
+    },
+    "debtor_gender_reasoning": {
+      "type": "string",
+      "title": "Debtor Gender Reasoning"
+    },
+    "debtor_birth_place": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Место рождения должника (например, 'гор. Москва' или 'д. Ивановка'), либо null",
+      "title": "Debtor Birth Place"
+    },
+    "debtor_birth_place_confidence": {
+      "type": "number",
+      "title": "Debtor Birth Place Confidence"
+    },
+    "debtor_birth_place_reasoning": {
+      "type": "string",
+      "title": "Debtor Birth Place Reasoning"
+    },
+    "debtor_snils": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "СНИЛС должника (формат 'XXX-XXX-XXX XX' или 'XXXXXXXXXXX'), либо null",
+      "title": "Debtor Snils"
+    },
+    "debtor_snils_confidence": {
+      "type": "number",
+      "title": "Debtor Snils Confidence"
+    },
+    "debtor_snils_reasoning": {
+      "type": "string",
+      "title": "Debtor Snils Reasoning"
+    },
+    "debtor_registration_address": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Адрес регистрации должника (например, 'г. Москва, ул. Ленина, д. 1, кв. 1'), либо null",
+      "title": "Debtor Registration Address"
+    },
+    "debtor_registration_address_confidence": {
+      "type": "number",
+      "title": "Debtor Registration Address Confidence"
+    },
+    "debtor_registration_address_reasoning": {
+      "type": "string",
+      "title": "Debtor Registration Address Reasoning"
+    },
+    "debtor_inn": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ИНН должника (10 или 12 цифр), либо null",
+      "title": "Debtor Inn"
+    },
+    "debtor_inn_confidence": {
+      "type": "number",
+      "title": "Debtor Inn Confidence"
+    },
+    "debtor_inn_reasoning": {
+      "type": "string",
+      "title": "Debtor Inn Reasoning"
+    },
+    "judge_full_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ФИО судьи в формате 'Фамилия И.О.' или 'Фамилия Имя Отчество', либо null",
+      "title": "Judge Full Name"
+    },
+    "judge_full_name_confidence": {
+      "type": "number",
+      "title": "Judge Full Name Confidence"
+    },
+    "judge_full_name_reasoning": {
+      "type": "string",
+      "title": "Judge Full Name Reasoning"
+    },
+    "court_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Полное название арбитражного суда, либо null",
+      "title": "Court Name"
+    },
+    "court_name_confidence": {
+      "type": "number",
+      "title": "Court Name Confidence"
+    },
+    "court_name_reasoning": {
+      "type": "string",
+      "title": "Court Name Reasoning"
+    },
+    "procedure_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Тип процедуры банкротства: 'процедура реализации имущества гражданина', 'процедура реструктуризации долгов', либо null",
+      "title": "Procedure Type"
+    },
+    "procedure_type_confidence": {
+      "type": "number",
+      "title": "Procedure Type Confidence"
+    },
+    "procedure_type_reasoning": {
+      "type": "string",
+      "title": "Procedure Type Reasoning"
+    },
+    "motivating_part": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Текст мотивировочной части судебного решения (между 'УСТАНОВИЛ' и 'РЕШИЛ'), либо null",
+      "title": "Motivating Part"
+    },
+    "motivating_part_confidence": {
+      "type": "number",
+      "title": "Motivating Part Confidence"
+    },
+    "motivating_part_reasoning": {
+      "type": "string",
+      "title": "Motivating Part Reasoning"
+    },
+    "resolutive_part": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Текст резолютивной части (после 'РЕШИЛ'/'ОПРЕДЕЛИЛ'), либо null",
+      "title": "Resolutive Part"
+    },
+    "resolutive_part_confidence": {
+      "type": "number",
+      "title": "Resolutive Part Confidence"
+    },
+    "resolutive_part_reasoning": {
+      "type": "string",
+      "title": "Resolutive Part Reasoning"
+    },
+    "document_basis": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Основание: 'Решение' (если документ содержит 'РЕШИЛ') или 'Определение' (если документ содержит 'ОПРЕДЕЛИЛ'), либо null",
+      "title": "Document Basis"
+    },
+    "document_basis_confidence": {
+      "type": "number",
+      "title": "Document Basis Confidence"
+    },
+    "document_basis_reasoning": {
+      "type": "string",
+      "title": "Document Basis Reasoning"
+    },
+    "decision_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Дата полного текста решения в формате ДД.ММ.ГГГГ, либо null. Ищи фразу 'Полный текст решения изготовлен' или 'Решение изготовлено'. Либо просто дата самого решения.",
+      "title": "Decision Date"
+    },
+    "decision_date_confidence": {
+      "type": "number",
+      "title": "Decision Date Confidence"
+    },
+    "decision_date_reasoning": {
+      "type": "string",
+      "title": "Decision Date Reasoning"
+    },
+    "resolutive_part_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Дата резолютивной части решения в формате ДД.ММ.ГГГГ. Ищи фразу 'Резолютивная часть решения объявлена'. Если отдельной даты для резолютивной части нет, то null. ",
+      "title": "Resolutive Part Date"
+    },
+    "resolutive_part_date_confidence": {
+      "type": "number",
+      "title": "Resolutive Part Date Confidence"
+    },
+    "resolutive_part_date_reasoning": {
+      "type": "string",
+      "title": "Resolutive Part Date Reasoning"
+    },
+    "has_text_distortions": {
+      "type": "boolean",
+      "description": "True, если текст документа содержит искажения/ошибки OCR, из-за которых суммы или другие цифры могут быть прочитаны неверно. False, если текст чёткий и все суммы читаются однозначно.",
+      "title": "Has Text Distortions"
+    }
+  },
+  "required": [
+    "debtor_last_name",
+    "debtor_first_name",
+    "debtor_patronymic",
+    "debtor_name_confidence",
+    "debtor_name_reasoning",
+    "debtor_gender",
+    "debtor_gender_confidence",
+    "debtor_gender_reasoning",
+    "debtor_birth_place",
+    "debtor_birth_place_confidence",
+    "debtor_birth_place_reasoning",
+    "debtor_snils",
+    "debtor_snils_confidence",
+    "debtor_snils_reasoning",
+    "debtor_registration_address",
+    "debtor_registration_address_confidence",
+    "debtor_registration_address_reasoning",
+    "debtor_inn",
+    "debtor_inn_confidence",
+    "debtor_inn_reasoning",
+    "judge_full_name",
+    "judge_full_name_confidence",
+    "judge_full_name_reasoning",
+    "court_name",
+    "court_name_confidence",
+    "court_name_reasoning",
+    "procedure_type",
+    "procedure_type_confidence",
+    "procedure_type_reasoning",
+    "motivating_part",
+    "motivating_part_confidence",
+    "motivating_part_reasoning",
+    "resolutive_part",
+    "resolutive_part_confidence",
+    "resolutive_part_reasoning",
+    "document_basis",
+    "document_basis_confidence",
+    "document_basis_reasoning",
+    "decision_date",
+    "decision_date_confidence",
+    "decision_date_reasoning",
+    "resolutive_part_date",
+    "resolutive_part_date_confidence",
+    "resolutive_part_date_reasoning",
+    "has_text_distortions"
+  ],
+  "title": "CourtDecisionResult",
+  "type": "object"
+}
