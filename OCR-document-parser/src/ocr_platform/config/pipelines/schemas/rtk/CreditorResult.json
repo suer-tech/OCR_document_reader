@@ -1,0 +1,57 @@
+{
+  "properties": {
+    "creditor_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Наименование кредитора, найденное в тексте, или null",
+      "title": "Creditor Name"
+    },
+    "creditor_name_web": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Наименование из интернета, если использовался поиск, иначе null",
+      "title": "Creditor Name Web"
+    },
+    "creditor_final": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ИТОГОВОЕ финальное наименование кредитора после анализа",
+      "title": "Creditor Final"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "number"
+    },
+    "reasoning": {
+      "title": "Reasoning",
+      "type": "string"
+    }
+  },
+  "required": [
+    "creditor_name",
+    "creditor_name_web",
+    "creditor_final",
+    "confidence",
+    "reasoning"
+  ],
+  "title": "CreditorResult",
+  "type": "object"
+}

@@ -1,0 +1,96 @@
+{
+  "properties": {
+    "creditor_inn": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ИНН кредитора (10 или 12 цифр), либо null",
+      "title": "Creditor Inn"
+    },
+    "creditor_inn_confidence": {
+      "type": "number",
+      "title": "Creditor Inn Confidence"
+    },
+    "creditor_inn_reasoning": {
+      "type": "string",
+      "description": "Краткое объяснение источника ИНН",
+      "title": "Creditor Inn Reasoning"
+    },
+    "commitments_count": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Количество отдельных обязательств/договоров, или null",
+      "title": "Commitments Count"
+    },
+    "amounts": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Список сумм для каждого обязательства, или null",
+      "title": "Amounts"
+    },
+    "claims_amount_confidence": {
+      "type": "number",
+      "title": "Claims Amount Confidence"
+    },
+    "claims_amount_reasoning": {
+      "type": "string",
+      "description": "Краткое объяснение выбора сумм",
+      "title": "Claims Amount Reasoning"
+    },
+    "grounds": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Точное значение из списка допустимых оснований, либо null",
+      "title": "Grounds"
+    },
+    "grounds_confidence": {
+      "type": "number",
+      "title": "Grounds Confidence"
+    },
+    "grounds_reasoning": {
+      "type": "string",
+      "description": "Краткое объяснение выбора основания",
+      "title": "Grounds Reasoning"
+    }
+  },
+  "required": [
+    "creditor_inn",
+    "creditor_inn_confidence",
+    "creditor_inn_reasoning",
+    "commitments_count",
+    "amounts",
+    "claims_amount_confidence",
+    "claims_amount_reasoning",
+    "grounds",
+    "grounds_confidence",
+    "grounds_reasoning"
+  ],
+  "title": "RtkCombinedResult",
+  "type": "object"
+}

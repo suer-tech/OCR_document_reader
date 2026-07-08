@@ -67,6 +67,9 @@ Thumbs.db
 
 # Test result JSON files
 *.json
+# But keep JSON schema files for extraction pipelines
+!OCR-document-parser/src/ocr_platform/config/pipelines/schemas/*.json
+!OCR-document-parser/src/ocr_platform/config/pipelines/schemas/**/*.json
 
 # Other test document formats
 *.docx

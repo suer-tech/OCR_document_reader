@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "is_same": {
+      "title": "Is Same",
+      "type": "boolean"
+    },
+    "difference_type": {
+      "title": "Difference Type",
+      "type": "string"
+    },
+    "reasoning": {
+      "title": "Reasoning",
+      "type": "string"
+    }
+  },
+  "required": [
+    "is_same",
+    "difference_type",
+    "reasoning"
+  ],
+  "title": "CompanyComparisonResult",
+  "type": "object"
+}

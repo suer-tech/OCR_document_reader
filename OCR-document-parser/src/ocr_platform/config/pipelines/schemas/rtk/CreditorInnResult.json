@@ -1,0 +1,31 @@
+{
+  "properties": {
+    "INN": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "10 или 12 цифр ИНН кредитора",
+      "title": "INN"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "number"
+    },
+    "reasoning": {
+      "title": "Reasoning",
+      "type": "string"
+    }
+  },
+  "required": [
+    "INN",
+    "confidence",
+    "reasoning"
+  ],
+  "title": "CreditorInnResult",
+  "type": "object"
+}

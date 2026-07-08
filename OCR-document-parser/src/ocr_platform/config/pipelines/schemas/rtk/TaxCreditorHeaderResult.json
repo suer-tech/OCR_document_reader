@@ -1,0 +1,31 @@
+{
+  "properties": {
+    "creditor_header": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Наименование налоговой из шапки документа или null",
+      "title": "Creditor Header"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "number"
+    },
+    "reasoning": {
+      "title": "Reasoning",
+      "type": "string"
+    }
+  },
+  "required": [
+    "creditor_header",
+    "confidence",
+    "reasoning"
+  ],
+  "title": "TaxCreditorHeaderResult",
+  "type": "object"
+}

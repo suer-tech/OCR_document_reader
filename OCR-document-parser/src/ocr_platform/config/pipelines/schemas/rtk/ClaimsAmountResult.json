@@ -1,0 +1,47 @@
+{
+  "properties": {
+    "commitments_count": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Количество отдельных обязательств/договоров, или null",
+      "title": "Commitments Count"
+    },
+    "amounts": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Список сумм для каждого обязательства, или null",
+      "title": "Amounts"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "number"
+    },
+    "reasoning": {
+      "title": "Reasoning",
+      "type": "string"
+    }
+  },
+  "required": [
+    "commitments_count",
+    "amounts",
+    "confidence",
+    "reasoning"
+  ],
+  "title": "ClaimsAmountResult",
+  "type": "object"
+}

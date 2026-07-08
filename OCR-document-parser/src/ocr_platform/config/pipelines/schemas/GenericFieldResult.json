@@ -1,0 +1,30 @@
+{
+  "properties": {
+    "value": {
+      "description": "Извлеченное значение поля, либо null",
+      "title": "Value"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "number"
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoning"
+    }
+  },
+  "required": [
+    "value",
+    "confidence",
+    "reasoning"
+  ],
+  "title": "GenericFieldResult",
+  "type": "object"
+}

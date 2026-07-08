@@ -1,0 +1,31 @@
+{
+  "properties": {
+    "grounds": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Точное значение из списка допустимых оснований, либо null",
+      "title": "Grounds"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "number"
+    },
+    "reasoning": {
+      "title": "Reasoning",
+      "type": "string"
+    }
+  },
+  "required": [
+    "grounds",
+    "confidence",
+    "reasoning"
+  ],
+  "title": "GroundsResult",
+  "type": "object"
+}
