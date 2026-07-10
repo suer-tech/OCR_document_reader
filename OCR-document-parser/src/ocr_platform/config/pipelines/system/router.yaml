@@ -21,4 +21,5 @@ detection:
       - x-ai/grok-4.1-fast
     temperature: 0.0
     timeout_seconds: 180.0
+    reasoning_effort: low
 

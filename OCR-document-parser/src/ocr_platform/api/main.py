@@ -1,3 +1,6 @@
+# AGENT: Все HTTP эндпоинты регистрируются здесь, в create_app(). Схемы — в schemas.py.
+# AGENT: Не добавляй бизнес-логику или SQL — используй orchestration и services.
+
 from __future__ import annotations
 
 import base64

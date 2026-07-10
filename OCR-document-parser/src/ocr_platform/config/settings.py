@@ -1,3 +1,6 @@
+# AGENT: Все настройки приложения — только через Pydantic Settings из этого файла.
+# AGENT: Не используй os.environ напрямую, импортируй get_settings().
+
 from __future__ import annotations
 
 from functools import lru_cache

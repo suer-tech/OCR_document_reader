@@ -105,6 +105,7 @@ def _llm_detect_openrouter(
     timeout_seconds = float(
         llm_config.get("timeout_seconds", settings.openai_timeout_seconds)
     )
+    reasoning_effort = llm_config.get("reasoning_effort")
 
     response_format = _build_json_schema(allowed)
     llm_result = call_llm_json_with_fallback(
@@ -120,6 +121,7 @@ def _llm_detect_openrouter(
         user_content=text[:6000],
         response_schema=response_format,
         temperature=temperature,
+        reasoning_effort=reasoning_effort,
         mlflow_tags={
             "component_task": "document_type_detection",
             "provider": provider,

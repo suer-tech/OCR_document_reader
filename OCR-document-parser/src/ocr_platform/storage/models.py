@@ -1,3 +1,6 @@
+# AGENT: Все ORM модели находятся здесь. Не пиши сырой SQL.
+# AGENT: Импортируй модели через `from ocr_platform.storage.models import ...`
+
 from __future__ import annotations
 
 from datetime import datetime

@@ -1,3 +1,6 @@
+# AGENT: Все PydanticAI агенты для извлечения полей. Новый тип поля = новый агент.
+# AGENT: Соблюдай API pydantic-ai==0.0.18 (result_type=, result.data).
+
 import asyncio
 import re
 import tempfile
@@ -576,14 +579,56 @@ def _active_model_settings():
     )
 
 
+class ReasoningEffortOpenAIModel(OpenAIModel):
+    """OpenAIModel that passes reasoning_effort from config to the API."""
+
+    def __init__(self, model_name: str, *, reasoning_effort: str | None = None, **kwargs: Any):
+        super().__init__(model_name, **kwargs)
+        self.reasoning_effort = reasoning_effort
+
+    async def _completions_create(
+        self, messages: list[Any], stream: bool, model_settings: Any | None
+    ) -> Any:
+        from itertools import chain
+        from pydantic_ai.models.openai import NOT_GIVEN
+
+        if not self.tools:
+            tool_choice: Any = None
+        elif not self.allow_text_result:
+            tool_choice = "required"
+        else:
+            tool_choice = "auto"
+
+        openai_messages = list(chain(*(self._map_message(m) for m in messages)))
+        model_settings = model_settings or {}
+
+        kwargs: dict[str, Any] = dict(
+            model=self.model_name,
+            messages=openai_messages,
+            n=1,
+            parallel_tool_calls=True if self.tools else NOT_GIVEN,
+            tools=self.tools or NOT_GIVEN,
+            tool_choice=tool_choice or NOT_GIVEN,
+            stream=stream,
+            stream_options={"include_usage": True} if stream else NOT_GIVEN,
+            max_tokens=model_settings.get("max_tokens", NOT_GIVEN),
+            temperature=model_settings.get("temperature", NOT_GIVEN),
+            top_p=model_settings.get("top_p", NOT_GIVEN),
+            timeout=model_settings.get("timeout", NOT_GIVEN),
+        )
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
+        return await self.client.chat.completions.create(**kwargs)
+
+
 def resolve_llm_model(profile_config: dict | None = None) -> "Model":
     """
     Build a pydantic-ai Model based on profile_config['models']['llm_extraction'].
     Supported providers:
       - 'opencode' → OpenCodeCLIModel (local CLI agent)
-      - 'router_ai' → OpenAIModel pointing to routerai.ru/api/v1
-      - 'openrouter' → OpenAIModel pointing to openrouter.ai/api/v1
-      - 'yandex_studio' → OpenAIModel pointing to ai.api.cloud.yandex.net/v1 (Yandex AI Studio)
+      - 'router_ai' → ReasoningEffortOpenAIModel pointing to routerai.ru/api/v1
+      - 'openrouter' → ReasoningEffortOpenAIModel pointing to openrouter.ai/api/v1
+      - 'yandex_studio' → ReasoningEffortOpenAIModel pointing to ai.api.cloud.yandex.net/v1 (Yandex AI Studio)
     Falls back to OpenCode if no profile_config is provided.
     """
     if profile_config is None:
@@ -593,6 +638,7 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
     llm_cfg = models_cfg.get("llm_extraction", {})
     provider = llm_cfg.get("provider", "opencode").lower()
     model_name = llm_cfg.get("model", "")
+    reasoning_effort = llm_cfg.get("reasoning_effort")
 
     if provider == "router_ai":
         from pydantic_ai.models.openai import OpenAIModel as PydanticOpenAIModel
@@ -622,8 +668,9 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
         async_openai_client = AsyncOpenAI(
             base_url=base_url, api_key=api_key, http_client=http_client
         )
-        return PydanticOpenAIModel(
+        return ReasoningEffortOpenAIModel(
             model_id,
+            reasoning_effort=reasoning_effort,
             openai_client=async_openai_client,
         )
     elif provider == "openrouter":
@@ -647,8 +694,9 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
         async_openai_client = AsyncOpenAI(
             base_url=base_url, api_key=api_key, http_client=http_client
         )
-        return PydanticOpenAIModel(
+        return ReasoningEffortOpenAIModel(
             model_name or "openai/gpt-4o-mini",
+            reasoning_effort=reasoning_effort,
             openai_client=async_openai_client,
         )
     elif provider == "yandex_studio":
@@ -684,8 +732,9 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
             api_key=api_key,
             http_client=http_client,
         )
-        return PydanticOpenAIModel(
+        return ReasoningEffortOpenAIModel(
             model_id,
+            reasoning_effort=reasoning_effort,
             openai_client=async_openai_client,
         )
     else:
@@ -695,8 +744,8 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
         return OpenCodeCLIModel(opencode_model)
 
 
-async def _correct_text_via_vision(storage_path: str) -> str | None:
-    """Send PDF to router_ai/google/gemini-2.5-flash-lite for text correction."""
+async def _correct_text_via_vision(storage_path: str, model: str = "google/gemini-2.5-flash-lite") -> str | None:
+    """Send PDF to vision model for text correction."""
     import base64
 
     logger.info("vision_fallback_started", storage_path=storage_path)
@@ -728,7 +777,7 @@ async def _correct_text_via_vision(storage_path: str) -> str | None:
         )
         try:
             resp = await client.chat.completions.create(
-                model="google/gemini-2.5-flash-lite",
+                model=model,
                 messages=[
                     {
                         "role": "user",
@@ -748,6 +797,7 @@ async def _correct_text_via_vision(storage_path: str) -> str | None:
                 ],
                 max_tokens=32768,
                 temperature=0.0,
+                reasoning_effort="low",
             )
             corrected = resp.choices[0].message.content
             if corrected and corrected.strip():
@@ -995,6 +1045,7 @@ async def run_agent_extraction(
     profile_id: str | None = None,
     profile_config: dict | None = None,
     storage_path: str | None = None,
+    _vision_fallback_used: bool = False,
 ) -> Dict[str, dict]:
     # Resolve and activate the LLM model based on profile config
     resolved_model = resolve_llm_model(profile_config)
@@ -1012,7 +1063,7 @@ async def run_agent_extraction(
 
     try:
         return await _run_agent_extraction_impl(
-            text, fields_config, profile_id, storage_path
+            text, fields_config, profile_id, profile_config, storage_path, _vision_fallback_used
         )
     finally:
         _active_model.reset(token)
@@ -1023,9 +1074,17 @@ async def _run_agent_extraction_impl(
     text: str,
     fields_config: Dict[str, Any],
     profile_id: str | None = None,
+    profile_config: dict | None = None,
     storage_path: str | None = None,
+    _vision_fallback_used: bool = False,
 ) -> Dict[str, dict]:
     results = {}
+
+    _vision_model = (
+        profile_config.get("models", {}).get("ocr", {}).get("model", "google/gemini-2.5-flash-lite")
+        if profile_config
+        else "google/gemini-2.5-flash-lite"
+    )
 
     is_tax_document = False
     if profile_id == "rtk":
@@ -1119,22 +1178,13 @@ async def _run_agent_extraction_impl(
                     "source": "rtk_combined",
                 }
 
-                if combined_data.has_text_distortions and storage_path:
+                if not _vision_fallback_used and combined_data.has_text_distortions and storage_path:
                     logger.info("vision_fallback_triggered", storage_path=storage_path)
-                    corrected_text = await _correct_text_via_vision(storage_path)
+                    corrected_text = await _correct_text_via_vision(storage_path, model=_vision_model)
                     if corrected_text:
-                        override_config = {
-                            "models": {
-                                "llm_extraction": {
-                                    "provider": "router_ai",
-                                    "model": "deepseek/deepseek-v4-flash",
-                                    "temperature": 0.0,
-                                    "timeout_seconds": 180.0,
-                                }
-                            }
-                        }
                         fallback_fields = await run_agent_extraction(
-                            corrected_text, fields_config, profile_id, override_config
+                            corrected_text, fields_config, profile_id, profile_config,
+                            _vision_fallback_used=True,
                         )
                         if fallback_fields:
                             fallback_fields["_raw_text"] = corrected_text
@@ -1335,24 +1385,15 @@ async def _run_agent_extraction_impl(
                     "source": "rtk_tax_combined",
                 }
 
-                if combined_data.has_text_distortions and storage_path:
+                if not _vision_fallback_used and combined_data.has_text_distortions and storage_path:
                     logger.info(
                         "vision_fallback_triggered_tax", storage_path=storage_path
                     )
-                    corrected_text = await _correct_text_via_vision(storage_path)
+                    corrected_text = await _correct_text_via_vision(storage_path, model=_vision_model)
                     if corrected_text:
-                        override_config = {
-                            "models": {
-                                "llm_extraction": {
-                                    "provider": "router_ai",
-                                    "model": "deepseek/deepseek-v4-flash",
-                                    "temperature": 0.0,
-                                    "timeout_seconds": 180.0,
-                                }
-                            }
-                        }
                         fallback_fields = await run_agent_extraction(
-                            corrected_text, fields_config, profile_id, override_config
+                            corrected_text, fields_config, profile_id, profile_config,
+                            _vision_fallback_used=True,
                         )
                         if fallback_fields:
                             fallback_fields["_raw_text"] = corrected_text
@@ -1361,12 +1402,19 @@ async def _run_agent_extraction_impl(
     if profile_id == "court_decision_ru":
         llm_fields = [
             "debtor_full_name",
+            "debtor_gender",
+            "debtor_birth_place",
+            "debtor_snils",
+            "debtor_registration_address",
             "debtor_inn",
             "judge_full_name",
             "court_name",
             "procedure_type",
             "motivating_part",
             "resolutive_part",
+            "document_basis",
+            "decision_date",
+            "resolutive_part_date",
         ]
         present_fields = [f for f in llm_fields if f in fields_config]
         if present_fields:
@@ -1511,24 +1559,15 @@ async def _run_agent_extraction_impl(
                         "source": "court_decision_combined",
                     }
 
-                if combined_data.has_text_distortions and storage_path:
+                if not _vision_fallback_used and combined_data.has_text_distortions and storage_path:
                     logger.info(
                         "vision_fallback_triggered_court", storage_path=storage_path
                     )
-                    corrected_text = await _correct_text_via_vision(storage_path)
+                    corrected_text = await _correct_text_via_vision(storage_path, model=_vision_model)
                     if corrected_text:
-                        override_config = {
-                            "models": {
-                                "llm_extraction": {
-                                    "provider": "router_ai",
-                                    "model": "deepseek/deepseek-v4-flash",
-                                    "temperature": 0.0,
-                                    "timeout_seconds": 180.0,
-                                }
-                            }
-                        }
                         fallback_fields = await run_agent_extraction(
-                            corrected_text, fields_config, profile_id, override_config
+                            corrected_text, fields_config, profile_id, profile_config,
+                            _vision_fallback_used=True,
                         )
                         if fallback_fields:
                             fallback_fields["_raw_text"] = corrected_text

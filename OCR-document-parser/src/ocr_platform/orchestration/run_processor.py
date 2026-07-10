@@ -1,3 +1,6 @@
+# AGENT: Главный оркестратор пайплайна. Вызывает services по шагам из YAML профиля.
+# AGENT: Не хардкодь бизнес-логику — всё должно быть в YAML + services.
+
 from __future__ import annotations
 
 import asyncio

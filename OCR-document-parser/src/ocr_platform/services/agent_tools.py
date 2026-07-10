@@ -1,6 +1,7 @@
 import re
 import socket
 import concurrent.futures
+from functools import lru_cache
 import requests
 from bs4 import BeautifulSoup
 from pydantic_ai import RunContext
@@ -10,6 +11,9 @@ from ocr_platform.observability.logging import get_logger
 logger = get_logger(__name__)
 
 DDGS_TIMEOUT = 15
+
+_inn_search_cache: dict[str, str] = {}
+_name_search_cache: dict[str, str] = {}
 
 
 def _extract_inn_from_text(text: str) -> str | None:
@@ -46,6 +50,11 @@ def _fetch_page_text(url: str, timeout: int = 8) -> str | None:
 
 def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
     """Search for the INN of a creditor by their name using zachestnyibiznes.ru and DuckDuckGo fallback."""
+    cached = _inn_search_cache.get(creditor_name)
+    if cached is not None:
+        logger.info("web_search_creditor_inn_cache_hit", creditor_name=creditor_name, inn=cached)
+        return cached
+
     logger.info("web_search_creditor_inn", creditor_name=creditor_name)
 
     # --- Шаг 1: Параллельный поиск через DuckDuckGo, Yahoo и DaData ---
@@ -89,7 +98,8 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
                 dadata_inn = future_dadata.result(timeout=5)
                 if dadata_inn:
                     logger.info("inn_found_via_dadata", inn=dadata_inn)
-                    return f"Found INN: {dadata_inn}"
+                    _inn_search_cache[creditor_name] = f"Found INN: {dadata_inn}"
+                    return _inn_search_cache[creditor_name]
             except Exception as e:
                 logger.warning("dadata_search_failed", error=str(e))
 
@@ -99,7 +109,8 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
                 inn = _extract_inn_from_text(yahoo_text)
                 if inn:
                     logger.info("inn_found_via_yahoo", inn=inn)
-                    return f"Found INN: {inn}"
+                    _inn_search_cache[creditor_name] = f"Found INN: {inn}"
+                    return _inn_search_cache[creditor_name]
             except Exception as e:
                 logger.warning("yahoo_search_failed", error=str(e))
 
@@ -119,7 +130,8 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
             inn = _extract_inn_from_text(snippet)
             if inn:
                 logger.info("inn_found_in_snippet", inn=inn, url=r.get("href"))
-                return f"Found INN: {inn}"
+                _inn_search_cache[creditor_name] = f"Found INN: {inn}"
+                return _inn_search_cache[creditor_name]
 
         # Заходим на первые 3 страницы и ищем там
         for r in results[:3]:
@@ -131,7 +143,8 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
                 inn = _extract_inn_from_text(page_text)
                 if inn:
                     logger.info("inn_found_on_page", inn=inn, url=page_url)
-                    return f"Found INN: {inn}"
+                    _inn_search_cache[creditor_name] = f"Found INN: {inn}"
+                    return _inn_search_cache[creditor_name]
 
     except concurrent.futures.TimeoutError:
         logger.warning("ddg_search_timed_out", creditor_name=creditor_name)
@@ -158,19 +171,27 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
                 inn = _extract_inn_from_text(snippet)
                 if inn:
                     logger.info("inn_found_in_html_snippet", inn=inn)
-                    return f"Found INN: {inn}"
+                    _inn_search_cache[creditor_name] = f"Found INN: {inn}"
+                    return _inn_search_cache[creditor_name]
     except Exception as exc:
         logger.warning("ddg_html_fallback_failed", error=str(exc))
 
-    return "INN not found. Could not locate the INN for the given creditor name via web search."
+    _inn_search_cache[creditor_name] = "INN not found. Could not locate the INN for the given creditor name via web search."
+    return _inn_search_cache[creditor_name]
 
 
 def search_creditor_name(ctx: RunContext[str], inn: str) -> str:
     """Tool for LLM: search for company name by its INN using zachestnyibiznes.ru and DuckDuckGo."""
+    cached = _name_search_cache.get(inn)
+    if cached is not None:
+        logger.info("search_creditor_name_cache_hit", inn=inn)
+        return cached
     result = _search_by_inn(inn)
-    return result or "Company name not found"
+    _name_search_cache[inn] = result or "Company name not found"
+    return _name_search_cache[inn]
 
 
+@lru_cache(maxsize=128)
 def _search_by_inn(inn: str) -> str | None:
     """Internal: search for company details/name by INN using DaData API."""
     logger.info("search_by_inn", inn=inn, provider="dadata")

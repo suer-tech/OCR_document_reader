@@ -1,3 +1,6 @@
+# AGENT: Единый LLM шлюз для всех вызовов. Используй call_llm_json_with_fallback().
+# AGENT: Не создавай отдельные HTTP-вызовы к LLM — всегда через этот сервис.
+
 from __future__ import annotations
 
 import json
@@ -114,6 +117,7 @@ def call_llm_json_with_fallback(
     user_content: str,
     response_schema: dict[str, Any],
     temperature: float = 0.0,
+    reasoning_effort: str | None = None,
     mlflow_tags: dict[str, str] | None = None,
     mlflow_params: dict[str, Any] | None = None,
 ) -> LlmJsonResult | None:
@@ -171,7 +175,7 @@ def call_llm_json_with_fallback(
     with httpx.Client(timeout=timeout_seconds) as client:
         for model_name in models:
             attempt_started = perf_counter()
-            payload = {
+            payload: dict[str, Any] = {
                 "model": model_name,
                 "temperature": temperature,
                 "response_format": response_schema,
@@ -180,6 +184,8 @@ def call_llm_json_with_fallback(
                     {"role": "user", "content": user_content},
                 ],
             }
+            if reasoning_effort:
+                payload["reasoning_effort"] = reasoning_effort
             try:
                 response_text = ""
                 response = client.post(

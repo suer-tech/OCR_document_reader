@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import os
+import time
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from ocr_platform.observability.logging import get_logger
 
@@ -59,6 +63,7 @@ class PromptProvider:
     def __init__(self) -> None:
         self._client: Any = None
         self._enabled = False
+        self._not_found_cache: dict[str, float] = {}
         self._try_init()
 
     def _try_init(self) -> None:
@@ -81,6 +86,10 @@ class PromptProvider:
     ) -> str:
         if not self._enabled or not self._client:
             return default
+        if name in self._not_found_cache:
+            if time.time() < self._not_found_cache[name]:
+                return default
+            del self._not_found_cache[name]
         try:
             prompt = self._client.get_prompt(
                 name, type="text", cache_ttl_seconds=cache_ttl
@@ -90,16 +99,22 @@ class PromptProvider:
                     return prompt.compile(**kwargs)
                 return prompt.prompt
         except Exception:
+            self._not_found_cache[name] = time.time() + cache_ttl
             pass
         return default
 
     def get_prompt_version(self, name: str) -> int | None:
         if not self._enabled or not self._client:
             return None
+        if name in self._not_found_cache:
+            if time.time() < self._not_found_cache[name]:
+                return None
+            del self._not_found_cache[name]
         try:
             prompt = self._client.get_prompt(name, type="text")
             return prompt.version
         except Exception:
+            self._not_found_cache[name] = time.time() + 300
             return None
 
 
@@ -173,3 +188,45 @@ SYNC_PROMPTS: dict[str, tuple[str, str]] = {
         "Prompt for vision-based OCR correction fallback",
     ),
 }
+
+
+def _load_field_instruction_prompts() -> dict[str, tuple[str, str]]:
+    prompts: dict[str, tuple[str, str]] = {}
+    try:
+        profiles_dir = (
+            Path(__file__).resolve().parent.parent
+            / "config"
+            / "pipelines"
+            / "profiles"
+        )
+        for profile_id in ("rtk", "court_decision_ru"):
+            yaml_path = profiles_dir / f"{profile_id}.yaml"
+            if not yaml_path.exists():
+                continue
+            with open(yaml_path, encoding="utf-8") as f:
+                profile = yaml.safe_load(f)
+            fields = profile.get("fields", {}) or profile.get("fields_llm", {})
+            if not fields:
+                continue
+            for field_name, cfg in fields.items():
+                if not isinstance(cfg, dict):
+                    continue
+                instruction = cfg.get("prompt_instruction", "")
+                if instruction:
+                    key = f"field_instruction_{profile_id}_{field_name}"
+                    desc = cfg.get("description_ru", f"{profile_id}/{field_name}")
+                    prompts[key] = (instruction, desc)
+                web_instruction = cfg.get("prompt_instruction_inn_web_search", "")
+                if web_instruction:
+                    key = f"field_instruction_{profile_id}_{field_name}_web_search"
+                    desc = f"{cfg.get('description_ru', field_name)} (web search)"
+                    prompts[key] = (web_instruction, desc)
+    except Exception:
+        logger.warning("failed_to_load_field_instruction_prompts_from_yaml")
+    return prompts
+
+
+try:
+    SYNC_PROMPTS.update(_load_field_instruction_prompts())
+except Exception:
+    logger.warning("failed_to_update_sync_prompts_with_field_instructions")
