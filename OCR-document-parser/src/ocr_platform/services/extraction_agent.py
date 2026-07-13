@@ -542,7 +542,7 @@ class OpenCodeCLIAgentModel(AgentModel):
 
 
 class OpenCodeCLIModel(Model):
-    def __init__(self, model_name: str = "opencode/deepseek-v4-flash-free"):
+    def __init__(self, model_name: str):
         self.model_name = model_name
 
     async def agent_model(
@@ -565,7 +565,6 @@ import contextvars
 
 _active_model: contextvars.ContextVar["Model"] = contextvars.ContextVar(
     "_active_model",
-    default=OpenCodeCLIModel("opencode/deepseek-v4-flash-free"),
 )
 _active_temperature: contextvars.ContextVar[float] = contextvars.ContextVar(
     "_active_temperature", default=0.5
@@ -632,7 +631,9 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
     Falls back to OpenCode if no profile_config is provided.
     """
     if profile_config is None:
-        return OpenCodeCLIModel("opencode/deepseek-v4-flash-free")
+        raise ValueError(
+            "profile_config is required — model must be specified in the YAML profile"
+        )
 
     models_cfg = profile_config.get("models", {})
     llm_cfg = models_cfg.get("llm_extraction", {})
@@ -659,7 +660,9 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
             )
 
         timeout_seconds = float(llm_cfg.get("timeout_seconds", 180.0))
-        model_id = model_name or "deepseek/deepseek-v4-flash"
+        if not model_name:
+            raise ValueError("model must be specified in profile config for router_ai provider")
+        model_id = model_name
         logger.info(
             f"Resolved LLM provider: router_ai, model: {model_id}, base_url: {base_url}, timeout: {timeout_seconds}s"
         )
@@ -686,6 +689,8 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
             raise ValueError("OPENROUTER_API_KEY is not set in environment or settings")
 
         timeout_seconds = float(llm_cfg.get("timeout_seconds", 180.0))
+        if not model_name:
+            raise ValueError("model must be specified in profile config for openrouter provider")
         logger.info(
             f"Resolved LLM provider: openrouter, model: {model_name}, base_url: {base_url}, timeout: {timeout_seconds}s"
         )
@@ -695,7 +700,7 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
             base_url=base_url, api_key=api_key, http_client=http_client
         )
         return ReasoningEffortOpenAIModel(
-            model_name or "openai/gpt-4o-mini",
+            model_name,
             reasoning_effort=reasoning_effort,
             openai_client=async_openai_client,
         )
@@ -721,7 +726,9 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
             )
 
         timeout_seconds = float(llm_cfg.get("timeout_seconds", 180.0))
-        model_id = model_name or "gpt://b1gf6vai2af80k10pig0/deepseek-v4-flash/latest"
+        if not model_name:
+            raise ValueError("model must be specified in profile config for yandex_studio provider")
+        model_id = model_name
         logger.info(
             f"Resolved LLM provider: yandex_studio, model: {model_id}, base_url: {base_url}, timeout: {timeout_seconds}s"
         )
@@ -739,7 +746,9 @@ def resolve_llm_model(profile_config: dict | None = None) -> "Model":
         )
     else:
         # Default: opencode CLI
-        opencode_model = model_name or "opencode/deepseek-v4-flash-free"
+        if not model_name:
+            raise ValueError("model must be specified in profile config for opencode provider")
+        opencode_model = model_name
         logger.info(f"Resolved LLM provider: opencode, model: {opencode_model}")
         return OpenCodeCLIModel(opencode_model)
 

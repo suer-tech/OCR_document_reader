@@ -2,6 +2,15 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+MINIMAL_PROFILE = {
+    "models": {
+        "llm_extraction": {
+            "provider": "opencode",
+            "model": "test-model",
+        }
+    }
+}
+
 from ocr_platform.services.extraction_agent import (
     run_agent_extraction,
     ClaimsAmountResult,
@@ -47,7 +56,7 @@ async def test_claims_amount_calculation_in_code():
                 "prompt_instruction": "Extract sums"
             }
         }
-        res = await run_agent_extraction("test text", fields_config)
+        res = await run_agent_extraction("test text", fields_config, profile_config=MINIMAL_PROFILE)
         assert res["claims_amount"]["value"] == "225000.75"  # 150000.50 + 75000.25
 
     # Test single commitment: returns the single amount
@@ -58,7 +67,7 @@ async def test_claims_amount_calculation_in_code():
         reasoning="Найдено 1 обязательство"
     ))
     with patch.object(extraction_agent.agent_claims_amount, 'run', mock_run):
-        res = await run_agent_extraction("test text", fields_config)
+        res = await run_agent_extraction("test text", fields_config, profile_config=MINIMAL_PROFILE)
         assert res["claims_amount"]["value"] == "150000.50"
 
     # Test invalid format (null fields) returns None
@@ -69,7 +78,7 @@ async def test_claims_amount_calculation_in_code():
         reasoning="Не удалось определить"
     ))
     with patch.object(extraction_agent.agent_claims_amount, 'run', mock_run):
-        res = await run_agent_extraction("test text", fields_config)
+        res = await run_agent_extraction("test text", fields_config, profile_config=MINIMAL_PROFILE)
         assert res["claims_amount"]["value"] is None
 
 
@@ -96,7 +105,7 @@ async def test_creditor_format_validation_and_retry():
                 "prompt_instruction": "Extract creditor"
             }
         }
-        res = await run_agent_extraction("test text", fields_config)
+        res = await run_agent_extraction("test text", fields_config, profile_config=MINIMAL_PROFILE)
         
         # Check that it extracted the creditor name from the second attempt
         assert res["creditor"]["value"] == "ООО Ромашка"
@@ -148,7 +157,7 @@ async def test_creditor_verification_by_inn():
          patch.object(extraction_agent.company_name_extraction_agent, 'run', mock_web_name_run), \
          patch.object(extraction_agent.company_comparison_agent, 'run', mock_comp_run):
          
-        res = await run_agent_extraction("test text", fields_config)
+        res = await run_agent_extraction("test text", fields_config, profile_config=MINIMAL_PROFILE)
         assert res["creditor_inn"]["value"] == "7730233723"
         assert res["creditor"]["value"] == "ООО Ромашка"
         assert res["creditor"]["confidence"] == 0.9
@@ -177,7 +186,7 @@ async def test_creditor_verification_by_inn():
          patch.object(extraction_agent.company_name_extraction_agent, 'run', mock_web_name_run), \
          patch.object(extraction_agent.company_comparison_agent, 'run', mock_comp_run):
          
-        res = await run_agent_extraction("test text", fields_config)
+        res = await run_agent_extraction("test text", fields_config, profile_config=MINIMAL_PROFILE)
         assert res["creditor"]["value"] == "ООО Ромашка"
         assert res["creditor"]["confidence"] == 0.5
 
@@ -219,7 +228,7 @@ async def test_creditor_verification_by_inn():
          patch.object(extraction_agent.company_name_extraction_agent, 'run', mock_web_name_run), \
          patch.object(extraction_agent.company_comparison_agent, 'run', mock_comp_run):
          
-        res = await run_agent_extraction("test text", fields_config)
+        res = await run_agent_extraction("test text", fields_config, profile_config=MINIMAL_PROFILE)
         assert res["creditor"]["value"] == "Ошибка распознавания"
         assert res["creditor"]["confidence"] == 0.0
 
@@ -259,7 +268,7 @@ async def test_rtk_creditor_uses_company_name_schema_for_inn_web_search():
          patch.object(extraction_agent.agent_creditor, "run", mock_creditor_run), \
          patch("ocr_platform.services.extraction_agent._search_by_inn", return_value="Registry Info: OOO Romashka"):
 
-        res = await run_agent_extraction("test text", fields_config, profile_id="rtk")
+        res = await run_agent_extraction("test text", fields_config, profile_id="rtk", profile_config=MINIMAL_PROFILE)
 
     assert res["creditor_inn"]["value"] == "7730233723"
     assert res["creditor"]["value"] == "OOO Romashka"
@@ -318,7 +327,7 @@ async def test_rtk_combined_extraction():
          patch.object(extraction_agent.company_name_extraction_agent, "run", mock_company_name_run), \
          patch("ocr_platform.services.extraction_agent._search_by_inn", return_value="Registry Info: OOO Romashka"):
 
-        res = await run_agent_extraction("test text", fields_config, profile_id="rtk")
+        res = await run_agent_extraction("test text", fields_config, profile_id="rtk", profile_config=MINIMAL_PROFILE)
 
     assert res["creditor_inn"]["value"] == "7730233723"
     assert res["claims_amount"]["value"] == "150000.00"
