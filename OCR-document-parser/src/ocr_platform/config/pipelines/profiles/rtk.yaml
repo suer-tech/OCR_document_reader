@@ -16,7 +16,7 @@ models:
     timeout_seconds: 300.0
   llm_extraction:
     provider: router_ai
-    model: deepseek/deepseek-v4-flash
+    model: x-ai/grok-4.20
     temperature: 0.0
     timeout_seconds: 180.0
     reasoning_effort: medium
