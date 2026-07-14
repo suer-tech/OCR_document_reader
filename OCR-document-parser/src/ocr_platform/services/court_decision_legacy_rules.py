@@ -9,7 +9,7 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-CASE_NUMBER_RE = re.compile(r"Дело\s*[№N]?\s*([АA]\d{1,3}-\d+/\d{4})", re.IGNORECASE)
+CASE_NUMBER_RE = re.compile(r"(?:Дело|Дела|Делу|Деле)\s*[№N]?\s*([АA]\d{1,3}-?\d+/\d{4})", re.IGNORECASE)
 DECISION_DATE_RE = re.compile(r"[«\"]?(\d{1,2})[»\"]?\s+([А-Яа-яЁё]+)\s+(\d{4})\s*(?:года|г\.?)", re.IGNORECASE)
 
 REPORT_TIME_RE = re.compile(
