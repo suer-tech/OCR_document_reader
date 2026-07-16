@@ -243,6 +243,37 @@ from ocr_platform.services.agent_tools import (
 )
 
 
+def _extract_motivating_part(text: str) -> str | None:
+    match_ustanovil = re.search(r"У\s*С\s*Т\s*А\s*Н\s*О\s*В\s*И\s*Л", text, re.IGNORECASE)
+    if not match_ustanovil:
+        return None
+    start_pos = match_ustanovil.end()
+    match_reshil = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", text[start_pos:], re.IGNORECASE)
+    if not match_reshil:
+        return None
+    end_pos = start_pos + match_reshil.start()
+    motivating_text = text[start_pos:end_pos]
+    motivating_text = re.sub(r"^[\s:,.\-–—()]+", "", motivating_text)
+    return motivating_text.strip() or None
+
+
+def _extract_resolutive_part(text: str) -> str | None:
+    match_reshil = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", text, re.IGNORECASE)
+    if not match_reshil:
+        return None
+    start_pos = match_reshil.end()
+    match_sig = re.search(
+        r"электронная\s+подпись\s+действительна", text[start_pos:], re.IGNORECASE
+    )
+    if match_sig:
+        end_pos = start_pos + match_sig.start()
+        resolutive_text = text[start_pos:end_pos]
+    else:
+        resolutive_text = text[start_pos:]
+    resolutive_text = re.sub(r"^[\s:,.\-–—()]+", "", resolutive_text)
+    return resolutive_text.strip() or None
+
+
 def _clean_llm_string(s: str | None) -> str | None:
     """Удаляет экранирующие бэкслеши и лишние кавычки только по краям строки."""
     if s is None:
@@ -1419,8 +1450,6 @@ async def _run_agent_extraction_impl(
             "judge_full_name",
             "court_name",
             "procedure_type",
-            "motivating_part",
-            "resolutive_part",
             "document_basis",
             "decision_date",
             "resolutive_part_date",
@@ -1510,16 +1539,6 @@ async def _run_agent_extraction_impl(
                         "procedure_type_confidence",
                         "procedure_type_reasoning",
                     ),
-                    "motivating_part": (
-                        "motivating_part",
-                        "motivating_part_confidence",
-                        "motivating_part_reasoning",
-                    ),
-                    "resolutive_part": (
-                        "resolutive_part",
-                        "resolutive_part_confidence",
-                        "resolutive_part_reasoning",
-                    ),
                     "document_basis": (
                         "document_basis",
                         "document_basis_confidence",
@@ -1597,6 +1616,8 @@ async def _run_agent_extraction_impl(
             "procedure_end_date",
             "procedure_end_date_is_calculated",
             "early_report_deadline",
+            "motivating_part",
+            "resolutive_part",
         ]:
             from ocr_platform.services.court_decision_legacy_rules import (
                 extract_case_number,
@@ -1644,6 +1665,22 @@ async def _run_agent_extraction_impl(
                     "confidence": 1.0 if val else 0.0,
                     "reasoning": "Extracted via legacy regex and procedure_end_date",
                     "source": "regex_legacy",
+                }
+            elif field_name == "motivating_part":
+                val = _extract_motivating_part(text)
+                results[field_name] = {
+                    "value": val,
+                    "confidence": 1.0 if val else 0.0,
+                    "reasoning": "Extracted via regex between УСТАНОВИЛ and РЕШИЛ",
+                    "source": "regex",
+                }
+            elif field_name == "resolutive_part":
+                val = _extract_resolutive_part(text)
+                results[field_name] = {
+                    "value": val,
+                    "confidence": 1.0 if val else 0.0,
+                    "reasoning": "Extracted via regex after РЕШИЛ",
+                    "source": "regex",
                 }
             continue
 

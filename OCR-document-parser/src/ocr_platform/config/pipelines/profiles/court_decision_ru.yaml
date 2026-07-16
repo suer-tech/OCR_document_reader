@@ -166,15 +166,13 @@ fields:
     required: false
     label_ru: "Мотивирующая часть"
     description_ru: "Мотивирующая часть судебного решения (текст между словами 'УСТАНОВИЛ' и 'РЕШИЛ')."
-    extraction_method: "llm"
-    prompt_instruction: "Извлеки мотивировочную часть (текст между 'УСТАНОВИЛ:' и 'РЕШИЛ:')."
+    extraction_method: "regex"
 
   resolutive_part:
     required: false
     label_ru: "Резолютивная часть"
     description_ru: "Резолютивная часть судебного решения (текст после слова 'РЕШИЛ' и до фразы 'Электронная подпись действительна')."
-    extraction_method: "llm"
-    prompt_instruction: "Извлеки резолютивную часть (все выводы суда после 'РЕШИЛ:' или 'ОПРЕДЕЛИЛ:') и до фразы 'Электронная подпись действительна' или до конца текста."
+    extraction_method: "regex"
 
 pipeline:
   - name: store_original
