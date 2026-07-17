@@ -36,6 +36,9 @@
 - [🏗 Архитектура (docs/ARCHITECTURE.md)](/docs/ARCHITECTURE.md) — схема слоёв и поток обработки
 - [📏 Правила разработки (DEVELOPMENT_RULES.md)](/docs/DEVELOPMENT_RULES.md) — обязательные правила кодирования
 - [📖 Контекст для агентов (AGENT.md)](/AGENT.md) — общее понимание проекта (читается первым)
+- [📦 Индекс модулей (MODULE_INDEX.md)](/docs/MODULE_INDEX.md) — описание всех модулей
+- [🌐 API Reference (API.md)](/docs/API.md) — документация API
+- [🗺 Roadmap (ROADMAP.md)](/docs/ROADMAP.md) — планы развития
 - [📐 ADR (docs/adr/)](/docs/adr/) — записи архитектурных решений
 
 > [!NOTE]

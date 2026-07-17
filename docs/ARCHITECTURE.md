@@ -1,97 +1,109 @@
 # Architecture
 
+## System Overview
+
 ```
-Запрос (HTTP)
-     │
-     ▼
-┌─────────────────────┐
-│   API (FastAPI)     │  api/main.py, api/schemas.py
-│   Валидация DTO     │
-└─────────┬───────────┘
-          │ вызов orchestration
-          ▼
-┌─────────────────────┐
-│   Orchestration     │  orchestration/*.py
-│   Пайплайн-движок   │  Читает YAML → выполняет шаги
-│   Роутинг           │
-└─────────┬───────────┘
-          │ вызов services
-          ▼
-┌─────────────────────┐
-│   Services          │  services/*.py
-│   OCR, LLM, NLP,    │  Бизнес-логика извлечения,
-│   Валидация,        │  валидации, расчёта качества
-│   Quality Score     │
-└─────────┬───────────┘
-          │ вызов storage
-          ▼
-┌─────────────────────┐
-│   Storage           │  storage/*.py
-│   SQLAlchemy ORM    │  Только работа с БД
-│   File I/O          │
-└─────────────────────┘
+                    ┌──────────────────────────────────────┐
+                    │           Client / External API       │
+                    └──────────────────┬───────────────────┘
+                                       │ HTTP
+                                       ▼
+                    ┌──────────────────────────────────────┐
+                    │      API (FastAPI) — main.py         │
+                    │      Validation, DTO, routing        │
+                    └──────────────────┬───────────────────┘
+                                       │ orchestration
+                                       ▼
+                    ┌──────────────────────────────────────┐
+                    │      Orchestration — run_processor   │
+                    │      Pipeline Engine + Router         │
+                    └──────────────────┬───────────────────┘
+                                       │ services
+                                       ▼
+                    ┌──────────────────────────────────────┐
+                    │      Services — OCR, LLM, NLP,       │
+                    │      Validation, Quality              │
+                    └────────────┬─────────────────┬───────┘
+                                 │                 │
+                    ┌────────────▼─────┐   ┌───────▼────────┐
+                    │    Storage       │   │  Observability │
+                    │  (ORM + Files)   │   │ MLflow, Langfuse│
+                    └──────────────────┘   └────────────────┘
 ```
 
-## Правила зависимостей слоёв
+## Layer Rules
 
-- **api** → orchestration, observability
-- **orchestration** → services, storage, config
-- **services** → storage, observability, config
-- **storage** → (не вызывает ничего выше)
+| Layer | Depends On |
+|---|---|
+| `api` | orchestration, observability |
+| `orchestration` | services, storage, config |
+| `services` | storage, observability, config |
+| `storage` | (nothing above) |
 
-Любая бизнес-логика должна находиться в **services** или **orchestration**.
+## Document Processing Flow
 
-**Storage** работает только с БД.
+```
+POST /documents/ingest
+  │
+  ├─ 1. API receives file → creates PipelineRun
+  ├─ 2. Publishes to RabbitMQ
+  ├─ 3. Worker picks up → process_pipeline_run()
+  │
+  ├─ 4. Text extraction
+  │    └─ pdfplumber (text PDF) → RouterAI OCR → Tesseract (fallback)
+  │
+  ├─ 5. Document type classification (LLM)
+  │    └─ court_decision | rtk | passport | unknown
+  │
+  ├─ 6. Profile loading (YAML)
+  │    └─ court_decision_ru.yaml | rtk.yaml | passport.yaml | unknown.yaml
+  │
+  ├─ 7. Entity extraction
+  │    └─ LLM agents (PydanticAI) + Regex fallback
+  │
+  ├─ 8. Validation
+  │    └─ INN, dates, amounts, required fields
+  │
+  ├─ 9. Quality Score
+  │    └─ Technical + Semantic → overall score
+  │
+  ├─ 10. Human Review (if score < threshold)
+  │
+  └─ 11. Save → StructuredVersion + QualityScore + Events
+```
 
-**API** не знает о SQL и БД напрямую.
-
-## Поток обработки документа
-
-1. **API** принимает документ → создаёт PipelineRun → публикует задачу в RabbitMQ
-2. **Worker** забирает задачу → вызывает `process_pipeline_run()`
-3. **Извлечение текста** (ocr_service): pdfplumber → pymupdf → RouterAI/Tesseract OCR
-4. **Определение типа** (document_type_service): LLM классифицирует документ
-5. **Загрузка профиля** (router): читает YAML профиль по document_type
-6. **Извлечение сущностей** (extraction_agent): LLM/NLP агенты согласно профилю
-7. **Валидация** (validation_service): проверка обязательных полей
-8. **Quality Score** (quality_service): расчёт оценки качества
-9. **Human Review** (опционально): если качество ниже порога
-10. **Сохранение**: StructuredVersion, QualityScore, события в БД
-11. **Webhook** (опционально): уведомление внешней системы
-
-## Инфраструктура
+## Infrastructure
 
 ```
 ┌──────────┐    ┌───────────┐    ┌────────────┐
 │   API    │───▶│ RabbitMQ  │───▶│   Worker   │
 └──────────┘    └───────────┘    └──────┬─────┘
                                         │
-                              ┌─────────▼─────────┐
-                              │    PostgreSQL      │
-                              ├───────────────────┤
-                              │    MLflow          │
-                              ├───────────────────┤
-                              │    Langfuse        │
-                              ├───────────────────┤
-                              │    File Storage    │
-                              └───────────────────┘
+                    ┌───────────────────┼───────────────────┐
+                    │                   │                    │
+                    ▼                   ▼                    ▼
+            ┌────────────┐    ┌──────────────┐    ┌──────────────┐
+            │ PostgreSQL │    │   MLflow     │    │ File Storage  │
+            └────────────┘    └──────────────┘    └──────────────┘
+                                        │
+                    ┌───────────────────┴───────────────────┐
+                    │             Langfuse                   │
+                    └───────────────────────────────────────┘
 ```
 
-## Внешние интеграции
+## External Integrations
 
-| Сервис | Назначение | Библиотека |
+| Service | Purpose | Protocol |
 |---|---|---|
-| OpenAI / OpenRouter | LLM (классификация, экстракция) | httpx, AsyncOpenAI |
-| RouterAI | OCR через Gemini 2.5 Vision, LLM | httpx, OpenAI |
-| Yandex Studio | LLM (резервный провайдер) | AsyncOpenAI |
-| DaData | Поиск организаций по ИНН/названию | requests |
-| DuckDuckGo | Веб-поиск для верификации данных | requests |
-| MLflow | Логирование метрик, моделей, артефактов | mlflow |
-| Langfuse | Трассировка LLM вызовов, управление промптами | langfuse |
+| OpenAI / OpenRouter | LLM classification + extraction | HTTP (OpenAI-compatible) |
+| RouterAI | Gemini 2.5 Flash OCR + LLM | HTTP |
+| Yandex Studio | Backup LLM provider | HTTP (OpenAI-compatible) |
+| DaData | Organization search by INN | HTTP |
+| DuckDuckGo | Web search for data verification | HTTP |
 
 ## NLP-entity-extractor
 
-Вызывается как библиотека внутри Worker (не отдельный процесс). Использует:
-- `bert-base-NER-Russian` для NER
-- `pymorphy3` для нормализации ФИО
-- Regex правила для дат, номеров дел, названий судов
+Embedded as a library inside the Worker process (not a separate microservice):
+- `bert-base-NER-Russian` for token classification
+- `pymorphy3` for morphological normalization
+- Regex rules for dates, case numbers, court names

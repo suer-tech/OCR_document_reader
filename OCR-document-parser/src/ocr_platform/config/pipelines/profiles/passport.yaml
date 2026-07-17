@@ -1,0 +1,167 @@
+profile_id: passport
+
+applicable_sources:
+  - crm
+  - email
+  - portal
+  - external
+  - other
+
+document_type: passport
+
+models:
+  ocr:
+    provider: router_ai
+    model: google/gemini-2.5-flash-lite
+    timeout_seconds: 300.0
+  llm_extraction:
+    provider: router_ai
+    model: x-ai/grok-4.20
+    temperature: 0.0
+    timeout_seconds: 180.0
+    reasoning_effort: low
+
+thresholds:
+  technical_quality_min: 0.6
+  semantic_confidence_min: 0.7
+  overall_quality_min_auto_accept: 0.75
+  warnings_require_review: false
+
+fields:
+  page_type:
+    required: true
+    label_ru: "Тип страницы"
+    description_ru: "Тип страницы паспорта: main_spread (разворот с основными данными) или registration (страница с адресом прописки)"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Определи, какая страница паспорта представлена в тексте.
+      - main_spread — разворот с основными данными: фамилия, имя, отчество, пол, дата рождения, место рождения, серия и номер паспорта, дата выдачи, код подразделения, кем выдан.
+      - registration — страница с адресом регистрации (прописки).
+      Верни строго одно значение: "main_spread" или "registration".
+
+  passport_series:
+    required: true
+    label_ru: "Серия паспорта"
+    description_ru: "Серия паспорта гражданина РФ (4 цифры)"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки серию паспорта гражданина РФ.
+      Серия состоит из 4 цифр, может быть записана с пробелом после первых двух цифр (например, "45 10") или слитно ("4510").
+      Верни только 4 цифры без пробелов.
+
+  passport_number:
+    required: true
+    label_ru: "Номер паспорта"
+    description_ru: "Номер паспорта гражданина РФ (6 цифр)"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки номер паспорта гражданина РФ.
+      Номер состоит из 6 цифр.
+      Верни только 6 цифр без пробелов.
+
+  last_name:
+    required: true
+    label_ru: "Фамилия"
+    description_ru: "Фамилия владельца паспорта"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки фамилию владельца паспорта. Фамилия указана в виде ФАМИЛИЯ (заглавными буквами).
+      Верни фамилию с заглавной буквы, остальные строчные (например, "Иванов").
+
+  first_name:
+    required: true
+    label_ru: "Имя"
+    description_ru: "Имя владельца паспорта"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки имя владельца паспорта. Имя указано заглавными буквами.
+      Верни имя с заглавной буквы, остальные строчные (например, "Иван").
+
+  patronymic:
+    required: false
+    label_ru: "Отчество"
+    description_ru: "Отчество владельца паспорта"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки отчество владельца паспорта, если оно указано. Отчество указано заглавными буквами.
+      Верни отчество с заглавной буквы, остальные строчные (например, "Иванович").
+      Если отчество отсутствует, верни null.
+
+  gender:
+    required: true
+    label_ru: "Пол"
+    description_ru: "Пол владельца паспорта"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Определи пол владельца паспорта по указанному в документе значению.
+      Верни "Мужской" для мужского пола или "Женский" для женского пола.
+
+  birth_date:
+    required: true
+    label_ru: "Дата рождения"
+    description_ru: "Дата рождения владельца паспорта"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки дату рождения владельца паспорта.
+      Верни в формате ДД.ММ.ГГГГ (например, "01.01.1980").
+
+  birth_place:
+    required: true
+    label_ru: "Место рождения"
+    description_ru: "Место рождения владельца паспорта"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки место рождения владельца паспорта полностью, как указано в документе.
+      Например: "гор. Москва" или "д. Ивановка, Смоленская обл."
+
+  issue_date:
+    required: true
+    label_ru: "Дата выдачи"
+    description_ru: "Дата выдачи паспорта"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки дату выдачи паспорта.
+      Верни в формате ДД.ММ.ГГГГ (например, "15.05.2020").
+
+  department_code:
+    required: true
+    label_ru: "Код подразделения"
+    description_ru: "Код подразделения, выдавшего паспорт"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки код подразделения, выдавшего паспорт.
+      Формат: XXX-XXX (первые 3 цифры, дефис, последние 3 цифры, например "770-001").
+      Если записано слитно (6 цифр), добавь дефис после третьей цифры.
+
+  issued_by:
+    required: true
+    label_ru: "Кем выдан"
+    description_ru: "Наименование органа, выдавшего паспорт"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки полное наименование органа, выдавшего паспорт.
+      Например: "Отделом УФМС России по г. Москве по району Хамовники".
+
+  registration_address:
+    required: true
+    label_ru: "Адрес регистрации"
+    description_ru: "Адрес регистрации (прописки) владельца паспорта"
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки полный адрес регистрации (прописки) владельца паспорта.
+      Например: "г. Москва, ул. Тверская, д. 1, кв. 1".
+      Если адрес указан в несколько строк, объедини в одну строку через запятую.
+
+pipeline:
+  - name: store_original
+    type: storage
+  - name: detect_document_type
+    type: classifier
+  - name: extract_entities
+    type: extraction
+  - name: validate_entities
+    type: validation
+  - name: compute_quality
+    type: quality
+  - name: route_to_human_review
+    type: routing

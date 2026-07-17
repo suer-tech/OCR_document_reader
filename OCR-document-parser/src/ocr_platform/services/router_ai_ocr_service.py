@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import httpx
 from pathlib import Path
 from langfuse.openai import OpenAI
@@ -10,6 +11,21 @@ from ocr_platform.config.settings import get_settings
 from ocr_platform.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _clean_ocr_output(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r'^```(?:json)?\s*', '', text)
+    text = re.sub(r'\s*```$', '', text)
+    text = re.sub(r'\{"box_2d":\s*\[[^\]]*\],\s*"text_content":\s*"([^"]*)"\}', r'\1', text)
+    text = re.sub(r'^\s*\[[\s\S]*?\]\s*$', '', text)
+    lines = []
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line or line in ('[', ']', '{', '}', ','):
+            continue
+        lines.append(line)
+    return '\n'.join(lines).strip()
 
 def run_router_ai_ocr(file_path: str, ocr_config: dict | None = None) -> str:
     """
@@ -71,7 +87,7 @@ def run_router_ai_ocr(file_path: str, ocr_config: dict | None = None) -> str:
                         },
                         {
                             "type": "text",
-                            "text": "Extract all text from this document accurately. Preserve structure where possible."
+                            "text": "Extract all text from this document accurately. Return ONLY the plain text content without any bounding boxes, coordinates, JSON formatting, or markdown. Just raw text preserving line breaks and paragraph structure."
                         },
                     ],
                 }
@@ -81,8 +97,9 @@ def run_router_ai_ocr(file_path: str, ocr_config: dict | None = None) -> str:
         )
         extracted = resp.choices[0].message.content
         if extracted and extracted.strip():
-            logger.info("router_ai_ocr_succeeded", file_path=file_path, text_length=len(extracted))
-            return extracted.strip()
+            cleaned = _clean_ocr_output(extracted)
+            logger.info("router_ai_ocr_succeeded", file_path=file_path, text_length=len(cleaned))
+            return cleaned
         logger.warning("router_ai_ocr_empty_response", file_path=file_path)
         return ""
     except Exception as e:

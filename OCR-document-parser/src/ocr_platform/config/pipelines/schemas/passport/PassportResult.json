@@ -1,0 +1,107 @@
+{
+  "properties": {
+    "page_type": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Page Type",
+      "description": "main_spread or registration"
+    },
+    "page_type_confidence": {"type": "number", "title": "Page Type Confidence"},
+    "page_type_reasoning": {"type": "string", "title": "Page Type Reasoning"},
+    "passport_series": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Passport Series",
+      "description": "4 digits"
+    },
+    "passport_series_confidence": {"type": "number", "title": "Passport Series Confidence"},
+    "passport_series_reasoning": {"type": "string", "title": "Passport Series Reasoning"},
+    "passport_number": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Passport Number",
+      "description": "6 digits"
+    },
+    "passport_number_confidence": {"type": "number", "title": "Passport Number Confidence"},
+    "passport_number_reasoning": {"type": "string", "title": "Passport Number Reasoning"},
+    "last_name": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Last Name"
+    },
+    "last_name_confidence": {"type": "number", "title": "Last Name Confidence"},
+    "last_name_reasoning": {"type": "string", "title": "Last Name Reasoning"},
+    "first_name": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "First Name"
+    },
+    "first_name_confidence": {"type": "number", "title": "First Name Confidence"},
+    "first_name_reasoning": {"type": "string", "title": "First Name Reasoning"},
+    "patronymic": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Patronymic"
+    },
+    "patronymic_confidence": {"type": "number", "title": "Patronymic Confidence"},
+    "patronymic_reasoning": {"type": "string", "title": "Patronymic Reasoning"},
+    "gender": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Gender"
+    },
+    "gender_confidence": {"type": "number", "title": "Gender Confidence"},
+    "gender_reasoning": {"type": "string", "title": "Gender Reasoning"},
+    "birth_date": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Birth Date"
+    },
+    "birth_date_confidence": {"type": "number", "title": "Birth Date Confidence"},
+    "birth_date_reasoning": {"type": "string", "title": "Birth Date Reasoning"},
+    "birth_place": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Birth Place"
+    },
+    "birth_place_confidence": {"type": "number", "title": "Birth Place Confidence"},
+    "birth_place_reasoning": {"type": "string", "title": "Birth Place Reasoning"},
+    "issue_date": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Issue Date"
+    },
+    "issue_date_confidence": {"type": "number", "title": "Issue Date Confidence"},
+    "issue_date_reasoning": {"type": "string", "title": "Issue Date Reasoning"},
+    "department_code": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Department Code"
+    },
+    "department_code_confidence": {"type": "number", "title": "Department Code Confidence"},
+    "department_code_reasoning": {"type": "string", "title": "Department Code Reasoning"},
+    "issued_by": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Issued By"
+    },
+    "issued_by_confidence": {"type": "number", "title": "Issued By Confidence"},
+    "issued_by_reasoning": {"type": "string", "title": "Issued By Reasoning"},
+    "registration_address": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Registration Address"
+    },
+    "registration_address_confidence": {"type": "number", "title": "Registration Address Confidence"},
+    "registration_address_reasoning": {"type": "string", "title": "Registration Address Reasoning"},
+    "has_text_distortions": {
+      "type": "boolean",
+      "title": "Has Text Distortions"
+    }
+  },
+  "required": [
+    "page_type", "page_type_confidence", "page_type_reasoning",
+    "passport_series", "passport_series_confidence", "passport_series_reasoning",
+    "passport_number", "passport_number_confidence", "passport_number_reasoning",
+    "last_name", "last_name_confidence", "last_name_reasoning",
+    "first_name", "first_name_confidence", "first_name_reasoning",
+    "patronymic", "patronymic_confidence", "patronymic_reasoning",
+    "gender", "gender_confidence", "gender_reasoning",
+    "birth_date", "birth_date_confidence", "birth_date_reasoning",
+    "birth_place", "birth_place_confidence", "birth_place_reasoning",
+    "issue_date", "issue_date_confidence", "issue_date_reasoning",
+    "department_code", "department_code_confidence", "department_code_reasoning",
+    "issued_by", "issued_by_confidence", "issued_by_reasoning",
+    "registration_address", "registration_address_confidence", "registration_address_reasoning",
+    "has_text_distortions"
+  ],
+  "title": "PassportResult",
+  "type": "object"
+}

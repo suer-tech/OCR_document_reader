@@ -111,6 +111,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
 
             webhook_url = run.webhook_url
             doc = session.get(models.Document, run.document_id)
+            page_type = run.page_type
             if not doc:
                 raise HTTPException(status_code=404, detail="document not found")
             file_rec = (
@@ -322,6 +323,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             document_id=document_id,
             pipeline_run_id=pipeline_run_id,
             profile_id=profile_id,
+            data={"page_type": page_type} if page_type else {},
         )
         with tracer.span(
             "pipeline_engine",

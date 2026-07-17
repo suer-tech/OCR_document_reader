@@ -233,6 +233,90 @@ class CourtDecisionResult(BaseModel):
     )
 
 
+class PassportResult(BaseModel):
+    page_type: str | None = Field(
+        description="Тип страницы: 'main_spread' (разворот с основными данными) или 'registration' (страница с адресом прописки)"
+    )
+    page_type_confidence: float
+    page_type_reasoning: str
+
+    passport_series: str | None = Field(
+        description="Серия паспорта (4 цифры), либо null"
+    )
+    passport_series_confidence: float
+    passport_series_reasoning: str
+
+    passport_number: str | None = Field(
+        description="Номер паспорта (6 цифр), либо null"
+    )
+    passport_number_confidence: float
+    passport_number_reasoning: str
+
+    last_name: str | None = Field(
+        description="Фамилия владельца паспорта в именительном падеже, либо null"
+    )
+    last_name_confidence: float
+    last_name_reasoning: str
+
+    first_name: str | None = Field(
+        description="Имя владельца паспорта в именительном падеже, либо null"
+    )
+    first_name_confidence: float
+    first_name_reasoning: str
+
+    patronymic: str | None = Field(
+        description="Отчество владельца паспорта в именительном падеже, либо null"
+    )
+    patronymic_confidence: float
+    patronymic_reasoning: str
+
+    gender: str | None = Field(
+        description="Пол владельца паспорта: 'Мужской' или 'Женский', либо null"
+    )
+    gender_confidence: float
+    gender_reasoning: str
+
+    birth_date: str | None = Field(
+        description="Дата рождения владельца паспорта в формате ДД.ММ.ГГГГ, либо null"
+    )
+    birth_date_confidence: float
+    birth_date_reasoning: str
+
+    birth_place: str | None = Field(
+        description="Место рождения владельца паспорта, либо null"
+    )
+    birth_place_confidence: float
+    birth_place_reasoning: str
+
+    issue_date: str | None = Field(
+        description="Дата выдачи паспорта в формате ДД.ММ.ГГГГ, либо null"
+    )
+    issue_date_confidence: float
+    issue_date_reasoning: str
+
+    department_code: str | None = Field(
+        description="Код подразделения (формат XXX-XXX), либо null"
+    )
+    department_code_confidence: float
+    department_code_reasoning: str
+
+    issued_by: str | None = Field(
+        description="Наименование органа, выдавшего паспорт, либо null"
+    )
+    issued_by_confidence: float
+    issued_by_reasoning: str
+
+    registration_address: str | None = Field(
+        description="Адрес регистрации (прописки), либо null"
+    )
+    registration_address_confidence: float
+    registration_address_reasoning: str
+
+    has_text_distortions: bool = Field(
+        description="True, если текст документа содержит искажения/ошибки OCR. False, если текст чёткий."
+    )
+
+
 # Alias for backwards compatibility with tests
 FieldResult = GenericFieldResult
 
@@ -463,6 +547,10 @@ class OpenCodeCLIAgentModel(AgentModel):
                 if not schema_path.exists():
                     schema_path = (
                         schemas_dir / "court_decision" / f"{schema_title}.json"
+                    )
+                if not schema_path.exists():
+                    schema_path = (
+                        schemas_dir / "passport" / f"{schema_title}.json"
                     )
                 if schema_path.exists():
                     with open(schema_path, "r", encoding="utf-8") as f:
@@ -982,6 +1070,15 @@ agent_court_decision_combined = Agent(
     model,
     deps_type=str,
     result_type=CourtDecisionResult,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
+agent_passport_combined = Agent(
+    model,
+    deps_type=str,
+    result_type=PassportResult,
     retries=3,
     system_prompt=SYSTEM_PROMPT,
     model_settings=default_settings,
@@ -1590,6 +1687,118 @@ async def _run_agent_extraction_impl(
                 if not _vision_fallback_used and combined_data.has_text_distortions and storage_path:
                     logger.info(
                         "vision_fallback_triggered_court", storage_path=storage_path
+                    )
+                    corrected_text = await _correct_text_via_vision(storage_path, model=_vision_model)
+                    if corrected_text:
+                        fallback_fields = await run_agent_extraction(
+                            corrected_text, fields_config, profile_id, profile_config,
+                            _vision_fallback_used=True,
+                        )
+                        if fallback_fields:
+                            fallback_fields["_raw_text"] = corrected_text
+                            return fallback_fields
+
+    if profile_id == "passport":
+        passport_fields = [
+            "page_type",
+            "passport_series",
+            "passport_number",
+            "last_name",
+            "first_name",
+            "patronymic",
+            "gender",
+            "birth_date",
+            "birth_place",
+            "issue_date",
+            "department_code",
+            "issued_by",
+            "registration_address",
+        ]
+        present_fields = [f for f in passport_fields if f in fields_config]
+        if present_fields:
+            logger.info(
+                f"Executing combined passport extraction for {len(present_fields)} fields: {present_fields}"
+            )
+            combined_prompt_parts = []
+            for f in present_fields:
+                f_instruction = get_field_instruction(
+                    profile_id or "passport",
+                    f,
+                    default=fields_config[f].get("prompt_instruction", ""),
+                )
+                combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
+            combined_instructions = "\n\n".join(combined_prompt_parts)
+            combined_prompt = (
+                f"Instruction: You are extracting multiple fields from a Russian passport document. "
+                f"First determine the page_type: 'main_spread' (main data spread with personal info) "
+                f"or 'registration' (page with registration address). "
+                f"Extract ONLY fields that are present on this page type. "
+                f"For main_spread: extract passport_series, passport_number, last_name, first_name, patronymic, "
+                f"gender, birth_date, birth_place, issue_date, department_code, issued_by. "
+                f"For registration: extract registration_address. "
+                f"Fields not present on this page should be null.\n\n"
+                f"Here are the specific instructions for each field:\n\n"
+                f"{combined_instructions}\n\n"
+                f"Document Text:\n{text}"
+            )
+
+            max_attempts = 3
+            combined_data = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = await agent_passport_combined.run(
+                        combined_prompt,
+                        deps=text,
+                        model_settings=_active_model_settings(),
+                    )
+                    combined_data = result.data
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Combined passport extraction attempt {attempt} failed: {e}"
+                    )
+                    if attempt == max_attempts:
+                        logger.error(
+                            "Combined passport extraction completely failed. Falling back to individual extraction."
+                        )
+                    elif attempt == 2:
+                        await asyncio.sleep(15)
+
+            if combined_data:
+                field_mapping = {
+                    "passport_series": ("passport_series", "passport_series_confidence", "passport_series_reasoning"),
+                    "passport_number": ("passport_number", "passport_number_confidence", "passport_number_reasoning"),
+                    "last_name": ("last_name", "last_name_confidence", "last_name_reasoning"),
+                    "first_name": ("first_name", "first_name_confidence", "first_name_reasoning"),
+                    "patronymic": ("patronymic", "patronymic_confidence", "patronymic_reasoning"),
+                    "gender": ("gender", "gender_confidence", "gender_reasoning"),
+                    "birth_date": ("birth_date", "birth_date_confidence", "birth_date_reasoning"),
+                    "birth_place": ("birth_place", "birth_place_confidence", "birth_place_reasoning"),
+                    "issue_date": ("issue_date", "issue_date_confidence", "issue_date_reasoning"),
+                    "department_code": ("department_code", "department_code_confidence", "department_code_reasoning"),
+                    "issued_by": ("issued_by", "issued_by_confidence", "issued_by_reasoning"),
+                    "registration_address": ("registration_address", "registration_address_confidence", "registration_address_reasoning"),
+                }
+                for field_name in present_fields:
+                    if field_name == "page_type":
+                        val = getattr(combined_data, "page_type", None)
+                        conf = getattr(combined_data, "page_type_confidence", 0.0)
+                        reason = getattr(combined_data, "page_type_reasoning", "")
+                    else:
+                        val_attr, conf_attr, reason_attr = field_mapping[field_name]
+                        val = getattr(combined_data, val_attr, None)
+                        conf = getattr(combined_data, conf_attr, 0.0)
+                        reason = getattr(combined_data, reason_attr, "")
+                    results[field_name] = {
+                        "value": val,
+                        "confidence": conf,
+                        "reasoning": reason,
+                        "source": "passport_combined",
+                    }
+
+                if not _vision_fallback_used and combined_data.has_text_distortions and storage_path:
+                    logger.info(
+                        "vision_fallback_triggered_passport", storage_path=storage_path
                     )
                     corrected_text = await _correct_text_via_vision(storage_path, model=_vision_model)
                     if corrected_text:

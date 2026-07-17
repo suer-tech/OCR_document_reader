@@ -22,6 +22,11 @@ _EXTARCTION_SYSTEM_DEFAULT = (
 
 _DOC_TYPE_DETECTION_DEFAULT = (
     "Определи тип документа по тексту. "
+    "Возможные типы: court_decision (судебное решение/определение арбитражного суда), "
+    "rtk (заявление о включении в реестр требований кредиторов), "
+    "passport (паспорт гражданина РФ — содержит ФИО, серию и номер паспорта, "
+    "дату рождения, дату выдачи, адрес регистрации), "
+    "unknown (неизвестный тип). "
     "Верни JSON строго по переданной схеме. "
     "Если не уверен, верни unknown."
 )
@@ -199,7 +204,7 @@ def _load_field_instruction_prompts() -> dict[str, tuple[str, str]]:
             / "pipelines"
             / "profiles"
         )
-        for profile_id in ("rtk", "court_decision_ru"):
+        for profile_id in ("rtk", "court_decision_ru", "passport"):
             yaml_path = profiles_dir / f"{profile_id}.yaml"
             if not yaml_path.exists():
                 continue
