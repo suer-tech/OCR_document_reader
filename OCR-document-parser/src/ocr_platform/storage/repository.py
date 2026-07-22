@@ -18,6 +18,19 @@ SessionLocal = sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
 
 def init_db() -> None:
     models.Base.metadata.create_all(bind=engine)
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    for table_name, table in models.Base.metadata.tables.items():
+        if inspector.has_table(table_name):
+            existing_cols = {col["name"] for col in inspector.get_columns(table_name)}
+            model_cols = {col.name for col in table.columns}
+            missing = model_cols - existing_cols
+            if missing:
+                with engine.connect() as conn:
+                    for col_name in missing:
+                        col_type = table.columns[col_name].type.compile(engine.dialect)
+                        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
 
 
 @contextmanager

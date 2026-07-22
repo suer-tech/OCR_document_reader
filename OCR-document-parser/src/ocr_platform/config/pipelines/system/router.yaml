@@ -8,7 +8,8 @@ unknown_document_type: unknown
 document_type_to_profile:
   court_decision: court_decision_ru
   rtk: rtk
-  passport: passport
+  passport_main: passport_main
+  passport_registration: passport_registration
   unknown: unknown
 
 detection:

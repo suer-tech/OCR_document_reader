@@ -183,7 +183,6 @@ def create_app() -> FastAPI:
                         idempotency_key=idempotency_key,
                         webhook_url=request.webhook_url
                         or request.meta.get("webhook_url"),
-                        page_type=request.page_type,
                     )
                 )
                 session.flush()
@@ -267,15 +266,12 @@ def create_app() -> FastAPI:
         ),
         document_type: str = Form(
             ...,
-            description="Тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), passport (Паспорт РФ), unknown (Неизвестно/Автоопределение)",
+            description="Тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), passport_main (Паспорт РФ — главная страница), passport_registration (Паспорт РФ — страница прописки), unknown (Неизвестно/Автоопределение)",
         ),
         idempotency_key: str = Form(..., description="Ключ идемпотентности"),
         external_id: str | None = Form(None, description="Внешний идентификатор"),
         webhook_url: str | None = Form(
             None, description="URL для отправки вебхука по готовности"
-        ),
-        page_type: str | None = Form(
-            None, description="Тип страницы паспорта. Только для passport: main_spread (разворот) или registration (прописка)."
         ),
     ) -> schemas.IngestDocumentResponse:
         inc_request("/documents/upload")
@@ -346,7 +342,6 @@ def create_app() -> FastAPI:
                         status="queued",
                         idempotency_key=idempotency_key,
                         webhook_url=webhook_url,
-                        page_type=page_type,
                     )
                 )
                 session.flush()

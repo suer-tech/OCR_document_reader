@@ -1,4 +1,4 @@
-profile_id: passport
+profile_id: passport_main
 
 applicable_sources:
   - crm
@@ -7,7 +7,7 @@ applicable_sources:
   - external
   - other
 
-document_type: passport
+document_type: passport_main
 
 models:
   ocr:
@@ -28,17 +28,6 @@ thresholds:
   warnings_require_review: false
 
 fields:
-  page_type:
-    required: true
-    label_ru: "Тип страницы"
-    description_ru: "Тип страницы паспорта: main_spread (разворот с основными данными) или registration (страница с адресом прописки)"
-    extraction_method: "llm"
-    prompt_instruction: |
-      Определи, какая страница паспорта представлена в тексте.
-      - main_spread — разворот с основными данными: фамилия, имя, отчество, пол, дата рождения, место рождения, серия и номер паспорта, дата выдачи, код подразделения, кем выдан.
-      - registration — страница с адресом регистрации (прописки).
-      Верни строго одно значение: "main_spread" или "registration".
-
   passport_series:
     required: true
     label_ru: "Серия паспорта"
@@ -141,16 +130,6 @@ fields:
     prompt_instruction: |
       Извлеки полное наименование органа, выдавшего паспорт.
       Например: "Отделом УФМС России по г. Москве по району Хамовники".
-
-  registration_address:
-    required: true
-    label_ru: "Адрес регистрации"
-    description_ru: "Адрес регистрации (прописки) владельца паспорта"
-    extraction_method: "llm"
-    prompt_instruction: |
-      Извлеки полный адрес регистрации (прописки) владельца паспорта.
-      Например: "г. Москва, ул. Тверская, д. 1, кв. 1".
-      Если адрес указан в несколько строк, объедини в одну строку через запятую.
 
 pipeline:
   - name: store_original

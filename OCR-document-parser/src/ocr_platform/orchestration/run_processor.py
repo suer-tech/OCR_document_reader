@@ -111,7 +111,6 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
 
             webhook_url = run.webhook_url
             doc = session.get(models.Document, run.document_id)
-            page_type = run.page_type
             if not doc:
                 raise HTTPException(status_code=404, detail="document not found")
             file_rec = (
@@ -133,6 +132,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             requested_document_type = doc.document_type
             content_type = file_rec.file_type
             storage_path = file_rec.storage_path
+            page_type = run.page_type
         # Сначала проверим, нет ли уже извлеченного текста в БД для этого документа (после предыдущих попыток)
         extracted_text = None
         ocr_was_used = False
@@ -172,6 +172,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                         detection_text=None,
                         document_id=document_id,
                         pipeline_run_id=pipeline_run_id,
+                        page_type=page_type,
                     )
                     temp_profile_config = router.load_profile(
                         temp_resolution.profile_id
@@ -261,6 +262,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 detection_text=detection_text,
                 document_id=document_id,
                 pipeline_run_id=pipeline_run_id,
+                page_type=page_type,
             )
             profile_id = resolution.profile_id
             profile_config = router.load_profile(profile_id)
@@ -323,7 +325,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             document_id=document_id,
             pipeline_run_id=pipeline_run_id,
             profile_id=profile_id,
-            data={"page_type": page_type} if page_type else {},
+            data={},
         )
         with tracer.span(
             "pipeline_engine",

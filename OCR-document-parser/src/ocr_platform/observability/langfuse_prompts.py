@@ -24,8 +24,8 @@ _DOC_TYPE_DETECTION_DEFAULT = (
     "Определи тип документа по тексту. "
     "Возможные типы: court_decision (судебное решение/определение арбитражного суда), "
     "rtk (заявление о включении в реестр требований кредиторов), "
-    "passport (паспорт гражданина РФ — содержит ФИО, серию и номер паспорта, "
-    "дату рождения, дату выдачи, адрес регистрации), "
+    "passport_main (паспорт гражданина РФ — главная страница/разворот с ФИО, серией, номером, датой рождения и выдачи), "
+    "passport_registration (паспорт гражданина РФ — страница с адресом прописки/регистрации), "
     "unknown (неизвестный тип). "
     "Верни JSON строго по переданной схеме. "
     "Если не уверен, верни unknown."
@@ -204,7 +204,7 @@ def _load_field_instruction_prompts() -> dict[str, tuple[str, str]]:
             / "pipelines"
             / "profiles"
         )
-        for profile_id in ("rtk", "court_decision_ru", "passport"):
+        for profile_id in ("rtk", "court_decision_ru", "passport_main", "passport_registration"):
             yaml_path = profiles_dir / f"{profile_id}.yaml"
             if not yaml_path.exists():
                 continue

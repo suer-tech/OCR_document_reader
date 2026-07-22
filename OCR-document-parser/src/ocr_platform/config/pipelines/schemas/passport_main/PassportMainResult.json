@@ -1,12 +1,5 @@
 {
   "properties": {
-    "page_type": {
-      "anyOf": [{"type": "string"}, {"type": "null"}],
-      "title": "Page Type",
-      "description": "main_spread or registration"
-    },
-    "page_type_confidence": {"type": "number", "title": "Page Type Confidence"},
-    "page_type_reasoning": {"type": "string", "title": "Page Type Reasoning"},
     "passport_series": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Passport Series",
@@ -75,19 +68,12 @@
     },
     "issued_by_confidence": {"type": "number", "title": "Issued By Confidence"},
     "issued_by_reasoning": {"type": "string", "title": "Issued By Reasoning"},
-    "registration_address": {
-      "anyOf": [{"type": "string"}, {"type": "null"}],
-      "title": "Registration Address"
-    },
-    "registration_address_confidence": {"type": "number", "title": "Registration Address Confidence"},
-    "registration_address_reasoning": {"type": "string", "title": "Registration Address Reasoning"},
     "has_text_distortions": {
       "type": "boolean",
       "title": "Has Text Distortions"
     }
   },
   "required": [
-    "page_type", "page_type_confidence", "page_type_reasoning",
     "passport_series", "passport_series_confidence", "passport_series_reasoning",
     "passport_number", "passport_number_confidence", "passport_number_reasoning",
     "last_name", "last_name_confidence", "last_name_reasoning",
@@ -99,9 +85,8 @@
     "issue_date", "issue_date_confidence", "issue_date_reasoning",
     "department_code", "department_code_confidence", "department_code_reasoning",
     "issued_by", "issued_by_confidence", "issued_by_reasoning",
-    "registration_address", "registration_address_confidence", "registration_address_reasoning",
     "has_text_distortions"
   ],
-  "title": "PassportResult",
+  "title": "PassportMainResult",
   "type": "object"
 }

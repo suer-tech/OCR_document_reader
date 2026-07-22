@@ -1,0 +1,20 @@
+{
+  "properties": {
+    "registration_address": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "title": "Registration Address"
+    },
+    "registration_address_confidence": {"type": "number", "title": "Registration Address Confidence"},
+    "registration_address_reasoning": {"type": "string", "title": "Registration Address Reasoning"},
+    "has_text_distortions": {
+      "type": "boolean",
+      "title": "Has Text Distortions"
+    }
+  },
+  "required": [
+    "registration_address", "registration_address_confidence", "registration_address_reasoning",
+    "has_text_distortions"
+  ],
+  "title": "PassportRegistrationResult",
+  "type": "object"
+}

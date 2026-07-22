@@ -65,6 +65,7 @@ def resolve_profile(
     detection_text: str | None = None,
     document_id: str | None = None,
     pipeline_run_id: str | None = None,
+    page_type: str | None = None,
 ) -> ProfileResolution:
     config = load_router_config()
     profiles = load_all_profiles()
@@ -77,6 +78,12 @@ def resolve_profile(
     use_llm_when_missing = bool(detection_cfg.get("use_llm_when_missing_type", True))
 
     detected_type = requested_document_type.strip() if requested_document_type else None
+    if detected_type == "passport":
+        if page_type == "registration":
+            detected_type = "passport_registration"
+        else:
+            detected_type = "passport_main"
+
     detection_source = "request" if detected_type else "fallback"
     confidence = 1.0 if detected_type else 0.0
 

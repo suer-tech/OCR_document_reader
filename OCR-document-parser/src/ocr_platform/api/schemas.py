@@ -19,11 +19,7 @@ class IngestDocumentRequest(BaseModel):
     )
     document_type: Optional[str] = Field(
         default=None,
-        description="Явно переданный тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), passport (Паспорт РФ), unknown (Неизвестно/Автоопределение). Если не передан, система определяет тип автоматически.",
-    )
-    page_type: Optional[str] = Field(
-        default=None,
-        description="Тип страницы паспорта. Используется только для passport: main_spread (разворот с данными) или registration (прописка).",
+        description="Явно переданный тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), passport_main (Паспорт РФ — главная страница), passport_registration (Паспорт РФ — страница прописки), unknown (Неизвестно/Автоопределение). Если не передан, система определяет тип автоматически.",
     )
     document_type_hint: Optional[str] = Field(
         default=None,
@@ -178,8 +174,7 @@ class DocumentResultResponse(BaseModel):
 * `grounds` — Основание возникновения задолженности
 * `processing_started_at` — Время начала обработки документа (UTC, ISO-8601)
 
-Для `passport` (Паспорт РФ):
-* `page_type` — Тип страницы: main_spread (разворот с данными) или registration (прописка)
+Для `passport_main` (Паспорт РФ — главная страница):
 * `passport_series` — Серия паспорта (4 цифры)
 * `passport_number` — Номер паспорта (6 цифр)
 * `last_name` — Фамилия
@@ -191,6 +186,10 @@ class DocumentResultResponse(BaseModel):
 * `issue_date` — Дата выдачи
 * `department_code` — Код подразделения
 * `issued_by` — Кем выдан
+
+Для `passport_registration` (Паспорт РФ — прописка):
+* `passport_series` — Серия паспорта (4 цифры, если приводится)
+* `passport_number` — Номер паспорта (6 цифр, если приводится)
 * `registration_address` — Адрес регистрации
         """.strip(),
     )

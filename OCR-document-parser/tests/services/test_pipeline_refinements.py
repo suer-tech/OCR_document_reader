@@ -313,6 +313,7 @@ async def test_rtk_combined_extraction():
                 grounds="кредитный договор",
                 grounds_confidence=0.95,
                 grounds_reasoning="credit grounds",
+                has_text_distortions=False,
             )
         )
     )
