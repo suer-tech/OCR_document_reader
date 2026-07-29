@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import json
 import httpx
 from pathlib import Path
 from langfuse.openai import OpenAI
@@ -18,7 +19,25 @@ def _clean_ocr_output(text: str) -> str:
     # Удаляем маркеры markdown (```json ... ```)
     text = re.sub(r'^```(?:json)?\s*', '', text)
     text = re.sub(r'\s*```$', '', text)
-    return text.strip()
+    text = text.strip()
+
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            # Отфильтровываем элементы, где есть MRZ-стрелки '<<<<'
+            filtered_data = []
+            for item in data:
+                if isinstance(item, dict):
+                    text_content = item.get("text_content", "")
+                    if "<<<<" not in text_content:
+                        filtered_data.append(item)
+                else:
+                    filtered_data.append(item)
+            return json.dumps(filtered_data, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"Failed to parse OCR output as JSON: {e}")
+
+    return text
 
 def run_router_ai_ocr(file_path: str, ocr_config: dict | None = None) -> str:
     """
