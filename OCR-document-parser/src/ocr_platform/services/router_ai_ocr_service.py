@@ -15,17 +15,10 @@ logger = get_logger(__name__)
 
 def _clean_ocr_output(text: str) -> str:
     text = text.strip()
+    # Удаляем маркеры markdown (```json ... ```)
     text = re.sub(r'^```(?:json)?\s*', '', text)
     text = re.sub(r'\s*```$', '', text)
-    text = re.sub(r'\{"box_2d":\s*\[[^\]]*\],\s*"text_content":\s*"([^"]*)"\}', r'\1', text)
-    text = re.sub(r'^\s*\[[\s\S]*?\]\s*$', '', text)
-    lines = []
-    for line in text.split('\n'):
-        line = line.strip()
-        if not line or line in ('[', ']', '{', '}', ','):
-            continue
-        lines.append(line)
-    return '\n'.join(lines).strip()
+    return text.strip()
 
 def run_router_ai_ocr(file_path: str, ocr_config: dict | None = None) -> str:
     """
@@ -87,7 +80,7 @@ def run_router_ai_ocr(file_path: str, ocr_config: dict | None = None) -> str:
                         },
                         {
                             "type": "text",
-                            "text": "Extract all text from this document accurately. Return ONLY the plain text content without any bounding boxes, coordinates, JSON formatting, or markdown. Just raw text preserving line breaks and paragraph structure."
+                            "text": "Extract all text from this document accurately. Return a JSON array of objects. Each object must represent a text bounding box and have exactly two fields: 'box_2d' (an array of 4 coordinates [ymin, xmin, ymax, xmax]) and 'text_content' (the extracted raw text). Preserve the reading order."
                         },
                     ],
                 }
