@@ -164,6 +164,7 @@ class DocumentResultResponse(BaseModel):
 * `procedure_end_date` — Дата окончания процедуры
 * `procedure_end_date_is_calculated` — Является ли дата окончания вычисленной (true/false)
 * `early_report_deadline` — Заблаговременное предоставление отчета ФУ
+* `financial_manager_full_name` — ФИО финансового управляющего
 * `motivating_part` — Мотивирующая часть судебного решения
 * `resolutive_part` — Резолютивная часть судебного решения
 * `document_basis` — Основание: "Решение" или "Определение"
@@ -296,6 +297,12 @@ class DocumentResultResponse(BaseModel):
                             "value": "01.09.2025",
                             "confidence": 0.85,
                             "source": "nlp",
+                        },
+                        "financial_manager_full_name": {
+                            "name": "financial_manager_full_name",
+                            "value": "Сидоров С.С.",
+                            "confidence": 0.95,
+                            "source": "llm",
                         },
                         "motivating_part": {
                             "name": "motivating_part",

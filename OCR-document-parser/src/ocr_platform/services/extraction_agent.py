@@ -186,6 +186,12 @@ class CourtDecisionResult(BaseModel):
     judge_full_name_confidence: float
     judge_full_name_reasoning: str
 
+    financial_manager_full_name: str | None = Field(
+        description="ФИО финансового (арбитражного) управляющего, утвержденного судом, в именительном падеже, либо null"
+    )
+    financial_manager_full_name_confidence: float
+    financial_manager_full_name_reasoning: str
+
     court_name: str | None = Field(
         description="Полное название арбитражного суда, либо null"
     )
@@ -1646,6 +1652,11 @@ async def _run_agent_extraction_impl(
                         "judge_full_name",
                         "judge_full_name_confidence",
                         "judge_full_name_reasoning",
+                    ),
+                    "financial_manager_full_name": (
+                        "financial_manager_full_name",
+                        "financial_manager_full_name_confidence",
+                        "financial_manager_full_name_reasoning",
                     ),
                     "court_name": (
                         "court_name",
