@@ -14,6 +14,7 @@ models:
     provider: router_ai
     model: google/gemini-2.5-flash-lite
     timeout_seconds: 300.0
+    output_format: json_with_boxes
   llm_extraction:
     provider: router_ai
     model: x-ai/grok-4.20

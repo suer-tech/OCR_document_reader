@@ -84,6 +84,10 @@ def run_router_ai_ocr(file_path: str, ocr_config: dict | None = None) -> str:
         base_url=base_url, api_key=api_key, http_client=http_client
     )
 
+    prompt_text = "Extract all text from this document accurately. Preserve the reading order."
+    if ocr_config and ocr_config.get("output_format") == "json_with_boxes":
+        prompt_text = "Extract all text from this document accurately. Return a JSON array of objects. Each object must represent a text bounding box and have exactly two fields: 'box_2d' (an array of 4 coordinates [ymin, xmin, ymax, xmax]) and 'text_content' (the extracted raw text). Preserve the reading order."
+
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -99,7 +103,7 @@ def run_router_ai_ocr(file_path: str, ocr_config: dict | None = None) -> str:
                         },
                         {
                             "type": "text",
-                            "text": "Extract all text from this document accurately. Return a JSON array of objects. Each object must represent a text bounding box and have exactly two fields: 'box_2d' (an array of 4 coordinates [ymin, xmin, ymax, xmax]) and 'text_content' (the extracted raw text). Preserve the reading order."
+                            "text": prompt_text
                         },
                     ],
                 }
