@@ -1,8 +1,9 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ocr_platform.orchestration.router import resolve_profile
+from ocr_platform.orchestration.router import load_profile, resolve_profile
 from ocr_platform.services.extraction_agent import (
+    GenericFieldResult,
     run_agent_extraction,
     PassportMainResult,
     PassportRegistrationResult,
@@ -43,6 +44,14 @@ def test_resolve_profile_passport_registration():
     )
     assert res.profile_id == "passport_registration"
     assert res.document_type == "passport_registration"
+
+
+def test_passport_registration_street_contains_only_street_name():
+    street = load_profile("passport_registration")["fields"]["street"]
+
+    assert street["label_ru"] == "Улица"
+    assert "ТОЛЬКО тип и название улицы" in street["prompt_instruction"]
+    assert "Не включай номер дома" in street["prompt_instruction"]
 
 
 def test_resolve_profile_passport_legacy_default():
@@ -158,3 +167,145 @@ async def test_passport_registration_extraction():
             == "г. Москва, ул. Тверская, д. 1, кв. 10"
         )
         assert res["registration_address"]["source"] == "passport_registration_combined"
+
+
+@pytest.mark.asyncio
+async def test_passport_registration_forces_postal_index_tool_when_address_has_no_index():
+    address = "г. Москва, ул. Тверская, д. 1, кв. 10"
+    combined_run = AsyncMock(
+        return_value=make_mock_result(
+            PassportRegistrationResult(
+                registration_address=address,
+                registration_address_confidence=0.95,
+                registration_address_reasoning="Found address",
+                has_text_distortions=False,
+            )
+        )
+    )
+    generic_run = AsyncMock(
+        return_value=make_mock_result(
+            GenericFieldResult(
+                value="999999",
+                confidence=0.8,
+                reasoning="Model guessed an index without calling the tool",
+            )
+        )
+    )
+    fields_config = {
+        "registration_address": {
+            "extraction_method": "llm",
+            "prompt_instruction": "Адрес регистрации",
+        },
+        "post_index": {
+            "extraction_method": "llm",
+            "prompt_instruction": "Почтовый индекс",
+        },
+    }
+
+    with (
+        patch.object(
+            extraction_agent.agent_passport_registration_combined,
+            "run",
+            combined_run,
+        ),
+        patch.object(extraction_agent.agent_generic, "run", generic_run),
+        patch.object(
+            extraction_agent,
+            "search_postal_index_by_address",
+            return_value="Found postal index: 123456",
+        ) as postal_index_tool,
+    ):
+        res = await run_agent_extraction(
+            "Зарегистрирован: г. Москва, ул. Тверская, д. 1, кв. 10",
+            fields_config,
+            profile_id="passport_registration",
+            profile_config={"models": {"llm_extraction": {"model": "test-model"}}},
+        )
+
+    postal_index_tool.assert_called_once_with(None, address)
+    assert res["post_index"] == {
+        "value": "123456",
+        "confidence": 0.9,
+        "reasoning": (
+            "Forced postal-index search by registration address "
+            f"'{address}' returned 123456."
+        ),
+        "source": "tool_fallback",
+    }
+
+
+@pytest.mark.asyncio
+async def test_passport_address_parts_use_only_combined_registration_address():
+    address = (
+        "Республика Башкортостан, г. Салават, ул. Чапаева, дом 17А, кв. 3"
+    )
+    combined_run = AsyncMock(
+        return_value=make_mock_result(
+            PassportRegistrationResult(
+                registration_address=address,
+                registration_address_confidence=0.95,
+                registration_address_reasoning="Found current registration address",
+                has_text_distortions=False,
+            )
+        )
+    )
+    generic_run = AsyncMock(
+        side_effect=[
+            make_mock_result(
+                GenericFieldResult(
+                    value="Республика Башкортостан",
+                    confidence=0.9,
+                    reasoning="Derived from registration_address",
+                )
+            ),
+            make_mock_result(
+                GenericFieldResult(
+                    value="г. Салават",
+                    confidence=0.9,
+                    reasoning="Derived from registration_address",
+                )
+            ),
+            make_mock_result(
+                GenericFieldResult(
+                    value="ул. Чапаева",
+                    confidence=0.9,
+                    reasoning="Derived from registration_address",
+                )
+            ),
+        ]
+    )
+    fields_config = {
+        "registration_address": {
+            "extraction_method": "llm",
+            "prompt_instruction": "Адрес регистрации",
+        },
+        "region": {"extraction_method": "llm", "prompt_instruction": "Регион"},
+        "city": {"extraction_method": "llm", "prompt_instruction": "Город"},
+        "street": {"extraction_method": "llm", "prompt_instruction": "Улица"},
+    }
+    raw_text_with_previous_address = (
+        "Предыдущая регистрация: ул. Летчиков, д. 6. "
+        "Текущая регистрация: ул. Чапаева, д. 17А."
+    )
+
+    with (
+        patch.object(
+            extraction_agent.agent_passport_registration_combined,
+            "run",
+            combined_run,
+        ),
+        patch.object(extraction_agent.agent_generic, "run", generic_run),
+    ):
+        res = await run_agent_extraction(
+            raw_text_with_previous_address,
+            fields_config,
+            profile_id="passport_registration",
+            profile_config={"models": {"llm_extraction": {"model": "test-model"}}},
+        )
+
+    assert res["street"]["value"] == "ул. Чапаева"
+    assert generic_run.await_count == 3
+    for call in generic_run.await_args_list:
+        assert call.kwargs["deps"] == address
+        assert address in call.args[0]
+        assert "Летчиков" not in call.args[0]

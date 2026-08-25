@@ -337,6 +337,7 @@ FieldResult = GenericFieldResult
 from ocr_platform.services.agent_tools import (
     search_creditor_inn,
     search_creditor_name,
+    search_postal_index_by_address,
     _search_by_inn,
 )
 
@@ -1120,6 +1121,8 @@ agent_rtk_tax_combined.tool(search_creditor_name)
 
 agent_court_decision_combined.tool(search_creditor_inn)
 agent_court_decision_combined.tool(search_creditor_name)
+
+agent_passport_registration_combined.tool(search_postal_index_by_address)
 
 
 # Compatibility aliases for legacy tests/code
@@ -2022,8 +2025,38 @@ async def _run_agent_extraction_impl(
                 field_name,
                 default=field_def.get("prompt_instruction", ""),
             )
+            field_input_text = text[:10000]
+            if profile_id == "passport_registration" and field_name in {
+                "post_index",
+                "region",
+                "city",
+                "street",
+            }:
+                registration_address = results.get("registration_address", {}).get(
+                    "value"
+                )
+                if not registration_address:
+                    results[field_name] = {
+                        "value": None,
+                        "confidence": 0.0,
+                        "reasoning": (
+                            "Cannot derive the field because registration_address "
+                            "is missing."
+                        ),
+                        "source": "registration_address",
+                    }
+                    continue
+                field_input_text = str(registration_address)
+                prompt_instruction = (
+                    f"{prompt_instruction}\n\n"
+                    "КРИТИЧЕСКОЕ ОГРАНИЧЕНИЕ: извлекай значение ТОЛЬКО из "
+                    "переданного ниже итогового registration_address. Не используй "
+                    "исходный текст паспорта и не выбирай другие или предыдущие адреса."
+                )
+
             base_prompt = (
-                f"Instruction: {prompt_instruction}\n\nDocument Text:\n{text[:10000]}"
+                f"Instruction: {prompt_instruction}\n\n"
+                f"Document Text:\n{field_input_text}"
             )
 
             try:
@@ -2681,7 +2714,7 @@ async def _run_agent_extraction_impl(
                         try:
                             result = await agent.run(
                                 base_prompt,
-                                deps=text,
+                                deps=field_input_text,
                                 model_settings=_active_model_settings(),
                             )
                             break
@@ -2757,6 +2790,68 @@ async def _run_agent_extraction_impl(
                     logger.info(f"Fallback search for INN returned no valid results.")
             except Exception as e:
                 logger.warning(f"Forced search_creditor_inn failed: {e}")
+
+    # Passport registration pages usually contain an address without a postal
+    # index. Do not rely on the model to decide whether to call the tool: when
+    # the index is absent from the extracted address, run the lookup here and
+    # use only the tool-confirmed value.
+    if profile_id == "passport_registration" and "post_index" in fields_config:
+        registration_address = results.get("registration_address", {}).get("value")
+        if registration_address:
+            address_index_match = re.search(
+                r"(?<!\d)(\d{6})(?!\d)", str(registration_address)
+            )
+            if address_index_match:
+                results["post_index"] = {
+                    "value": address_index_match.group(1),
+                    "confidence": 1.0,
+                    "reasoning": "Postal index extracted directly from registration_address.",
+                    "source": "registration_address",
+                }
+            else:
+                logger.info(
+                    "Postal index is absent from registration_address. "
+                    "Forcing search_postal_index_by_address tool call."
+                )
+                try:
+                    tool_result = search_postal_index_by_address(
+                        None, str(registration_address)
+                    )
+                    found_index = re.search(r"(?<!\d)(\d{6})(?!\d)", tool_result or "")
+                    if found_index:
+                        results["post_index"] = {
+                            "value": found_index.group(1),
+                            "confidence": 0.9,
+                            "reasoning": (
+                                "Forced postal-index search by registration address "
+                                f"'{registration_address}' returned {found_index.group(1)}."
+                            ),
+                            "source": "tool_fallback",
+                        }
+                        logger.info(
+                            f"Successfully found postal index via fallback: {found_index.group(1)}"
+                        )
+                    else:
+                        results["post_index"] = {
+                            "value": None,
+                            "confidence": 0.0,
+                            "reasoning": (
+                                "Forced postal-index search by registration address "
+                                f"'{registration_address}' yielded no results."
+                            ),
+                            "source": "tool_fallback",
+                        }
+                        logger.info(
+                            "Fallback postal-index search returned no valid results."
+                        )
+                except Exception as e:
+                    logger.warning(f"Forced search_postal_index_by_address failed: {e}")
+                    results["post_index"] = {
+                        "value": None,
+                        "confidence": 0.0,
+                        "reasoning": f"Forced postal-index search failed: {e}",
+                        "source": "tool_fallback",
+                    }
 
     try:
         lf = _get_lf_client()

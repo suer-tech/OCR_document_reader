@@ -1,18 +1,85 @@
 {
   "properties": {
     "registration_address": {
-      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "title": "Registration Address"
     },
-    "registration_address_confidence": {"type": "number", "title": "Registration Address Confidence"},
-    "registration_address_reasoning": {"type": "string", "title": "Registration Address Reasoning"},
+    "registration_address_confidence": {
+      "type": "number",
+      "title": "Registration Address Confidence"
+    },
+    "registration_address_reasoning": {
+      "type": "string",
+      "title": "Registration Address Reasoning"
+    },
+    "post_index": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Почтовый индекс (6 цифр), либо null",
+      "title": "Registration Address Post Index"
+    },
+    "region": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Регион (область/край/республика), либо null",
+      "title": "Registration Address Region"
+    },
+    "city": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Город / населённый пункт, либо null",
+      "title": "Registration Address City"
+    },
+    "street": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Только тип и название улицы, без дома, корпуса, строения и квартиры; либо null",
+      "title": "Registration Address Street"
+    },
     "has_text_distortions": {
       "type": "boolean",
       "title": "Has Text Distortions"
     }
   },
   "required": [
-    "registration_address", "registration_address_confidence", "registration_address_reasoning",
+    "registration_address",
+    "registration_address_confidence",
+    "registration_address_reasoning",
+    "post_index",
+    "region",
+    "city",
+    "street",
     "has_text_distortions"
   ],
   "title": "PassportRegistrationResult",

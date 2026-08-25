@@ -14,6 +14,8 @@ DDGS_TIMEOUT = 15
 
 _inn_search_cache: dict[str, str] = {}
 _name_search_cache: dict[str, str] = {}
+_postal_index_cache: dict[str, str] = {}
+
 
 
 def _extract_inn_from_text(text: str) -> str | None:
@@ -180,7 +182,127 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
     return _inn_search_cache[creditor_name]
 
 
+def search_postal_index_by_address(ctx: RunContext[str], address: str) -> str:
+    """Search for the postal index (zip code) of a Russian address using DaData and DuckDuckGo fallback.
+
+    Args:
+        address: Full or partial Russian address string (e.g. 'г. Москва, ул. Ленина, д. 1').
+
+    Returns:
+        String like 'Found postal index: 123456' or a message explaining why it was not found.
+    """
+    address = address.strip()
+    if not address:
+        return "Postal index not found. Empty address provided."
+
+    cached = _postal_index_cache.get(address)
+    if cached is not None:
+        logger.info("postal_index_cache_hit", address=address, result=cached)
+        return cached
+
+    logger.info("search_postal_index_by_address", address=address)
+
+    # --- Шаг 1: DaData suggest/address (наиболее точный) ---
+    try:
+        from ocr_platform.config.settings import get_settings
+        api_key = get_settings().dadata_api_key
+        if api_key:
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Token {api_key}",
+            }
+            resp = requests.post(
+                "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/address",
+                json={"query": address, "count": 1},
+                headers=headers,
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                suggestions = resp.json().get("suggestions", [])
+                if suggestions:
+                    postal_code = suggestions[0].get("data", {}).get("postal_code")
+                    if postal_code:
+                        logger.info("postal_index_found_via_dadata", index=postal_code, address=address)
+                        result = f"Found postal index: {postal_code}"
+                        _postal_index_cache[address] = result
+                        return result
+            else:
+                logger.warning("dadata_address_api_error", status_code=resp.status_code)
+        else:
+            logger.warning("dadata_api_key_missing_for_postal_index")
+    except Exception as exc:
+        logger.warning("dadata_address_search_failed", error=str(exc))
+
+    # --- Шаг 2: DuckDuckGo поиск как фоллбэк ---
+    logger.info("fallback_to_ddg_for_postal_index", address=address)
+    try:
+        from duckduckgo_search import DDGS
+        query = f"почтовый индекс {address}"
+        with DDGS() as ddg:
+            results = list(ddg.text(query, max_results=5, safesearch="off"))
+
+        index_pattern = re.compile(r"\b(\d{6})\b")
+        for r in results:
+            snippet = f"{r.get('title', '')} {r.get('body', '')}"
+            m = index_pattern.search(snippet)
+            if m:
+                postal_code = m.group(1)
+                logger.info("postal_index_found_via_ddg_snippet", index=postal_code, address=address)
+                result = f"Found postal index: {postal_code}"
+                _postal_index_cache[address] = result
+                return result
+
+        # Заходим на первые 2 страницы
+        for r in results[:2]:
+            page_url = r.get("href", "")
+            if not page_url:
+                continue
+            page_text = _fetch_page_text(page_url)
+            if page_text:
+                m = index_pattern.search(page_text)
+                if m:
+                    postal_code = m.group(1)
+                    logger.info("postal_index_found_on_page", index=postal_code, url=page_url)
+                    result = f"Found postal index: {postal_code}"
+                    _postal_index_cache[address] = result
+                    return result
+    except ImportError:
+        logger.warning("duckduckgo_search_not_installed")
+    except Exception as exc:
+        logger.warning("ddg_postal_index_search_failed", error=str(exc))
+
+    # --- Шаг 3: Прямой HTML-запрос к DuckDuckGo ---
+    try:
+        query = f"почтовый индекс {address}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        resp = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            index_pattern = re.compile(r"\b(\d{6})\b")
+            for a in soup.find_all("a", class_="result__snippet")[:5]:
+                m = index_pattern.search(a.text)
+                if m:
+                    postal_code = m.group(1)
+                    logger.info("postal_index_found_in_html_snippet", index=postal_code)
+                    result = f"Found postal index: {postal_code}"
+                    _postal_index_cache[address] = result
+                    return result
+    except Exception as exc:
+        logger.warning("ddg_html_postal_index_fallback_failed", error=str(exc))
+
+    result = "Postal index not found. Could not locate the postal index for the given address via web search."
+    _postal_index_cache[address] = result
+    return result
+
+
 def search_creditor_name(ctx: RunContext[str], inn: str) -> str:
+
     """Tool for LLM: search for company name by its INN using zachestnyibiznes.ru and DuckDuckGo."""
     cached = _name_search_cache.get(inn)
     if cached is not None:
