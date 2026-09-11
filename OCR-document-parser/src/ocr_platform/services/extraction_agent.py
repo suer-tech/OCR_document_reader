@@ -1575,6 +1575,7 @@ async def _run_agent_extraction_impl(
             "debtor_registration_address",
             "debtor_inn",
             "judge_full_name",
+            "financial_manager_full_name",
             "court_name",
             "procedure_type",
             "document_basis",
@@ -2025,7 +2026,9 @@ async def _run_agent_extraction_impl(
                 field_name,
                 default=field_def.get("prompt_instruction", ""),
             )
-            field_input_text = text[:10000]
+            # Court appointments and signatures can be on later pages. Keep the
+            # full document in individual extraction, including combined fallback.
+            field_input_text = text if profile_id == "court_decision_ru" else text[:10000]
             if profile_id == "passport_registration" and field_name in {
                 "post_index",
                 "region",
