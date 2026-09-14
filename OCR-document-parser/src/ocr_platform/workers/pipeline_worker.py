@@ -13,6 +13,7 @@ from ocr_platform.queueing.rabbitmq import (
 )
 from ocr_platform.storage import models, repository
 from langfuse import get_client as get_langfuse_client
+from prometheus_client import start_http_server
 
 logger = get_logger(__name__)
 
@@ -75,6 +76,17 @@ def _handle_job(job: IngestJob) -> None:
 def main() -> None:
     configure_logging()
     repository.init_db()
+    settings = get_settings()
+    if settings.worker_metrics_enabled:
+        start_http_server(
+            port=settings.worker_metrics_port,
+            addr=settings.worker_metrics_host,
+        )
+        logger.info(
+            "worker_metrics_server_started",
+            host=settings.worker_metrics_host,
+            port=settings.worker_metrics_port,
+        )
     logger.info("pipeline_worker_started")
     consume_ingest_jobs(_handle_job)
 

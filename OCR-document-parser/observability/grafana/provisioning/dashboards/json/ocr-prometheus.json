@@ -1,0 +1,79 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "sum by (endpoint) (rate(ocr_requests_total[5m]))", "legendFormat": "{{endpoint}}", "refId": "A"}],
+      "title": "API request rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, profile_id) (rate(ocr_pipeline_latency_seconds_bucket[5m])))", "legendFormat": "{{profile_id}}", "refId": "A"}],
+      "title": "Pipeline latency p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "id": 3,
+      "targets": [{"expr": "histogram_quantile(0.5, sum by (le, profile_id, score_type) (rate(ocr_quality_score_bucket[1h])))", "legendFormat": "{{profile_id}} / {{score_type}}", "refId": "A"}],
+      "title": "Quality score median",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "id": 4,
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, task_name, provider) (rate(ocr_llm_call_latency_seconds_bucket[5m])))", "legendFormat": "{{task_name}} / {{provider}}", "refId": "A"}],
+      "title": "LLM latency p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "id": 5,
+      "targets": [{"expr": "sum by (task_name, provider, status) (rate(ocr_llm_call_total[5m]))", "legendFormat": "{{task_name}} / {{provider}} / {{status}}", "refId": "A"}],
+      "title": "LLM calls by status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "id": 6,
+      "targets": [{"expr": "histogram_quantile(0.5, sum by (le, profile_id) (rate(ocr_field_fill_rate_bucket[1h])))", "legendFormat": "{{profile_id}}", "refId": "A"}],
+      "title": "Field fill rate median",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "id": 7,
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, content_type) (rate(ocr_step_latency_seconds_bucket[5m])))", "legendFormat": "{{content_type}}", "refId": "A"}],
+      "title": "OCR latency p95",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["ocr", "prometheus", "production"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "OCR Prometheus Metrics",
+  "uid": "ocr-prometheus-metrics",
+  "version": 1
+}

@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     rabbitmq_ingest_queue: str = "ocr.ingest"
     worker_max_retries: int = 3
 
+    # Internal Prometheus exporter used by the pipeline worker.
+    worker_metrics_enabled: bool = True
+    worker_metrics_host: str = "0.0.0.0"
+    worker_metrics_port: int = 8001
+
     # DaData API for INN search
     dadata_api_key: str | None = None
     dadata_secret_key: str | None = None

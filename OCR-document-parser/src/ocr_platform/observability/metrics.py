@@ -83,6 +83,34 @@ OCR_STEP_LATENCY = Histogram(
     "OCR step execution duration",
     ["content_type"],
 )
+HTTP_REQUEST_COUNT = Counter(
+    "ocr_http_requests_total",
+    "HTTP requests handled by the OCR API",
+    ["method", "route", "status_code"],
+)
+HTTP_REQUEST_DURATION = Histogram(
+    "ocr_http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    ["method", "route"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
+)
+HTTP_REQUESTS_IN_PROGRESS = Gauge(
+    "ocr_http_requests_in_progress",
+    "HTTP requests currently being processed",
+    ["method"],
+)
+HTTP_REQUEST_SIZE = Histogram(
+    "ocr_http_request_size_bytes",
+    "HTTP request body size from Content-Length",
+    ["method", "route"],
+    buckets=(256, 1024, 4096, 16384, 65536, 262144, 1048576, 5242880, 26214400, 104857600),
+)
+HTTP_RESPONSE_SIZE = Histogram(
+    "ocr_http_response_size_bytes",
+    "HTTP response body size from Content-Length",
+    ["method", "route"],
+    buckets=(256, 1024, 4096, 16384, 65536, 262144, 1048576, 5242880, 26214400),
+)
 _llm_token_avg_lock = Lock()
 _llm_token_avg_state: dict[tuple[str, str, str, str], tuple[float, int]] = defaultdict(lambda: (0.0, 0))
 
@@ -175,3 +203,26 @@ def inc_ocr_step(content_type: str, status: str) -> None:
 
 def observe_ocr_step_latency(content_type: str, seconds: float) -> None:
     OCR_STEP_LATENCY.labels(content_type=content_type).observe(seconds)
+
+
+def http_request_started(method: str) -> None:
+    HTTP_REQUESTS_IN_PROGRESS.labels(method=method).inc()
+
+
+def observe_http_request(
+    *,
+    method: str,
+    route: str,
+    status_code: int,
+    duration_seconds: float,
+    request_size_bytes: int | None,
+    response_size_bytes: int | None,
+) -> None:
+    labels = {"method": method, "route": route}
+    HTTP_REQUEST_COUNT.labels(**labels, status_code=str(status_code)).inc()
+    HTTP_REQUEST_DURATION.labels(**labels).observe(duration_seconds)
+    if request_size_bytes is not None:
+        HTTP_REQUEST_SIZE.labels(**labels).observe(float(request_size_bytes))
+    if response_size_bytes is not None:
+        HTTP_RESPONSE_SIZE.labels(**labels).observe(float(response_size_bytes))
+    HTTP_REQUESTS_IN_PROGRESS.labels(method=method).dec()

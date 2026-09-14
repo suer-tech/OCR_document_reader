@@ -70,6 +70,7 @@ Thumbs.db
 # But keep JSON schema files for extraction pipelines
 !OCR-document-parser/src/ocr_platform/config/pipelines/schemas/*.json
 !OCR-document-parser/src/ocr_platform/config/pipelines/schemas/**/*.json
+!OCR-document-parser/observability/grafana/provisioning/dashboards/json/*.json
 
 # Other test document formats
 *.docx

@@ -6,19 +6,35 @@ from __future__ import annotations
 import base64
 import hashlib
 from datetime import datetime
+from time import perf_counter
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.exc import IntegrityError
 
 from ocr_platform.api import schemas
 from ocr_platform.config.settings import get_settings
 from ocr_platform.observability.logging import configure_logging, get_logger
-from ocr_platform.observability.metrics import inc_request
+from ocr_platform.observability.metrics import (
+    http_request_started,
+    inc_request,
+    observe_http_request,
+)
 from ocr_platform.orchestration.mlflow_backfill import backfill_pipeline_runs_to_mlflow
 from ocr_platform.queueing.rabbitmq import IngestJob, publish_ingest_job
 from ocr_platform.storage import file_storage, models, repository
 
 logger = get_logger(__name__)
+
+
+def _parse_content_length(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _infer_content_type(filename: str, content_type: str) -> str:
@@ -89,6 +105,51 @@ def create_app() -> FastAPI:
 3. **Получите результат** через `GET /documents/{document_id}/result`. Вы получите сырой текст и структурированные поля с оценкой уверенности.
         """.strip(),
     )
+
+    @app.middleware("http")
+    async def collect_http_metrics(request: Request, call_next):  # type: ignore[no-untyped-def]
+        if request.url.path == "/metrics":
+            return await call_next(request)
+
+        method = request.method
+        http_request_started(method)
+        started_at = perf_counter()
+        status_code = 500
+        response: Response | None = None
+
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            route_object = request.scope.get("route")
+            route = getattr(route_object, "path", "unmatched")
+            request_size = _parse_content_length(request.headers.get("content-length"))
+            response_size = (
+                _parse_content_length(response.headers.get("content-length"))
+                if response is not None
+                else None
+            )
+            observe_http_request(
+                method=method,
+                route=route,
+                status_code=status_code,
+                duration_seconds=perf_counter() - started_at,
+                request_size_bytes=request_size,
+                response_size_bytes=response_size,
+            )
+
+    @app.get(
+        "/metrics",
+        tags=["Служебные"],
+        include_in_schema=False,
+    )
+    async def prometheus_metrics() -> Response:
+        """Expose API-process metrics for the internal Prometheus scraper."""
+        return Response(
+            content=generate_latest(),
+            headers={"Content-Type": CONTENT_TYPE_LATEST},
+        )
 
     @app.get(
         "/health",
