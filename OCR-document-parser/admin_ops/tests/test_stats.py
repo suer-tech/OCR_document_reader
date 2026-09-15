@@ -113,6 +113,7 @@ def test_pulse_command_sends_snapshot_with_missing_p95(monkeypatch):
                 "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
                 "text": "/pulse Сколько документов сегодня?",
             }})
+            await asyncio.gather(*bot.dialog_tasks.values())
         finally:
             await bot.aclose()
 
