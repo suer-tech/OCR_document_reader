@@ -62,6 +62,7 @@ nft add rule inet awg_lock input iifname eth0 ct state established,related accep
 nft add rule inet awg_lock input iifname eth0 ct state new tcp dport '{ 8080, 8081 }' accept
 
 awg-quick up "$runtime_profile"
+echo 'AmneziaWG routing initialized'
 
 cleanup() {
   awg-quick down "$runtime_profile" >/dev/null 2>&1 || true

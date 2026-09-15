@@ -16,6 +16,7 @@ def test_only_ai_workers_share_gateway_network() -> None:
 
     gateway = ops["awg-gateway"]
     assert gateway["cap_add"] == ["NET_ADMIN"]
+    assert gateway["sysctls"]["net.ipv4.conf.all.src_valid_mark"] == "1"
     assert "/dev/net/tun:/dev/net/tun" in gateway["devices"]
     assert gateway["read_only"] is True
     assert any(volume.endswith(":/etc/amnezia/awg0.conf:ro") for volume in gateway["volumes"])

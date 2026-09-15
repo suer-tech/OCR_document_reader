@@ -1,0 +1,8 @@
+--- linux.bash
++++ linux.bash
+@@ -227 +227,4 @@
+-	[[ $proto == -4 ]] && cmd sysctl -q net.ipv4.conf.all.src_valid_mark=1
++	if [[ $proto == -4 ]]; then
++		[[ $(sysctl -n net.ipv4.conf.all.src_valid_mark) == 1 ]] ||
++			die "Docker must set net.ipv4.conf.all.src_valid_mark=1 before starting the gateway"
++	fi
