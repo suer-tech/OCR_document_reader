@@ -132,6 +132,8 @@ class AdminBot:
     def __init__(self, settings: OpsSettings):
         self.settings = settings
         self.history: dict[int, deque[dict[str, str]]] = defaultdict(lambda: deque(maxlen=6))
+        self.dialog_queues: dict[int, deque[str]] = {}
+        self.dialog_tasks: dict[int, asyncio.Task] = {}
         self.alert_tracker = AlertTracker()
         # Telegram URLs contain the bot token. Never emit HTTP request/debug logs.
         logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -142,8 +144,74 @@ class AdminBot:
         )
 
     async def aclose(self) -> None:
+        tasks = list(self.dialog_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await self.telegram_client.aclose()
         await self.client.aclose()
+
+    async def show_typing(self, admin_id: int) -> None:
+        while True:
+            try:
+                response = await self.telegram_client.post(
+                    f"https://api.telegram.org/bot{self.settings.telegram_token}/sendChatAction",
+                    json={"chat_id": admin_id, "action": "typing"}, timeout=5.0,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                # A cosmetic indicator must never interrupt a useful response.
+                logger.debug("telegram_typing_unavailable")
+            await asyncio.sleep(4)
+
+    async def enqueue_dialog(self, admin_id: int, question: str) -> None:
+        queue = self.dialog_queues.setdefault(admin_id, deque())
+        if len(queue) >= 3:
+            await self.send(admin_id, "Уже обрабатываю три вопроса. Дождитесь ответа и отправьте следующий ещё раз.")
+            return
+        queue.append(question[:1500])
+        acknowledgement = (
+            "Принял вопрос. Готовлю ответ."
+            if len(queue) == 1 else
+            f"Принял вопрос в очередь. Перед ним вопросов: {len(queue) - 1}."
+        )
+        try:
+            await self.send(admin_id, acknowledgement)
+        except httpx.HTTPError:
+            logger.warning("dialog_ack_delivery_failed")
+        if self.dialog_queues.get(admin_id) is queue and queue and admin_id not in self.dialog_tasks:
+            self.dialog_tasks[admin_id] = asyncio.create_task(self.process_dialog(admin_id))
+
+    async def process_dialog(self, admin_id: int) -> None:
+        queue = self.dialog_queues[admin_id]
+        try:
+            while queue:
+                question = queue[0]
+                typing_task = asyncio.create_task(self.show_typing(admin_id))
+                try:
+                    async with asyncio.timeout(360):
+                        answer = await self.worker(
+                            f"{self.settings.pulse_url}/pulse",
+                            {"question": question, "snapshot": await self.snapshot(),
+                             "history": list(self.history[admin_id])},
+                        )
+                        await self.send(admin_id, answer["answer"])
+                        self.history[admin_id].append({
+                            "question": question[:1000], "answer": answer["answer"][:1500],
+                        })
+                except Exception as exc:  # noqa: BLE001 - later questions must still run
+                    logger.error("pulse_dialog_failed: %s", type(exc).__name__)
+                    try:
+                        await self.send(admin_id, f"Не удалось получить ответ ({type(exc).__name__}). Повторите вопрос или используйте /health и /today.")
+                    except httpx.HTTPError:
+                        logger.error("dialog_error_delivery_failed")
+                finally:
+                    typing_task.cancel()
+                    await asyncio.gather(typing_task, return_exceptions=True)
+                    queue.popleft()
+        finally:
+            self.dialog_queues.pop(admin_id, None)
+            self.dialog_tasks.pop(admin_id, None)
 
     async def poll_updates(self, offset: int) -> list[dict]:
         response = await self.telegram_client.get(
@@ -230,7 +298,7 @@ class AdminBot:
         command, _, argument = text.partition(" ")
         command = command.split("@", 1)[0].lower()
         if command in {"/start", "/help"}:
-            await self.send(admin_id, "Команды: /today, /health, /pulse вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
+            await self.send(admin_id, "Я Пульс. Пишите обычным текстом — /pulse не обязателен. Помню последние 6 ответов в текущем сеансе; после перезапуска история сбрасывается.\n\nПравки кода запускаются только командой /fix задача. Обычное сообщение ничего не меняет.\n\nКоманды: /today, /health, /pulse вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
         elif command == "/today":
             daily = await asyncio.to_thread(load_daily_report, self.settings.database_url, self.settings.timezone)
             await self.send(admin_id, format_daily(daily))
@@ -380,16 +448,17 @@ class AdminBot:
             else:
                 await self.send(admin_id, f"{proposal_id}: {found[1]}. PR: {found[2] or 'нет'}")
         else:
+            if command.startswith("/") and command != "/pulse":
+                await self.send(admin_id, "Неизвестная команда. Для диалога пишите обычным текстом; для правок — /fix задача. Список команд: /help.")
+                return
             question = argument.strip() if command == "/pulse" else text
             if not question:
                 await self.send(admin_id, "Укажите вопрос после /pulse.")
                 return
-            answer = await self.worker(
-                f"{self.settings.pulse_url}/pulse",
-                {"question": question[:1500], "snapshot": await self.snapshot(), "history": list(self.history[admin_id])},
-            )
-            self.history[admin_id].append({"question": question[:1000], "answer": answer["answer"][:1500]})
-            await self.send(admin_id, answer["answer"])
+            if question.casefold().strip(" !.,?") in {"привет", "здравствуй", "здравствуйте", "добрый день", "доброе утро", "добрый вечер", "hello", "hi"}:
+                await self.send(admin_id, "Привет! Я Пульс. Спрашивайте о работе системы обычным текстом. Правки кода — только по команде /fix задача.")
+                return
+            await self.enqueue_dialog(admin_id, question)
 
     async def run(self) -> None:
         init_state(self.settings.state_path)
@@ -420,6 +489,7 @@ class AdminBot:
         finally:
             alert_task.cancel()
             deployment_task.cancel()
+            await asyncio.gather(alert_task, deployment_task, return_exceptions=True)
             await self.aclose()
 
     async def monitor_alerts(self) -> None:
