@@ -14,7 +14,7 @@ services:
       OPS_PULSE_URL: http://pulse-ai:8080
       OPS_FIXER_URL: http://fixer-ai:8080
       OPS_ENABLE_FIXER: ${OPS_ENABLE_FIXER:-true}
-      OPS_ENABLE_RELEASE: ${OPS_ENABLE_RELEASE:-false}
+      OPS_ENABLE_RELEASE: ${OPS_ENABLE_RELEASE:-true}
       OPS_TIMEZONE: ${OPS_TIMEZONE:-Asia/Yekaterinburg}
       OPS_GITHUB_REPO: ${OPS_GITHUB_REPO:-suer-tech/OCR_document_reader}
       OPS_GITHUB_TOKEN: ${OPS_GITHUB_TOKEN:-}

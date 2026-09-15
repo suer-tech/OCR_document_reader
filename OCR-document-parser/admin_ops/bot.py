@@ -447,6 +447,8 @@ def main() -> None:
         raise SystemExit("OPS_TELEGRAM_TOKEN, OPS_ADMIN_IDS and a 32+ character OPS_INTERNAL_TOKEN are required")
     if not settings.database_url:
         raise SystemExit("OPS_DATABASE_URL (preferably a read-only PostgreSQL user) is required")
+    if settings.enable_release and not settings.github_token:
+        raise SystemExit("OPS_GITHUB_TOKEN is required when OPS_ENABLE_RELEASE=true")
     logging.basicConfig(level=logging.INFO)
     asyncio.run(AdminBot(settings).run())
 

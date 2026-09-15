@@ -1,8 +1,21 @@
 import asyncio
 
+import pytest
+
 from admin_ops import bot as bot_module
 from admin_ops.bot import AdminBot
 from admin_ops.config import OpsSettings
+
+
+def test_release_enabled_requires_github_token_at_startup(monkeypatch) -> None:
+    settings = OpsSettings(
+        telegram_token="dummy", admin_ids="123", internal_token="x" * 32,
+        database_url="sqlite+pysqlite:///:memory:", enable_release=True,
+        github_token="",
+    )
+    monkeypatch.setattr(bot_module, "get_ops_settings", lambda: settings)
+    with pytest.raises(SystemExit, match="OPS_GITHUB_TOKEN"):
+        bot_module.main()
 
 
 def test_bot_ignores_non_admin_and_group_messages() -> None:

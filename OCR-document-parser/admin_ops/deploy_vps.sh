@@ -42,8 +42,14 @@ docker compose -f docker-compose.yml up -d --build api worker admin-bot pulse-ai
 for attempt in {1..12}; do
   if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8000/health >/dev/null && \
      docker compose -f docker-compose.yml exec -T worker python -c \
-       'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8001/metrics", timeout=3).read(128)' >/dev/null; then
-    echo "OCR API and worker metrics are healthy at ${target_sha:0:8}"
+       'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8001/metrics", timeout=3).read(128)' >/dev/null && \
+     docker compose -f docker-compose.yml exec -T admin-bot python -c \
+       'import os; assert os.environ.get("OPS_TELEGRAM_TOKEN") and os.environ.get("OPS_GITHUB_TOKEN")' >/dev/null && \
+     docker compose -f docker-compose.yml exec -T pulse-ai python -c \
+       'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/openapi.json", timeout=3).read(128)' >/dev/null && \
+     docker compose -f docker-compose.yml exec -T fixer-ai python -c \
+       'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/openapi.json", timeout=3).read(128)' >/dev/null; then
+    echo "OCR API, worker metrics and admin services are healthy at ${target_sha:0:8}"
     exit 0
   fi
   sleep 5

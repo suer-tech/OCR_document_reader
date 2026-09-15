@@ -16,7 +16,7 @@ class OpsSettings(BaseSettings):
     pulse_url: str = "http://pulse-ai:8080"
     fixer_url: str = "http://fixer-ai:8080"
     enable_fixer: bool = True
-    enable_release: bool = False
+    enable_release: bool = True
     timezone: str = "Asia/Yekaterinburg"
     state_path: str = "/state/proposals.sqlite3"
     github_token: str = ""
