@@ -11,8 +11,8 @@ services:
       OPS_INTERNAL_TOKEN: ${OPS_INTERNAL_TOKEN:?Set a random 32+ character OPS_INTERNAL_TOKEN}
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:?Set read-only OPS_DATABASE_URL}
       OPS_PROMETHEUS_URL: http://prometheus:9090
-      OPS_PULSE_URL: http://pulse-ai:8080
-      OPS_FIXER_URL: http://fixer-ai:8080
+      OPS_PULSE_URL: http://awg-gateway:8080
+      OPS_FIXER_URL: http://awg-gateway:8081
       OPS_ENABLE_FIXER: ${OPS_ENABLE_FIXER:-true}
       OPS_ENABLE_RELEASE: ${OPS_ENABLE_RELEASE:-true}
       OPS_TIMEZONE: ${OPS_TIMEZONE:-Asia/Yekaterinburg}
@@ -27,14 +27,45 @@ services:
     depends_on:
       - postgres
       - prometheus
-      - pulse-ai
+
+  awg-gateway:
+    build:
+      context: .
+      dockerfile: admin_ops/vpn/Dockerfile
+    restart: unless-stopped
+    init: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=16m
+      - /tmp:rw,nosuid,nodev,size=16m
+    volumes:
+      - ${OPS_AWG_CONFIG_HOST:?Set absolute path to a rotated AmneziaWG profile}:/etc/amnezia/awg0.conf:ro
+    healthcheck:
+      test: ['CMD', '/usr/local/bin/awg-healthcheck']
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 45s
 
   pulse-ai:
     build:
       context: .
       dockerfile: admin_ops/Dockerfile
     restart: unless-stopped
-    command: uvicorn admin_ops.ai:app --host 0.0.0.0 --port 8080
+    command: sh /app/admin_ops/vpn/worker-start.sh 8080
+    network_mode: service:awg-gateway
+    depends_on:
+      awg-gateway:
+        condition: service_healthy
+        restart: true
     environment:
       OPS_ROLE: pulse
       OPS_INTERNAL_TOKEN: ${OPS_INTERNAL_TOKEN:?Set OPS_INTERNAL_TOKEN}
@@ -42,8 +73,7 @@ services:
       CODEX_HOME: /home/ops/.codex
     volumes:
       - ${OPS_PULSE_CODEX_HOME_HOST:?Set absolute path to Pulse Codex login directory}:/home/ops/.codex
-    expose:
-      - '8080'
+      - ./admin_ops/vpn/worker-resolv.conf:/etc/resolv.conf:ro
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=128m
