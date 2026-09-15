@@ -37,7 +37,7 @@ if [[ "$(git -C "$repo_root" rev-parse HEAD)" != "$target_sha" ]]; then
 fi
 
 echo "Deploying ${target_sha:0:8}; previous revision ${previous_sha:0:8}"
-docker compose -f docker-compose.yml up -d --build api worker admin-bot pulse-ai fixer-ai
+docker compose -f docker-compose.yml up -d --build api worker admin-bot telegram-proxy pulse-ai fixer-ai
 
 for attempt in {1..12}; do
   if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8000/health >/dev/null && \
@@ -49,7 +49,8 @@ for attempt in {1..12}; do
        'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/openapi.json", timeout=3).read(128)' >/dev/null && \
      docker compose -f docker-compose.yml exec -T fixer-ai python -c \
        'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8081/openapi.json", timeout=3).read(128)' >/dev/null && \
-     docker compose -f docker-compose.yml exec -T awg-gateway /usr/local/bin/awg-healthcheck >/dev/null; then
+     docker compose -f docker-compose.yml exec -T awg-gateway /usr/local/bin/awg-healthcheck >/dev/null && \
+     docker compose -f docker-compose.yml exec -T telegram-proxy /usr/local/bin/telegram-proxy-healthcheck >/dev/null; then
     echo "OCR API, worker metrics, VPN gateway and admin services are healthy at ${target_sha:0:8}"
     exit 0
   fi

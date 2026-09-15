@@ -57,9 +57,9 @@ nft add rule inet awg_lock input iifname lo accept
 nft add rule inet awg_lock output oifname awg0 accept
 nft add rule inet awg_lock input iifname awg0 accept
 nft add rule inet awg_lock output oifname eth0 ip daddr "$endpoint_ip" udp dport "$endpoint_port" accept
-nft add rule inet awg_lock output oifname eth0 ct direction reply ct state established tcp sport '{ 8080, 8081 }' accept
+nft add rule inet awg_lock output oifname eth0 ct direction reply ct state established tcp sport '{ 8080, 8081, 8888 }' accept
 nft add rule inet awg_lock input iifname eth0 ct state established,related accept
-nft add rule inet awg_lock input iifname eth0 ct state new tcp dport '{ 8080, 8081 }' accept
+nft add rule inet awg_lock input iifname eth0 ct state new tcp dport '{ 8080, 8081, 8888 }' accept
 
 awg-quick up "$runtime_profile"
 echo 'AmneziaWG routing initialized'

@@ -53,6 +53,7 @@ jobs:
           bash -n OCR-document-parser/admin_ops/vpn/entrypoint.sh OCR-document-parser/admin_ops/vpn/healthcheck.sh OCR-document-parser/admin_ops/vpn/worker-start.sh
           docker compose -f OCR-document-parser/docker-compose.yml config --quiet
           docker build -t ocr-awg-ci -f OCR-document-parser/admin_ops/vpn/Dockerfile OCR-document-parser
-          bash OCR-document-parser/admin_ops/vpn/smoke-test.sh ocr-awg-ci
+          docker build -t ocr-telegram-proxy-ci -f OCR-document-parser/admin_ops/vpn/telegram-proxy.Dockerfile OCR-document-parser
+          bash OCR-document-parser/admin_ops/vpn/smoke-test.sh ocr-awg-ci ocr-telegram-proxy-ci
       - name: Run administrator and monitoring smoke tests
         run: python -m pytest OCR-document-parser/admin_ops/tests OCR-document-parser/tests/test_prometheus_exposition.py -q
