@@ -133,12 +133,30 @@ class AdminBot:
         self.settings = settings
         self.history: dict[int, deque[dict[str, str]]] = defaultdict(lambda: deque(maxlen=6))
         self.alert_tracker = AlertTracker()
-        self.client = httpx.AsyncClient(timeout=35.0)
+        # Telegram URLs contain the bot token. Never emit HTTP request/debug logs.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        self.client = httpx.AsyncClient(timeout=35.0, trust_env=False)
+        self.telegram_client = httpx.AsyncClient(
+            timeout=35.0, proxy=settings.telegram_proxy_url, trust_env=False,
+        )
+
+    async def aclose(self) -> None:
+        await self.telegram_client.aclose()
+        await self.client.aclose()
+
+    async def poll_updates(self, offset: int) -> list[dict]:
+        response = await self.telegram_client.get(
+            f"https://api.telegram.org/bot{self.settings.telegram_token}/getUpdates",
+            params={"offset": offset, "timeout": 25, "allowed_updates": json.dumps(["message"])},
+        )
+        response.raise_for_status()
+        return response.json().get("result", [])
 
     async def send(self, chat_id: int, text: str) -> None:
         # Each Telegram message has a 4096-character limit; keep a margin.
         for index in range(0, len(text), 3500):
-            response = await self.client.post(
+            response = await self.telegram_client.post(
                 f"https://api.telegram.org/bot{self.settings.telegram_token}/sendMessage",
                 json={"chat_id": chat_id, "text": text[index:index + 3500], "disable_web_page_preview": True},
             )
@@ -381,13 +399,7 @@ class AdminBot:
         try:
             while True:
                 try:
-                    response = await self.client.get(
-                        f"https://api.telegram.org/bot{self.settings.telegram_token}/getUpdates",
-                        params={"offset": offset, "timeout": 25, "allowed_updates": json.dumps(["message"])},
-                        timeout=35.0,
-                    )
-                    response.raise_for_status()
-                    updates = response.json().get("result", [])
+                    updates = await self.poll_updates(offset)
                     for update in updates:
                         offset = update["update_id"] + 1
                         set_offset(self.settings.state_path, offset)
@@ -408,7 +420,7 @@ class AdminBot:
         finally:
             alert_task.cancel()
             deployment_task.cancel()
-            await self.client.aclose()
+            await self.aclose()
 
     async def monitor_alerts(self) -> None:
         while True:

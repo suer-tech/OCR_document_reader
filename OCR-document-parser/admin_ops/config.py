@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +10,7 @@ class OpsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPS_", env_file=".env", extra="ignore")
 
     telegram_token: str = ""
+    telegram_proxy_url: str = Field(default="http://awg-gateway:8888", min_length=1)
     admin_ids: str = ""
     internal_token: str = ""
     database_url: str = ""
