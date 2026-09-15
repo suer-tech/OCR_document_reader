@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 # Separate lightweight image: no OCR models, documents, production Docker socket or API credentials.
 RUN pip install --no-cache-dir \
     'openai-codex==0.154.0' \
+    'mcp==1.30.0' \
     'fastapi>=0.111,<1' \
     'uvicorn>=0.30,<1' \
     'httpx>=0.27,<1' \

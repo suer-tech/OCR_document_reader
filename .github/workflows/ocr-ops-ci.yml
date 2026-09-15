@@ -34,7 +34,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install project and test dependencies
-        run: python -m pip install -e 'OCR-document-parser[dev]' openai-codex==0.154.0
+        run: python -m pip install -e 'OCR-document-parser[dev]' openai-codex==0.154.0 mcp==1.30.0
       - name: Enforce change policy and lint modified Python files
         if: (startsWith(github.head_ref, 'codex/ops-') || startsWith(github.ref, 'refs/heads/codex/ops-')) && github.head_ref != 'codex/ops-bootstrap' && github.ref != 'refs/heads/codex/ops-bootstrap'
         run: python -m admin_ops.ci_gate
@@ -55,5 +55,7 @@ jobs:
           docker build -t ocr-awg-ci -f OCR-document-parser/admin_ops/vpn/Dockerfile OCR-document-parser
           docker build -t ocr-telegram-proxy-ci -f OCR-document-parser/admin_ops/vpn/telegram-proxy.Dockerfile OCR-document-parser
           bash OCR-document-parser/admin_ops/vpn/smoke-test.sh ocr-awg-ci ocr-telegram-proxy-ci
+          docker build -t ocr-admin-ci -f OCR-document-parser/admin_ops/Dockerfile OCR-document-parser
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,nosuid,nodev,size=128m ocr-admin-ci python -m admin_ops.sdk_read_smoke
       - name: Run administrator and monitoring smoke tests
         run: python -m pytest OCR-document-parser/admin_ops/tests OCR-document-parser/tests/test_prometheus_exposition.py -q
