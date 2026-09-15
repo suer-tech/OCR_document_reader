@@ -1,0 +1,64 @@
+name: OCR Production Deploy
+run-name: OCR production deploy ${{ inputs.proposal_id }} ${{ inputs.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Exact merged commit SHA
+        required: true
+        type: string
+      proposal_id:
+        description: Administrator-approved proposal ID
+        required: true
+        type: string
+      pr_number:
+        description: Merged pull request number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ocr-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      PYTHONPATH: OCR-document-parser
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - name: Verify exact PR merge and current main
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPS_RELEASE_SHA: ${{ inputs.sha }}
+          OPS_PROPOSAL_ID: ${{ inputs.proposal_id }}
+          OPS_PR_NUMBER: ${{ inputs.pr_number }}
+        run: python3 -m admin_ops.verify_release
+      - name: Deploy exact revision to OCR VPS
+        env:
+          OPS_RELEASE_SHA: ${{ inputs.sha }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_USER: ${{ secrets.VPS_SSH_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST" && test -n "$VPS_SSH_USER" && test -n "$VPS_SSH_KEY" && test -n "$VPS_SSH_KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/ocr-ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$RUNNER_TEMP/ocr-ssh/id_ed25519"
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/ocr-ssh/known_hosts"
+          ssh -i "$RUNNER_TEMP/ocr-ssh/id_ed25519" \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ocr-ssh/known_hosts" \
+            -o StrictHostKeyChecking=yes \
+            "$VPS_SSH_USER@$VPS_HOST" bash -s -- "$OPS_RELEASE_SHA" < OCR-document-parser/admin_ops/deploy_vps.sh
