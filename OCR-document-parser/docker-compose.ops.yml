@@ -40,6 +40,8 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: '1'
     security_opt:
       - no-new-privileges:true
     read_only: true
