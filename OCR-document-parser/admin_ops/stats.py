@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from math import isfinite
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -102,7 +103,10 @@ async def prometheus_snapshot(url: str, *, include_history: bool = True) -> dict
                 response = await client.get(f"{url.rstrip('/')}/api/v1/query", params={"query": query})
                 response.raise_for_status()
                 values = response.json().get("data", {}).get("result", [])
-                result[key] = float(values[0]["value"][1]) if values else None
+                value = float(values[0]["value"][1]) if values else None
+                # Prometheus encodes NaN/Inf as strings. Preserve missing-data
+                # semantics and keep snapshots compatible with strict JSON.
+                result[key] = value if value is not None and isfinite(value) else None
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 result[key] = None
     return result
