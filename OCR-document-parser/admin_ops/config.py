@@ -13,8 +13,8 @@ class OpsSettings(BaseSettings):
     internal_token: str = ""
     database_url: str = ""
     prometheus_url: str = "http://prometheus:9090"
-    pulse_url: str = "http://pulse-ai:8080"
-    fixer_url: str = "http://fixer-ai:8080"
+    pulse_url: str = "http://awg-gateway:8080"
+    fixer_url: str = "http://awg-gateway:8081"
     enable_fixer: bool = True
     enable_release: bool = True
     timezone: str = "Asia/Yekaterinburg"

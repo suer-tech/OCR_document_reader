@@ -48,8 +48,9 @@ for attempt in {1..12}; do
      docker compose -f docker-compose.yml exec -T pulse-ai python -c \
        'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/openapi.json", timeout=3).read(128)' >/dev/null && \
      docker compose -f docker-compose.yml exec -T fixer-ai python -c \
-       'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/openapi.json", timeout=3).read(128)' >/dev/null; then
-    echo "OCR API, worker metrics and admin services are healthy at ${target_sha:0:8}"
+       'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8081/openapi.json", timeout=3).read(128)' >/dev/null && \
+     docker compose -f docker-compose.yml exec -T awg-gateway /usr/local/bin/awg-healthcheck >/dev/null; then
+    echo "OCR API, worker metrics, VPN gateway and admin services are healthy at ${target_sha:0:8}"
     exit 0
   fi
   sleep 5

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'codex/ops-*'
+      - 'codex/infra-*'
   pull_request:
     branches:
       - main
@@ -19,7 +20,7 @@ permissions:
 jobs:
   validate:
     name: validate
-    if: startsWith(github.head_ref, 'codex/ops-') || startsWith(github.ref, 'refs/heads/codex/ops-')
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/codex/ops-') || startsWith(github.ref, 'refs/heads/codex/infra-')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -35,7 +36,22 @@ jobs:
       - name: Install project and test dependencies
         run: python -m pip install -e 'OCR-document-parser[dev]' openai-codex==0.154.0
       - name: Enforce change policy and lint modified Python files
-        if: github.head_ref != 'codex/ops-bootstrap' && github.ref != 'refs/heads/codex/ops-bootstrap'
+        if: (startsWith(github.head_ref, 'codex/ops-') || startsWith(github.ref, 'refs/heads/codex/ops-')) && github.head_ref != 'codex/ops-bootstrap' && github.ref != 'refs/heads/codex/ops-bootstrap'
         run: python -m admin_ops.ci_gate
+      - name: Validate VPN Compose and gateway image
+        if: startsWith(github.head_ref, 'codex/infra-') || startsWith(github.ref, 'refs/heads/codex/infra-')
+        env:
+          OPS_TELEGRAM_TOKEN: ci-placeholder
+          OPS_ADMIN_IDS: '1'
+          OPS_INTERNAL_TOKEN: ci-placeholder-with-at-least-32-characters
+          OPS_DATABASE_URL: postgresql://ci:ci@postgres/ci
+          OPS_STATE_HOST_DIR: /var/lib/ocr-ops/state
+          OPS_PULSE_CODEX_HOME_HOST: /var/lib/ocr-ops/codex-pulse
+          OPS_FIXER_CODEX_HOME_HOST: /var/lib/ocr-ops/codex-fixer
+          OPS_AWG_CONFIG_HOST: /var/lib/ocr-ops/vpn/awg0.conf
+        run: |
+          bash -n OCR-document-parser/admin_ops/vpn/entrypoint.sh OCR-document-parser/admin_ops/vpn/healthcheck.sh OCR-document-parser/admin_ops/vpn/worker-start.sh
+          docker compose -f OCR-document-parser/docker-compose.yml config --quiet
+          docker compose -f OCR-document-parser/docker-compose.yml build awg-gateway
       - name: Run administrator and monitoring smoke tests
         run: python -m pytest OCR-document-parser/admin_ops/tests OCR-document-parser/tests/test_prometheus_exposition.py -q
