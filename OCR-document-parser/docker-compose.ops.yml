@@ -12,6 +12,7 @@ services:
       OPS_INTERNAL_TOKEN: ${OPS_INTERNAL_TOKEN:?Set a random 32+ character OPS_INTERNAL_TOKEN}
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:?Set read-only OPS_DATABASE_URL}
       OPS_PROMETHEUS_URL: http://prometheus:9090
+      OPS_LOKI_URL: http://loki:3100
       OPS_PULSE_URL: http://awg-gateway:8080
       OPS_FIXER_URL: http://awg-gateway:8081
       OPS_ENABLE_FIXER: ${OPS_ENABLE_FIXER:-true}

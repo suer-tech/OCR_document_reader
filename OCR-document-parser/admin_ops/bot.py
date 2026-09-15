@@ -22,6 +22,7 @@ from admin_ops.release import (
     reconciled_merge_sha,
 )
 from admin_ops.stats import load_daily_report, prometheus_snapshot
+from admin_ops.read_tools import ReadTools
 
 logger = logging.getLogger(__name__)
 
@@ -231,18 +232,59 @@ class AdminBot:
             response.raise_for_status()
 
     async def worker(self, url: str, payload: dict) -> dict:
+        if url == f"{self.settings.pulse_url}/pulse":
+            payload = {**payload, "interactive_tools": True}
         response = await self.client.post(
             url, json=payload, headers={"X-Ops-Token": self.settings.internal_token}, timeout=330.0
         )
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        if url == f"{self.settings.pulse_url}/pulse" and "job_id" in result:
+            return await self.read_dialog(result["job_id"])
+        return result
+
+    async def read_dialog(self, job_id: str) -> dict:
+        # No model-supplied URLs: only calls from this authenticated Pulse job.
+        if len(job_id) != 32 or any(c not in "0123456789abcdef" for c in job_id):
+            raise ValueError("Invalid Pulse job")
+        base = f"{self.settings.pulse_url}/pulse/jobs/{job_id}"
+        headers = {"X-Ops-Token": self.settings.internal_token}
+        tools = ReadTools(self.settings)
+        count = 0
+        try:
+            async with asyncio.timeout(320):
+                while True:
+                    response = await self.client.post(base + "/poll", headers=headers, timeout=10)
+                    response.raise_for_status()
+                    event = response.json()
+                    if event.get("status") == "done":
+                        return {"answer": event["answer"]}
+                    if event.get("status") == "error":
+                        raise RuntimeError("Pulse read session failed")
+                    if event.get("status") == "tool":
+                        count += 1
+                        result = (await tools.call(event["name"], event["arguments"]) if count <= 12 else
+                                  {"status": "unavailable", "reason": "tool_budget_exceeded"})
+                        response = await self.client.post(base + "/result", headers=headers,
+                                                          json={"call_id": event["call_id"], "result": result}, timeout=10)
+                        response.raise_for_status()
+        finally:
+            try:
+                await self.client.delete(base, headers=headers, timeout=3)
+            except httpx.HTTPError:
+                logger.warning("pulse_job_cleanup_failed")
 
     async def snapshot(self) -> dict:
         daily, metrics = await asyncio.gather(
             asyncio.to_thread(load_daily_report, self.settings.database_url, self.settings.timezone),
             prometheus_snapshot(self.settings.prometheus_url),
+            return_exceptions=True,
         )
-        return {"daily": daily, "metrics": metrics}
+        def available(value):
+            return ({"status": "unavailable", "reason": type(value).__name__}
+                    if isinstance(value, Exception) else value)
+        return {"daily": available(daily), "metrics": available(metrics),
+                "as_of": datetime.now(timezone.utc).isoformat(), "timezone": self.settings.timezone}
 
     async def start_deploy(self, proposal_id: str, proposal: dict, pr_url: str | None) -> None:
         proposal["deploy_requested_at"] = datetime.now(timezone.utc).isoformat()
