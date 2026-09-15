@@ -1,0 +1,41 @@
+name: OCR Ops CI
+
+on:
+  push:
+    branches:
+      - 'codex/ops-*'
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate
+    if: startsWith(github.head_ref, 'codex/ops-') || startsWith(github.ref, 'refs/heads/codex/ops-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: OCR-document-parser
+      OCR_DATABASE_URL: sqlite+pysqlite:///./ops_ci.sqlite3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and test dependencies
+        run: python -m pip install -e 'OCR-document-parser[dev]' openai-codex==0.154.0
+      - name: Enforce change policy and lint modified Python files
+        if: github.head_ref != 'codex/ops-bootstrap' && github.ref != 'refs/heads/codex/ops-bootstrap'
+        run: python -m admin_ops.ci_gate
+      - name: Run administrator and monitoring smoke tests
+        run: python -m pytest OCR-document-parser/admin_ops/tests OCR-document-parser/tests/test_prometheus_exposition.py -q

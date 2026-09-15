@@ -1,0 +1,53 @@
+services:
+  admin-bot:
+    build:
+      context: .
+      dockerfile: admin_ops/Dockerfile
+    restart: unless-stopped
+    command: python -m admin_ops.bot
+    environment:
+      OPS_TELEGRAM_TOKEN: ${OPS_TELEGRAM_TOKEN:?Set OPS_TELEGRAM_TOKEN}
+      OPS_ADMIN_IDS: ${OPS_ADMIN_IDS:?Set OPS_ADMIN_IDS}
+      OPS_INTERNAL_TOKEN: ${OPS_INTERNAL_TOKEN:?Set a random 32+ character OPS_INTERNAL_TOKEN}
+      OPS_DATABASE_URL: ${OPS_DATABASE_URL:?Set read-only OPS_DATABASE_URL}
+      OPS_PROMETHEUS_URL: http://prometheus:9090
+      OPS_PULSE_URL: http://pulse-ai:8080
+      OPS_FIXER_URL: http://fixer-ai:8080
+      OPS_ENABLE_FIXER: ${OPS_ENABLE_FIXER:-true}
+      OPS_ENABLE_RELEASE: ${OPS_ENABLE_RELEASE:-true}
+      OPS_TIMEZONE: ${OPS_TIMEZONE:-Asia/Yekaterinburg}
+      OPS_GITHUB_REPO: ${OPS_GITHUB_REPO:-suer-tech/OCR_document_reader}
+      OPS_GITHUB_TOKEN: ${OPS_GITHUB_TOKEN:-}
+      OPS_GITHUB_BASE_BRANCH: ${OPS_GITHUB_BASE_BRANCH:-main}
+      OPS_GITHUB_REQUIRED_CHECK: validate
+      OPS_GITHUB_DEPLOY_WORKFLOW: ocr-production-deploy.yml
+      OPS_STATE_PATH: /state/proposals.sqlite3
+    volumes:
+      - ${OPS_STATE_HOST_DIR:?Set absolute path to writable bot state directory}:/state
+    depends_on:
+      - postgres
+      - prometheus
+      - pulse-ai
+
+  pulse-ai:
+    build:
+      context: .
+      dockerfile: admin_ops/Dockerfile
+    restart: unless-stopped
+    command: uvicorn admin_ops.ai:app --host 0.0.0.0 --port 8080
+    environment:
+      OPS_ROLE: pulse
+      OPS_INTERNAL_TOKEN: ${OPS_INTERNAL_TOKEN:?Set OPS_INTERNAL_TOKEN}
+      OPS_CODEX_MODEL: ${OPS_CODEX_MODEL:-}
+      CODEX_HOME: /home/ops/.codex
+    volumes:
+      - ${OPS_PULSE_CODEX_HOME_HOST:?Set absolute path to Pulse Codex login directory}:/home/ops/.codex
+    expose:
+      - '8080'
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

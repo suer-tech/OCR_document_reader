@@ -1,5 +1,9 @@
 version: '3.8'
 
+include:
+  - docker-compose.ops.yml
+  - docker-compose.ops-fixer.yml
+
 services:
   api:
     build:
