@@ -174,6 +174,8 @@ async def metric_history(settings: OpsSettings, args: MetricHistory, now: dateti
               for item in series[:1] for ts, value in item.get("values", [])[:241]]
     observed = [p["value"] for p in points if p["value"] is not None]
     return {"status": "ok", "source": "Prometheus query_range", "metric": args.metric,
+            "unit": {"request_rate": "requests/second", "http_errors": "requests/second",
+                     "latency_p95": "seconds", "queue_ready": "messages", "api_up": "0/1", "worker_up": "0/1"}[args.metric],
             "start": start.isoformat(), "end": now.isoformat(), "step_seconds": step,
             "points": points, "sampled_min": min(observed) if observed else None,
             "sampled_max": max(observed) if observed else None,

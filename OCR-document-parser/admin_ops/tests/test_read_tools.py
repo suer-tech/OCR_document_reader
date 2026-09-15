@@ -94,6 +94,7 @@ def test_metric_history_reports_sample_coverage_and_not_nan(monkeypatch):
     monkeypatch.setattr(rt, "read_json", read_json)
     result = asyncio.run(rt.ReadTools(OpsSettings()).call("metric_history", {"metric": "latency_p95"}))
     assert result["finite_points"] == 2
+    assert result["unit"] == "seconds"
     assert result["sampled_max"] == 2
     assert result["points"][0]["value"] is None
     assert "SECRET" not in json.dumps(result, allow_nan=False)
