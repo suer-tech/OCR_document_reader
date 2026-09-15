@@ -26,7 +26,7 @@ def pr(*, draft: bool) -> dict:
     }
 
 
-def fake_http(monkeypatch, replies, calls):
+def fake_http(monkeypatch, replies, calls, client_headers=None):
     class FakeResponse:
         status_code = 200
         content = b"{}"
@@ -39,7 +39,7 @@ def fake_http(monkeypatch, replies, calls):
 
     class FakeClient:
         def __init__(self, **kwargs):
-            pass
+            self.headers = kwargs.get("headers") or {}
 
         async def __aenter__(self):
             return self
@@ -49,6 +49,8 @@ def fake_http(monkeypatch, replies, calls):
 
         async def request(self, method, url, **kwargs):
             calls.append((method, url, kwargs.get("json")))
+            if client_headers is not None:
+                client_headers[url] = self.headers
             return FakeResponse(next(replies))
 
     monkeypatch.setattr(release.httpx, "AsyncClient", FakeClient)
@@ -56,6 +58,7 @@ def fake_http(monkeypatch, replies, calls):
 
 def test_merge_requires_exact_head_successful_ci_and_clean_pr(monkeypatch) -> None:
     calls = []
+    client_headers = {}
     replies = iter(
         [
             pr(draft=True),
@@ -69,7 +72,7 @@ def test_merge_requires_exact_head_successful_ci_and_clean_pr(monkeypatch) -> No
             {"merged": True, "sha": MERGE_SHA},
         ]
     )
-    fake_http(monkeypatch, replies, calls)
+    fake_http(monkeypatch, replies, calls, client_headers)
     result = asyncio.run(
         release.merge_approved_pr(
             proposal_id="abcdef12", proposal=PROPOSAL, token="fake", repo="owner/repo",
@@ -77,6 +80,8 @@ def test_merge_requires_exact_head_successful_ci_and_clean_pr(monkeypatch) -> No
         )
     )
     assert result == MERGE_SHA
+    check_url = f"https://api.github.com/repos/owner/repo/commits/{HEAD_SHA}/check-runs"
+    assert "Authorization" not in client_headers[check_url]
     assert any("/graphql" in call[1] for call in calls)
     assert calls[-1][0] == "PUT"
     assert calls[-1][2]["sha"] == HEAD_SHA

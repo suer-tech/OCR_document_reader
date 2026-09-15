@@ -77,6 +77,21 @@ def validate_checks(check_runs: list[dict], required_check: str) -> None:
         raise ReleaseError(f"Required GitHub Actions check '{required_check}' has not passed")
 
 
+async def public_check_runs(base_url: str, head_sha: str, required_check: str) -> dict:
+    """Read CI without the PAT; GitHub exposes checks for public repositories."""
+    async with httpx.AsyncClient(
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=20.0,
+    ) as client:
+        return await request_json(
+            client, base_url, "GET", f"/commits/{head_sha}/check-runs",
+            params={"check_name": required_check, "filter": "latest", "per_page": 100},
+        )
+
+
 def validate_pr_files(files: list[dict], proposal: dict) -> None:
     expected = set(proposal.get("files", {}))
     if not isinstance(files, list) or not expected or len(files) != len(expected) or len(files) > 5:
@@ -109,10 +124,7 @@ async def merge_approved_pr(
             raise ReleaseError("Base branch changed since proposal; create a new proposal")
         files = await request_json(client, base_url, "GET", f"/pulls/{number}/files", params={"per_page": 100})
         validate_pr_files(files, proposal)
-        checks = await request_json(
-            client, base_url, "GET", f"/commits/{head_sha}/check-runs",
-            params={"check_name": required_check, "filter": "latest", "per_page": 100},
-        )
+        checks = await public_check_runs(base_url, head_sha, required_check)
         validate_checks(checks.get("check_runs", []), required_check)
 
         if pr.get("draft"):
