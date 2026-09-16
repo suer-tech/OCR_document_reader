@@ -26,6 +26,7 @@ async def main():
         source.write_text("DEFAULT_ADVANCE_DAYS = 10\nearly_report_deadline = None\n", encoding="utf-8")
         manifest = base / "inventory.json"
         manifest.write_text(json.dumps([relative]), encoding="utf-8")
+        (base / "codex").mkdir()
         async with AsyncCodex(CodexConfig(env={"CODEX_HOME": str(base / "codex")})) as codex:
             thread = await codex.thread_start(
                 cwd=str(root), ephemeral=True, sandbox=Sandbox.read_only,
