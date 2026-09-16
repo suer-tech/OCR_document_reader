@@ -17,7 +17,8 @@ async def main():
     # Reproduce the production boundary: the fix must work even with user namespaces forbidden.
     libc = ctypes.CDLL(None, use_errno=True)
     assert libc.unshare(0x10000000) == -1 and ctypes.get_errno() == errno.EPERM, "Expected namespace creation to be denied"
-    with tempfile.TemporaryDirectory(prefix="code-sdk-smoke-") as folder:
+    # The disposable CI container owns final cleanup if SDK background plugin writes race it.
+    with tempfile.TemporaryDirectory(prefix="code-sdk-smoke-", ignore_cleanup_errors=True) as folder:
         base = Path(folder)
         root = base / "repo"
         relative = "OCR-document-parser/src/example.py"
