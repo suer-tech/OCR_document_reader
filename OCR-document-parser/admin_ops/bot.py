@@ -133,7 +133,7 @@ class AdminBot:
     def __init__(self, settings: OpsSettings):
         self.settings = settings
         self.history: dict[int, deque[dict[str, str]]] = defaultdict(lambda: deque(maxlen=6))
-        self.dialog_queues: dict[int, deque[str]] = {}
+        self.dialog_queues: dict[int, deque[tuple[str, str]]] = {}
         self.dialog_tasks: dict[int, asyncio.Task] = {}
         self.alert_tracker = AlertTracker()
         # Telegram URLs contain the bot token. Never emit HTTP request/debug logs.
@@ -165,17 +165,19 @@ class AdminBot:
                 logger.debug("telegram_typing_unavailable")
             await asyncio.sleep(4)
 
-    async def enqueue_dialog(self, admin_id: int, question: str) -> None:
+    async def enqueue_dialog(self, admin_id: int, question: str, mode: str = "pulse") -> None:
         queue = self.dialog_queues.setdefault(admin_id, deque())
         if len(queue) >= 3:
             await self.send(admin_id, "Уже обрабатываю три вопроса. Дождитесь ответа и отправьте следующий ещё раз.")
             return
-        queue.append(question[:1500])
+        queue.append((question[:1500], mode))
         acknowledgement = (
             "Принял вопрос. Готовлю ответ."
             if len(queue) == 1 else
             f"Принял вопрос в очередь. Перед ним вопросов: {len(queue) - 1}."
         )
+        if mode == "analyze":
+            acknowledgement += " Анализ кода в режиме только чтения; правок и PR не будет."
         try:
             await self.send(admin_id, acknowledgement)
         except httpx.HTTPError:
@@ -187,23 +189,33 @@ class AdminBot:
         queue = self.dialog_queues[admin_id]
         try:
             while queue:
-                question = queue[0]
+                question, mode = queue[0]
                 typing_task = asyncio.create_task(self.show_typing(admin_id))
                 try:
-                    async with asyncio.timeout(360):
-                        answer = await self.worker(
-                            f"{self.settings.pulse_url}/pulse",
-                            {"question": question, "snapshot": await self.snapshot(),
-                             "history": list(self.history[admin_id])},
-                        )
-                        await self.send(admin_id, answer["answer"])
-                        self.history[admin_id].append({
-                            "question": question[:1000], "answer": answer["answer"][:1500],
-                        })
+                    async with asyncio.timeout(540 if mode == "analyze" else 360):
+                        if mode == "analyze":
+                            answer = await self.worker(f"{self.settings.fixer_url}/analyze", {"request": question})
+                            await self.send(admin_id,
+                                f"Анализ {answer['repository']} / {answer['branch']} @ {answer['base_sha'][:12]}\n"
+                                "Это версия GitHub, её совпадение с VPS не проверялось.\n\n" + answer["answer"])
+                        else:
+                            answer = await self.worker(
+                                f"{self.settings.pulse_url}/pulse",
+                                {"question": question, "snapshot": await self.snapshot(),
+                                 "history": list(self.history[admin_id])},
+                            )
+                            await self.send(admin_id, answer["answer"])
+                            self.history[admin_id].append({
+                                "question": question[:1000], "answer": answer["answer"][:1500],
+                            })
                 except Exception as exc:  # noqa: BLE001 - later questions must still run
-                    logger.error("pulse_dialog_failed: %s", type(exc).__name__)
+                    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                    logger.error("%s_dialog_failed: %s status=%s", mode, type(exc).__name__, status)
                     try:
-                        await self.send(admin_id, f"Не удалось получить ответ ({type(exc).__name__}). Повторите вопрос или используйте /health и /today.")
+                        if mode == "analyze":
+                            await self.send(admin_id, f"Анализ кода не выполнен ({type(exc).__name__}, HTTP {status or '—'}). Проверьте логи fixer-ai. Правки и PR не создавались.")
+                        else:
+                            await self.send(admin_id, f"Не удалось получить ответ ({type(exc).__name__}). Повторите вопрос или используйте /health и /today.")
                     except httpx.HTTPError:
                         logger.error("dialog_error_delivery_failed")
                 finally:
@@ -235,7 +247,8 @@ class AdminBot:
         if url == f"{self.settings.pulse_url}/pulse":
             payload = {**payload, "interactive_tools": True}
         response = await self.client.post(
-            url, json=payload, headers={"X-Ops-Token": self.settings.internal_token}, timeout=330.0
+            url, json=payload, headers={"X-Ops-Token": self.settings.internal_token},
+            timeout=510.0 if url == f"{self.settings.fixer_url}/analyze" else 330.0,
         )
         response.raise_for_status()
         result = response.json()
@@ -340,12 +353,23 @@ class AdminBot:
         command, _, argument = text.partition(" ")
         command = command.split("@", 1)[0].lower()
         if command in {"/start", "/help"}:
-            await self.send(admin_id, "Я Пульс. Пишите обычным текстом — /pulse не обязателен. Помню последние 6 ответов в текущем сеансе; после перезапуска история сбрасывается.\n\nПравки кода запускаются только командой /fix задача. Обычное сообщение ничего не меняет.\n\nКоманды: /today, /health, /pulse вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
+            await self.send(admin_id,
+                "Я Пульс. Пишите обычным текстом — /pulse не обязателен. Помню последние 6 ответов в текущем сеансе; после перезапуска история сбрасывается.\n\n"
+                "Анализ исходного кода без правок: /analyze вопрос. Например: /analyze Как вычисляется early_report_deadline? Читаю опубликованную ветку GitHub, не рабочие файлы VPS.\n\n"
+                "Правки кода запускаются только командой /fix задача. Обычное сообщение ничего не меняет.\n\n"
+                "Команды: /today, /health, /pulse вопрос, /analyze вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
         elif command == "/today":
             daily = await asyncio.to_thread(load_daily_report, self.settings.database_url, self.settings.timezone)
             await self.send(admin_id, format_daily(daily))
         elif command == "/health":
             await self.send(admin_id, format_health(await prometheus_snapshot(self.settings.prometheus_url)))
+        elif command == "/analyze":
+            if not self.settings.enable_fixer:
+                await self.send(admin_id, "Наладчик выключен; анализ кода недоступен.")
+            elif not argument.strip():
+                await self.send(admin_id, "Укажите вопрос: /analyze Как вычисляется early_report_deadline? Анализ без правок.")
+            else:
+                await self.enqueue_dialog(admin_id, argument.strip(), mode="analyze")
         elif command == "/fix":
             if not self.settings.enable_fixer:
                 await self.send(admin_id, "Наладчик выключен. Для включения нужен изолированный Codex worker и настройка OPS_ENABLE_FIXER=true.")
@@ -353,6 +377,9 @@ class AdminBot:
                 await self.send(admin_id, "Укажите задачу после /fix.")
             else:
                 proposal = await self.worker(f"{self.settings.fixer_url}/fix", {"request": argument.strip()[:1500]})
+                if proposal.get("status") == "no_changes":
+                    await self.send(admin_id, "Файлы не изменены, предложение и PR не созданы. Для вопросов по коду используйте /analyze.\n\n" + proposal["summary"])
+                    return
                 proposal_id = save_proposal(self.settings.state_path, proposal)
                 await self.send(
                     admin_id,
