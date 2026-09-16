@@ -50,6 +50,8 @@ def test_analysis_returns_read_only_answer_without_proposal(worker, monkeypatch)
     assert seen[0]["sandbox"] == "read_only"
     assert seen[0]["instructions"] == ai.ANALYZE_INSTRUCTIONS
     assert seen[0]["config"]["web_search"] == "disabled"
+    assert seen[0]["config"]["features.shell_tool"] is False
+    assert seen[0]["config"]["mcp_servers.ocr_code"]["enabled_tools"] == ["list_code_files", "search_code", "read_code_file"]
     assert not Path(seen[0]["cwd"]).exists()
 
 

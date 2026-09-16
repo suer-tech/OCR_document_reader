@@ -57,5 +57,6 @@ jobs:
           bash OCR-document-parser/admin_ops/vpn/smoke-test.sh ocr-awg-ci ocr-telegram-proxy-ci
           docker build -t ocr-admin-ci -f OCR-document-parser/admin_ops/Dockerfile OCR-document-parser
           docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,nosuid,nodev,size=128m ocr-admin-ci python -m admin_ops.sdk_read_smoke
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,nosuid,nodev,size=128m ocr-admin-ci python -m admin_ops.sdk_code_smoke
       - name: Run administrator and monitoring smoke tests
         run: python -m pytest OCR-document-parser/admin_ops/tests OCR-document-parser/tests/test_prometheus_exposition.py -q

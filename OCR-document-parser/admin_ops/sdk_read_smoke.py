@@ -14,7 +14,9 @@ from admin_ops.read_tools import TOOL_MODELS
 
 
 async def main():
-    with tempfile.TemporaryDirectory(prefix="pulse-sdk-smoke-") as folder:
+    # SDK background plugin checkout can outlive shutdown and race directory cleanup.
+    # This smoke runs only in disposable `docker run --rm`; failed assertions still propagate.
+    with tempfile.TemporaryDirectory(prefix="pulse-sdk-smoke-", ignore_cleanup_errors=True) as folder:
         async with AsyncCodex(CodexConfig(env={"CODEX_HOME": folder})) as codex:
             thread = await codex.thread_start(
                 cwd=folder, ephemeral=True, sandbox=Sandbox.read_only,
