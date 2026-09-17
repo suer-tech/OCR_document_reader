@@ -7,10 +7,12 @@ services:
     command: python -m admin_ops.bot
     environment:
       OPS_TELEGRAM_TOKEN: ${OPS_TELEGRAM_TOKEN:?Set OPS_TELEGRAM_TOKEN}
+      OPS_TELEGRAM_PROXY_URL: http://awg-gateway:8888
       OPS_ADMIN_IDS: ${OPS_ADMIN_IDS:?Set OPS_ADMIN_IDS}
       OPS_INTERNAL_TOKEN: ${OPS_INTERNAL_TOKEN:?Set a random 32+ character OPS_INTERNAL_TOKEN}
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:?Set read-only OPS_DATABASE_URL}
       OPS_PROMETHEUS_URL: http://prometheus:9090
+      OPS_LOKI_URL: http://loki:3100
       OPS_PULSE_URL: http://awg-gateway:8080
       OPS_FIXER_URL: http://awg-gateway:8081
       OPS_ENABLE_FIXER: ${OPS_ENABLE_FIXER:-true}
@@ -40,6 +42,8 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: '1'
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -54,6 +58,33 @@ services:
       timeout: 15s
       retries: 3
       start_period: 45s
+
+  telegram-proxy:
+    build:
+      context: .
+      dockerfile: admin_ops/vpn/telegram-proxy.Dockerfile
+    restart: unless-stopped
+    init: true
+    network_mode: service:awg-gateway
+    depends_on:
+      awg-gateway:
+        condition: service_healthy
+        restart: true
+    volumes:
+      - ./admin_ops/vpn/worker-resolv.conf:/etc/resolv.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ['CMD', '/usr/local/bin/telegram-proxy-healthcheck']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   pulse-ai:
     build:

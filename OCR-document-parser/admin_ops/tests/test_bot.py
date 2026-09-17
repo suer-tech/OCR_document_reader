@@ -32,7 +32,7 @@ def test_bot_ignores_non_admin_and_group_messages() -> None:
         await bot.handle({"message": {"from": {"id": 321}, "chat": {"id": 321, "type": "private"}, "text": "/help"}})
         await bot.handle({"message": {"from": {"id": 123}, "chat": {"id": -1, "type": "group"}, "text": "/help"}})
         await bot.handle({"message": {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "text": "/help"}})
-        await bot.client.aclose()
+        await bot.aclose()
 
     asyncio.run(run())
     assert len(sent) == 1
@@ -75,7 +75,7 @@ def test_second_confirmation_merges_once_then_dispatches(monkeypatch, tmp_path) 
         }
         await bot.handle(update)
         await bot.handle(update)
-        await bot.client.aclose()
+        await bot.aclose()
 
     asyncio.run(run())
     stored = bot_module.get_proposal(state, proposal_id)
@@ -120,7 +120,7 @@ def test_dispatch_failure_keeps_merge_without_blind_retry(monkeypatch, tmp_path)
         assert bot_module.get_proposal(state, proposal_id)[1] == "dispatching"
         await bot.handle({"message": {**prefix, "text": f"/deploy {proposal_id}"}})
         assert len(dispatch_attempts) == 1
-        await bot.client.aclose()
+        await bot.aclose()
 
     asyncio.run(run())
     assert len(dispatch_attempts) == 1

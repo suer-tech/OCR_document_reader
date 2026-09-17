@@ -22,6 +22,7 @@ from admin_ops.release import (
     reconciled_merge_sha,
 )
 from admin_ops.stats import load_daily_report, prometheus_snapshot
+from admin_ops.read_tools import ReadTools
 
 logger = logging.getLogger(__name__)
 
@@ -132,31 +133,171 @@ class AdminBot:
     def __init__(self, settings: OpsSettings):
         self.settings = settings
         self.history: dict[int, deque[dict[str, str]]] = defaultdict(lambda: deque(maxlen=6))
+        self.dialog_queues: dict[int, deque[tuple[str, str]]] = {}
+        self.dialog_tasks: dict[int, asyncio.Task] = {}
         self.alert_tracker = AlertTracker()
-        self.client = httpx.AsyncClient(timeout=35.0)
+        # Telegram URLs contain the bot token. Never emit HTTP request/debug logs.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        self.client = httpx.AsyncClient(timeout=35.0, trust_env=False)
+        self.telegram_client = httpx.AsyncClient(
+            timeout=35.0, proxy=settings.telegram_proxy_url, trust_env=False,
+        )
+
+    async def aclose(self) -> None:
+        tasks = list(self.dialog_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await self.telegram_client.aclose()
+        await self.client.aclose()
+
+    async def show_typing(self, admin_id: int) -> None:
+        while True:
+            try:
+                response = await self.telegram_client.post(
+                    f"https://api.telegram.org/bot{self.settings.telegram_token}/sendChatAction",
+                    json={"chat_id": admin_id, "action": "typing"}, timeout=5.0,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                # A cosmetic indicator must never interrupt a useful response.
+                logger.debug("telegram_typing_unavailable")
+            await asyncio.sleep(4)
+
+    async def enqueue_dialog(self, admin_id: int, question: str, mode: str = "pulse") -> None:
+        queue = self.dialog_queues.setdefault(admin_id, deque())
+        if len(queue) >= 3:
+            await self.send(admin_id, "Уже обрабатываю три вопроса. Дождитесь ответа и отправьте следующий ещё раз.")
+            return
+        queue.append((question[:1500], mode))
+        acknowledgement = (
+            "Принял вопрос. Готовлю ответ."
+            if len(queue) == 1 else
+            f"Принял вопрос в очередь. Перед ним вопросов: {len(queue) - 1}."
+        )
+        if mode == "analyze":
+            acknowledgement += " Анализ кода в режиме только чтения; правок и PR не будет."
+        try:
+            await self.send(admin_id, acknowledgement)
+        except httpx.HTTPError:
+            logger.warning("dialog_ack_delivery_failed")
+        if self.dialog_queues.get(admin_id) is queue and queue and admin_id not in self.dialog_tasks:
+            self.dialog_tasks[admin_id] = asyncio.create_task(self.process_dialog(admin_id))
+
+    async def process_dialog(self, admin_id: int) -> None:
+        queue = self.dialog_queues[admin_id]
+        try:
+            while queue:
+                question, mode = queue[0]
+                typing_task = asyncio.create_task(self.show_typing(admin_id))
+                try:
+                    async with asyncio.timeout(540 if mode == "analyze" else 360):
+                        if mode == "analyze":
+                            answer = await self.worker(f"{self.settings.fixer_url}/analyze", {"request": question})
+                            await self.send(admin_id,
+                                f"Анализ {answer['repository']} / {answer['branch']} @ {answer['base_sha'][:12]}\n"
+                                "Это версия GitHub, её совпадение с VPS не проверялось.\n\n" + answer["answer"])
+                        else:
+                            answer = await self.worker(
+                                f"{self.settings.pulse_url}/pulse",
+                                {"question": question, "snapshot": await self.snapshot(),
+                                 "history": list(self.history[admin_id])},
+                            )
+                            await self.send(admin_id, answer["answer"])
+                            self.history[admin_id].append({
+                                "question": question[:1000], "answer": answer["answer"][:1500],
+                            })
+                except Exception as exc:  # noqa: BLE001 - later questions must still run
+                    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                    logger.error("%s_dialog_failed: %s status=%s", mode, type(exc).__name__, status)
+                    try:
+                        if mode == "analyze":
+                            await self.send(admin_id, f"Анализ кода не выполнен ({type(exc).__name__}, HTTP {status or '—'}). Проверьте логи fixer-ai. Правки и PR не создавались.")
+                        else:
+                            await self.send(admin_id, f"Не удалось получить ответ ({type(exc).__name__}). Повторите вопрос или используйте /health и /today.")
+                    except httpx.HTTPError:
+                        logger.error("dialog_error_delivery_failed")
+                finally:
+                    typing_task.cancel()
+                    await asyncio.gather(typing_task, return_exceptions=True)
+                    queue.popleft()
+        finally:
+            self.dialog_queues.pop(admin_id, None)
+            self.dialog_tasks.pop(admin_id, None)
+
+    async def poll_updates(self, offset: int) -> list[dict]:
+        response = await self.telegram_client.get(
+            f"https://api.telegram.org/bot{self.settings.telegram_token}/getUpdates",
+            params={"offset": offset, "timeout": 25, "allowed_updates": json.dumps(["message"])},
+        )
+        response.raise_for_status()
+        return response.json().get("result", [])
 
     async def send(self, chat_id: int, text: str) -> None:
         # Each Telegram message has a 4096-character limit; keep a margin.
         for index in range(0, len(text), 3500):
-            response = await self.client.post(
+            response = await self.telegram_client.post(
                 f"https://api.telegram.org/bot{self.settings.telegram_token}/sendMessage",
                 json={"chat_id": chat_id, "text": text[index:index + 3500], "disable_web_page_preview": True},
             )
             response.raise_for_status()
 
     async def worker(self, url: str, payload: dict) -> dict:
+        if url == f"{self.settings.pulse_url}/pulse":
+            payload = {**payload, "interactive_tools": True}
         response = await self.client.post(
-            url, json=payload, headers={"X-Ops-Token": self.settings.internal_token}, timeout=330.0
+            url, json=payload, headers={"X-Ops-Token": self.settings.internal_token},
+            timeout=510.0 if url == f"{self.settings.fixer_url}/analyze" else 330.0,
         )
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        if url == f"{self.settings.pulse_url}/pulse" and "job_id" in result:
+            return await self.read_dialog(result["job_id"])
+        return result
+
+    async def read_dialog(self, job_id: str) -> dict:
+        # No model-supplied URLs: only calls from this authenticated Pulse job.
+        if len(job_id) != 32 or any(c not in "0123456789abcdef" for c in job_id):
+            raise ValueError("Invalid Pulse job")
+        base = f"{self.settings.pulse_url}/pulse/jobs/{job_id}"
+        headers = {"X-Ops-Token": self.settings.internal_token}
+        tools = ReadTools(self.settings)
+        count = 0
+        try:
+            async with asyncio.timeout(320):
+                while True:
+                    response = await self.client.post(base + "/poll", headers=headers, timeout=10)
+                    response.raise_for_status()
+                    event = response.json()
+                    if event.get("status") == "done":
+                        return {"answer": event["answer"]}
+                    if event.get("status") == "error":
+                        raise RuntimeError("Pulse read session failed")
+                    if event.get("status") == "tool":
+                        count += 1
+                        result = (await tools.call(event["name"], event["arguments"]) if count <= 12 else
+                                  {"status": "unavailable", "reason": "tool_budget_exceeded"})
+                        response = await self.client.post(base + "/result", headers=headers,
+                                                          json={"call_id": event["call_id"], "result": result}, timeout=10)
+                        response.raise_for_status()
+        finally:
+            try:
+                await self.client.delete(base, headers=headers, timeout=3)
+            except httpx.HTTPError:
+                logger.warning("pulse_job_cleanup_failed")
 
     async def snapshot(self) -> dict:
         daily, metrics = await asyncio.gather(
             asyncio.to_thread(load_daily_report, self.settings.database_url, self.settings.timezone),
             prometheus_snapshot(self.settings.prometheus_url),
+            return_exceptions=True,
         )
-        return {"daily": daily, "metrics": metrics}
+        def available(value):
+            return ({"status": "unavailable", "reason": type(value).__name__}
+                    if isinstance(value, Exception) else value)
+        return {"daily": available(daily), "metrics": available(metrics),
+                "as_of": datetime.now(timezone.utc).isoformat(), "timezone": self.settings.timezone}
 
     async def start_deploy(self, proposal_id: str, proposal: dict, pr_url: str | None) -> None:
         proposal["deploy_requested_at"] = datetime.now(timezone.utc).isoformat()
@@ -212,12 +353,23 @@ class AdminBot:
         command, _, argument = text.partition(" ")
         command = command.split("@", 1)[0].lower()
         if command in {"/start", "/help"}:
-            await self.send(admin_id, "Команды: /today, /health, /pulse вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
+            await self.send(admin_id,
+                "Я Пульс. Пишите обычным текстом — /pulse не обязателен. Помню последние 6 ответов в текущем сеансе; после перезапуска история сбрасывается.\n\n"
+                "Анализ исходного кода без правок: /analyze вопрос. Например: /analyze Как вычисляется early_report_deadline? Читаю опубликованную ветку GitHub, не рабочие файлы VPS.\n\n"
+                "Правки кода запускаются только командой /fix задача. Обычное сообщение ничего не меняет.\n\n"
+                "Команды: /today, /health, /pulse вопрос, /analyze вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
         elif command == "/today":
             daily = await asyncio.to_thread(load_daily_report, self.settings.database_url, self.settings.timezone)
             await self.send(admin_id, format_daily(daily))
         elif command == "/health":
             await self.send(admin_id, format_health(await prometheus_snapshot(self.settings.prometheus_url)))
+        elif command == "/analyze":
+            if not self.settings.enable_fixer:
+                await self.send(admin_id, "Наладчик выключен; анализ кода недоступен.")
+            elif not argument.strip():
+                await self.send(admin_id, "Укажите вопрос: /analyze Как вычисляется early_report_deadline? Анализ без правок.")
+            else:
+                await self.enqueue_dialog(admin_id, argument.strip(), mode="analyze")
         elif command == "/fix":
             if not self.settings.enable_fixer:
                 await self.send(admin_id, "Наладчик выключен. Для включения нужен изолированный Codex worker и настройка OPS_ENABLE_FIXER=true.")
@@ -225,6 +377,9 @@ class AdminBot:
                 await self.send(admin_id, "Укажите задачу после /fix.")
             else:
                 proposal = await self.worker(f"{self.settings.fixer_url}/fix", {"request": argument.strip()[:1500]})
+                if proposal.get("status") == "no_changes":
+                    await self.send(admin_id, "Файлы не изменены, предложение и PR не созданы. Для вопросов по коду используйте /analyze.\n\n" + proposal["summary"])
+                    return
                 proposal_id = save_proposal(self.settings.state_path, proposal)
                 await self.send(
                     admin_id,
@@ -362,16 +517,17 @@ class AdminBot:
             else:
                 await self.send(admin_id, f"{proposal_id}: {found[1]}. PR: {found[2] or 'нет'}")
         else:
+            if command.startswith("/") and command != "/pulse":
+                await self.send(admin_id, "Неизвестная команда. Для диалога пишите обычным текстом; для правок — /fix задача. Список команд: /help.")
+                return
             question = argument.strip() if command == "/pulse" else text
             if not question:
                 await self.send(admin_id, "Укажите вопрос после /pulse.")
                 return
-            answer = await self.worker(
-                f"{self.settings.pulse_url}/pulse",
-                {"question": question[:1500], "snapshot": await self.snapshot(), "history": list(self.history[admin_id])},
-            )
-            self.history[admin_id].append({"question": question[:1000], "answer": answer["answer"][:1500]})
-            await self.send(admin_id, answer["answer"])
+            if question.casefold().strip(" !.,?") in {"привет", "здравствуй", "здравствуйте", "добрый день", "доброе утро", "добрый вечер", "hello", "hi"}:
+                await self.send(admin_id, "Привет! Я Пульс. Спрашивайте о работе системы обычным текстом. Правки кода — только по команде /fix задача.")
+                return
+            await self.enqueue_dialog(admin_id, question)
 
     async def run(self) -> None:
         init_state(self.settings.state_path)
@@ -381,13 +537,7 @@ class AdminBot:
         try:
             while True:
                 try:
-                    response = await self.client.get(
-                        f"https://api.telegram.org/bot{self.settings.telegram_token}/getUpdates",
-                        params={"offset": offset, "timeout": 25, "allowed_updates": json.dumps(["message"])},
-                        timeout=35.0,
-                    )
-                    response.raise_for_status()
-                    updates = response.json().get("result", [])
+                    updates = await self.poll_updates(offset)
                     for update in updates:
                         offset = update["update_id"] + 1
                         set_offset(self.settings.state_path, offset)
@@ -408,7 +558,8 @@ class AdminBot:
         finally:
             alert_task.cancel()
             deployment_task.cancel()
-            await self.client.aclose()
+            await asyncio.gather(alert_task, deployment_task, return_exceptions=True)
+            await self.aclose()
 
     async def monitor_alerts(self) -> None:
         while True:
