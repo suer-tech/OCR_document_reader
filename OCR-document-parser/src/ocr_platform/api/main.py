@@ -23,6 +23,7 @@ from ocr_platform.observability.metrics import (
 from ocr_platform.orchestration.mlflow_backfill import backfill_pipeline_runs_to_mlflow
 from ocr_platform.queueing.rabbitmq import IngestJob, publish_ingest_job
 from ocr_platform.storage import file_storage, models, repository
+from ocr_platform.services.validation_service import court_field_issues, review_requirement
 
 logger = get_logger(__name__)
 
@@ -541,6 +542,7 @@ def create_app() -> FastAPI:
         structured_version_id = str(structured.id) if structured else None
 
         fields = {}
+        data_dict = {}
         if structured and structured.data:
             data_dict = structured.data
             if isinstance(data_dict, str):
@@ -560,21 +562,18 @@ def create_app() -> FastAPI:
                             confidence=value.get("confidence"),
                             source=value.get("source"),
                         )
-                else:
-                    fields[name] = schemas.FieldValue(name=name, value=value)
+                    else:
+                        fields[name] = schemas.FieldValue(name=name, value=value)
 
         technical = quality.technical_score if quality else None
         semantic = quality.semantic_score if quality else None
         overall = quality.overall_score if quality else None
 
-        human_review_required = True
-        human_review_reason = "low_quality_or_missing_fields"
-        if overall is not None and overall >= 0.75:
-            human_review_required = False
-            human_review_reason = None
-
         validation_status = "ok" if fields else "errors"
-        validation_issues: list[schemas.ValidationIssue] = []
+        validation_issues = court_field_issues(data_dict) if isinstance(data_dict, dict) else []
+        if validation_issues:
+            validation_status = "errors"
+        human_review_required, human_review_reason = review_requirement(overall, validation_issues)
 
         return schemas.DocumentResultResponse(
             document_id=document_id,

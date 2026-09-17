@@ -164,6 +164,13 @@ class DocumentResultResponse(BaseModel):
 * `procedure_end_date` — Дата окончания процедуры
 * `procedure_end_date_is_calculated` — Является ли дата окончания вычисленной (true/false)
 * `early_report_deadline` — Заблаговременное предоставление отчета ФУ
+* `early_report_required` — Обязанность управляющего заранее предоставить отчёт (JSON boolean: true/false)
+* `application_acceptance_date` — Дата принятия заявления о банкротстве (ДД.ММ.ГГГГ или null)
+* `next_session_date` — Дата следующего заседания (ДД.ММ.ГГГГ или null)
+* `next_session_time` — Время того же заседания (ЧЧ:ММ или null)
+* `court_hearing_address` — Адрес проведения того же заседания или null
+* `procedure_duration_months` — Явно указанная продолжительность процедуры (integer или null)
+* `procedure_end_date_source` — explicit_date, explicit_duration, not_found; при неоднозначности null
 * `financial_manager_full_name` — ФИО финансового управляющего
 * `motivating_part` — Мотивирующая часть судебного решения
 * `resolutive_part` — Резолютивная часть судебного решения

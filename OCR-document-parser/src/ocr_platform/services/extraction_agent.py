@@ -15,6 +15,10 @@ from pydantic_ai import Agent, RunContext
 from pydantic import BaseModel
 
 from ocr_platform.observability.logging import get_logger
+from ocr_platform.services.court_decision_additional import (
+    ADDITIONAL_FIELDS, JOINT_INSTRUCTION, CourtAdditionalResult,
+    additional_fields_result, additional_fields_failure,
+)
 from langfuse import observe as _observe
 from langfuse._client.get_client import get_client as _get_lf_client
 
@@ -135,6 +139,15 @@ class GenericFieldResult(BaseModel):
     value: Any = Field(description="Извлеченное значение поля, либо null")
     confidence: float
     reasoning: str | None
+
+
+class EarlyReportRequiredResult(BaseModel):
+    value: bool = Field(
+        strict=True,
+        description="True, если суд обязал управляющего заранее представить отчёт; иначе False",
+    )
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str
 
 
 class CourtDecisionResult(BaseModel):
@@ -1002,6 +1015,24 @@ agent_generic = Agent(
     model,
     deps_type=str,
     result_type=GenericFieldResult,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
+agent_early_report_required = Agent(
+    model,
+    deps_type=str,
+    result_type=EarlyReportRequiredResult,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
+agent_court_additional = Agent(
+    model,
+    deps_type=str,
+    result_type=CourtAdditionalResult,
     retries=3,
     system_prompt=SYSTEM_PROMPT,
     model_settings=default_settings,
@@ -1919,6 +1950,28 @@ async def _run_agent_extraction_impl(
                             fallback_fields["_raw_text"] = corrected_text
                             return fallback_fields
 
+    if profile_id == "court_decision_ru" and any(f in fields_config for f in ADDITIONAL_FIELDS):
+        instructions = [JOINT_INSTRUCTION]
+        for name in ADDITIONAL_FIELDS:
+            if name in fields_config:
+                instructions.append(
+                    f"--- FIELD: {name} ---\n" + get_field_instruction(
+                        profile_id, name, default=fields_config[name].get("prompt_instruction", ""),
+                    )
+                )
+        prompt = "\n\n".join(instructions) + f"\n\nDocument Text:\n{text}"
+        additional = additional_fields_failure()
+        for attempt in range(3):
+            try:
+                response = await agent_court_additional.run(
+                    prompt, deps=text, model_settings=_active_model_settings(),
+                )
+                additional = additional_fields_result(response.data, text)
+                break
+            except Exception as exc:
+                logger.warning("court_additional_extraction_failed", attempt=attempt + 1, error=str(exc))
+        results.update({name: value for name, value in additional.items() if name in fields_config})
+
     for field_name in ordered_fields:
         if field_name in results:
             logger.info(
@@ -2712,6 +2765,8 @@ async def _run_agent_extraction_impl(
                         if extraction_method == "llm_with_tools"
                         else agent_generic
                     )
+                    if profile_id == "court_decision_ru" and field_name == "early_report_required":
+                        agent = agent_early_report_required
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         try:
@@ -2739,7 +2794,11 @@ async def _run_agent_extraction_impl(
                     "value": val,
                     "confidence": confidence,
                     "reasoning": reasoning,
-                    "source": extraction_method,
+                    "source": (
+                        "court_decision"
+                        if profile_id == "court_decision_ru" and field_name == "early_report_required"
+                        else extraction_method
+                    ),
                 }
 
             except Exception as e:

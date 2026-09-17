@@ -1,0 +1,192 @@
+{
+  "$defs": {
+    "CourtField_Annotated_int__Strict_strict_True___": {
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        },
+        "reasoning": {
+          "title": "Reasoning",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "ambiguous": {
+          "description": "Есть неразрешимое противоречие или неоднозначность",
+          "title": "Ambiguous",
+          "type": "boolean"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Дословный фрагмент документа, подтверждающий значение",
+          "title": "Evidence"
+        }
+      },
+      "required": [
+        "value",
+        "reasoning",
+        "confidence",
+        "ambiguous",
+        "evidence"
+      ],
+      "title": "CourtField[Annotated[int, Strict(strict=True)]]",
+      "type": "object"
+    },
+    "CourtField_Literal__explicit_date____explicit_duration____not_found___": {
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "enum": [
+                "explicit_date",
+                "explicit_duration",
+                "not_found"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        },
+        "reasoning": {
+          "title": "Reasoning",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "ambiguous": {
+          "description": "Есть неразрешимое противоречие или неоднозначность",
+          "title": "Ambiguous",
+          "type": "boolean"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Дословный фрагмент документа, подтверждающий значение",
+          "title": "Evidence"
+        }
+      },
+      "required": [
+        "value",
+        "reasoning",
+        "confidence",
+        "ambiguous",
+        "evidence"
+      ],
+      "title": "CourtField[Literal['explicit_date', 'explicit_duration', 'not_found']]",
+      "type": "object"
+    },
+    "CourtField_str_": {
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        },
+        "reasoning": {
+          "title": "Reasoning",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "ambiguous": {
+          "description": "Есть неразрешимое противоречие или неоднозначность",
+          "title": "Ambiguous",
+          "type": "boolean"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Дословный фрагмент документа, подтверждающий значение",
+          "title": "Evidence"
+        }
+      },
+      "required": [
+        "value",
+        "reasoning",
+        "confidence",
+        "ambiguous",
+        "evidence"
+      ],
+      "title": "CourtField[str]",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "application_acceptance_date": {
+      "$ref": "#/$defs/CourtField_str_"
+    },
+    "next_session_date": {
+      "$ref": "#/$defs/CourtField_str_"
+    },
+    "next_session_time": {
+      "$ref": "#/$defs/CourtField_str_"
+    },
+    "court_hearing_address": {
+      "$ref": "#/$defs/CourtField_str_"
+    },
+    "procedure_duration_months": {
+      "$ref": "#/$defs/CourtField_Annotated_int__Strict_strict_True___"
+    },
+    "procedure_end_date_source": {
+      "$ref": "#/$defs/CourtField_Literal__explicit_date____explicit_duration____not_found___"
+    }
+  },
+  "required": [
+    "application_acceptance_date",
+    "next_session_date",
+    "next_session_time",
+    "court_hearing_address",
+    "procedure_duration_months",
+    "procedure_end_date_source"
+  ],
+  "title": "CourtAdditionalResult",
+  "type": "object"
+}

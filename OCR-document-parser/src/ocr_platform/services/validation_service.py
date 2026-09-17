@@ -3,6 +3,24 @@ from __future__ import annotations
 from typing import Dict, List, Tuple, Any
 
 from ocr_platform.api.schemas import ValidationIssue
+from ocr_platform.services.court_decision_additional import ADDITIONAL_FIELDS, COURT_ISSUE_CODE
+
+
+def court_field_issues(fields: dict) -> list[ValidationIssue]:
+    return [
+        ValidationIssue(code=COURT_ISSUE_CODE, message=str(info["validation_issue"]),
+                        field_name=name, severity="error")
+        for name, info in fields.items()
+        if name in ADDITIONAL_FIELDS and isinstance(info, dict) and info.get("validation_issue")
+    ]
+
+
+def review_requirement(overall: float | None, issues: list[ValidationIssue]) -> tuple[bool, str | None]:
+    if any(issue.code == COURT_ISSUE_CODE for issue in issues):
+        return True, "court_field_requires_review"
+    if overall is not None and overall >= 0.75:
+        return False, None
+    return True, "low_quality_or_missing_fields"
 
 
 def validate_fields(
@@ -38,7 +56,7 @@ def validate_fields(
             "decision_date",
         ]
 
-    issues: List[ValidationIssue] = []
+    issues: List[ValidationIssue] = court_field_issues(fields)
 
     for name in required_fields:
         if name not in fields or fields[name].get("value") in (None, "", []):

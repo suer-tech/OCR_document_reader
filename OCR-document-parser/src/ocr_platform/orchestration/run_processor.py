@@ -604,11 +604,9 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
         )
 
         if webhook_url:
-            human_review_required = True
-            human_review_reason = "low_quality_or_missing_fields"
-            if overall is not None and overall >= 0.75:
-                human_review_required = False
-                human_review_reason = None
+            human_review_required, human_review_reason = validation_service.review_requirement(
+                overall, validation_issues,
+            )
 
             webhook_payload = {
                 "event": "pipeline_completed",
