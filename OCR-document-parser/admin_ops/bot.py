@@ -11,7 +11,7 @@ from pathlib import Path
 
 import httpx
 
-from admin_ops.alerts import AlertTracker
+from admin_ops.alerts import AlertTracker, HrAlertTracker
 from admin_ops.config import OpsSettings, get_ops_settings
 from admin_ops.github import PublicationError, create_draft_pr
 from admin_ops.release import (
@@ -23,6 +23,7 @@ from admin_ops.release import (
 )
 from admin_ops.stats import load_daily_report, prometheus_snapshot
 from admin_ops.read_tools import ReadTools
+from admin_ops.hr_tools import configured as hr_configured, fetch_hr_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ class AdminBot:
         self.dialog_queues: dict[int, deque[tuple[str, str]]] = {}
         self.dialog_tasks: dict[int, asyncio.Task] = {}
         self.alert_tracker = AlertTracker()
+        self.hr_alert_tracker = HrAlertTracker()
         # Telegram URLs contain the bot token. Never emit HTTP request/debug logs.
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -354,15 +356,39 @@ class AdminBot:
         command = command.split("@", 1)[0].lower()
         if command in {"/start", "/help"}:
             await self.send(admin_id,
-                "Я Пульс. Пишите обычным текстом — /pulse не обязателен. Помню последние 6 ответов в текущем сеансе; после перезапуска история сбрасывается.\n\n"
+                "Я Пульс. Вижу два раздельных production-контура: OCR (документы) и HR (кандидаты). Пишите обычным текстом — /pulse не обязателен. Помню последние 6 ответов в текущем сеансе; после перезапуска история сбрасывается.\n\n"
                 "Анализ исходного кода без правок: /analyze вопрос. Например: /analyze Как вычисляется early_report_deadline? Читаю опубликованную ветку GitHub, не рабочие файлы VPS.\n\n"
                 "Правки кода запускаются только командой /fix задача. Обычное сообщение ничего не меняет.\n\n"
-                "Команды: /today, /health, /pulse вопрос, /analyze вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
+                "Быстрые команды: /today и /health — OCR; /hrtoday и /hrhealth — HR. Вопрос сразу по двум системам можно написать обычным текстом.\n\n"
+                "Команды: /today, /health, /hrtoday, /hrhealth, /pulse вопрос, /analyze вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
         elif command == "/today":
             daily = await asyncio.to_thread(load_daily_report, self.settings.database_url, self.settings.timezone)
             await self.send(admin_id, format_daily(daily))
         elif command == "/health":
-            await self.send(admin_id, format_health(await prometheus_snapshot(self.settings.prometheus_url)))
+            await self.send(admin_id, "OCR:\n" + format_health(await prometheus_snapshot(self.settings.prometheus_url)))
+        elif command in {"/hrtoday", "/hrhealth"}:
+            tool = "hr_days" if command == "/hrtoday" else "hr_overview"
+            result = await ReadTools(self.settings).call(tool, {"days": 1, "same_time": True} if tool == "hr_days" else {})
+            if result.get("status") != "ok":
+                await self.send(admin_id, f"HR monitoring недоступен ({result.get('reason', 'unknown')}).")
+            elif tool == "hr_days":
+                day = result["days"][0]
+                await self.send(admin_id,
+                    f"HR за {day['date']} до {day['cutoff_local']} ({result['timezone']}):\n"
+                    f"Уникальных кандидатов: {day['unique_candidates']}; terminal runs: {day['terminal_runs']}; "
+                    f"успешных: {day['successful_runs']}; ошибок: {day['failures']}; ретраев: {day['retries']}; "
+                    f"среднее время: {day['avg_seconds'] if day['avg_seconds'] is not None else 'нет данных'} с.")
+            else:
+                health = result.get("health", {})
+                today = result.get("today", {})
+                await self.send(admin_id,
+                    "HR:\n"
+                    f"Web up: {health.get('web_up', 'нет данных')}; processing ready: {health.get('processing_ready', 'нет данных')}; "
+                    f"requests: {health.get('request_rate', 'нет данных')} req/s; active connections: {health.get('active_connections', 'нет данных')}\n"
+                    f"Queue ready: {health.get('queue_ready', 'нет данных')}; consumers: {health.get('consumer_count', 'нет данных')}\n"
+                    f"CPU: {health.get('host_cpu_percent', 'нет данных')}%; RAM: {health.get('host_memory_percent', 'нет данных')}%; "
+                    f"диск свободен: {health.get('disk_free_percent', 'нет данных')}%\n"
+                    f"Сегодня кандидатов: {today.get('unique_candidates', 'нет данных')}; active alerts: {len(result.get('active_alerts', []))}.")
         elif command == "/analyze":
             if not self.settings.enable_fixer:
                 await self.send(admin_id, "Наладчик выключен; анализ кода недоступен.")
@@ -525,7 +551,7 @@ class AdminBot:
                 await self.send(admin_id, "Укажите вопрос после /pulse.")
                 return
             if question.casefold().strip(" !.,?") in {"привет", "здравствуй", "здравствуйте", "добрый день", "доброе утро", "добрый вечер", "hello", "hi"}:
-                await self.send(admin_id, "Привет! Я Пульс. Спрашивайте о работе системы обычным текстом. Правки кода — только по команде /fix задача.")
+                await self.send(admin_id, "Привет! Я Пульс. Спрашивайте о работе OCR, HR или сразу обеих систем обычным текстом. Правки кода — только по команде /fix задача.")
                 return
             await self.enqueue_dialog(admin_id, question)
 
@@ -571,6 +597,25 @@ class AdminBot:
                         await self.send(admin_id, f"⚠️ OCR: {name}. Проверьте /health и Grafana.")
             except Exception:  # noqa: BLE001 - alerts must survive transient failures
                 logger.error("critical_alert_delivery_failed")
+            if not hr_configured(self.settings):
+                continue
+            try:
+                result = await fetch_hr_alerts(self.settings)
+                events = (self.hr_alert_tracker.success(result["alerts"])
+                          if result.get("status") == "ok" else self.hr_alert_tracker.failure())
+                for state, name, severity in events:
+                    if state == "firing":
+                        text = f"⚠️ HR [{severity}]: {name}. Спросите Пульс о состоянии HR или откройте HR Grafana."
+                    elif state == "resolved":
+                        text = f"✅ HR: {name} устранён."
+                    elif state == "visibility_lost":
+                        text = "🚨 HR: Pulse потерял доступ к monitoring gateway. OCR продолжает работать; проверьте HR VPS, DNS/TLS и IP allowlist."
+                    else:
+                        text = "✅ HR: доступ Pulse к monitoring gateway восстановлен."
+                    for admin_id in self.settings.allowed_admin_ids:
+                        await self.send(admin_id, text)
+            except Exception:  # noqa: BLE001 - HR monitoring cannot stop OCR alerts
+                logger.error("hr_alert_monitor_failed")
 
     async def monitor_deployments(self) -> None:
         while True:

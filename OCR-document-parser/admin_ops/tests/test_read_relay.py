@@ -71,7 +71,10 @@ def test_pulse_sdk_configuration_registers_read_only_mcp(monkeypatch):
     assert config["features.shell_tool"] is False
     assert config["web_search"] == "disabled"
     assert config["mcp_servers.ocr_read"]["required"] is True
-    assert set(config["mcp_servers.ocr_read"]["enabled_tools"]) == {"document_days", "metric_history", "log_events", "system_overview"}
+    assert set(config["mcp_servers.ocr_read"]["enabled_tools"]) == {
+        "document_days", "metric_history", "log_events", "system_overview",
+        "hr_days", "hr_metric_history", "hr_log_events", "hr_overview",
+    }
     assert "test-token" not in seen["prompt"]
     assert "same_time=true" in seen["instructions"]
 

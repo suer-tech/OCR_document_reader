@@ -35,3 +35,41 @@ class AlertTracker:
                 firing.append(name)
                 self.last_sent[name] = current
         return firing
+
+
+class HrAlertTracker:
+    """Deduplicate remote Alertmanager state and debounce loss of HR visibility."""
+
+    def __init__(self, unavailable_threshold: int = 3):
+        self.active: dict[str, str] = {}
+        self.unavailable_streak = 0
+        self.unavailable_sent = False
+        self.unavailable_threshold = unavailable_threshold
+
+    def success(self, alerts: list[dict]) -> list[tuple[str, str, str]]:
+        messages: list[tuple[str, str, str]] = []
+        current = {
+            item["name"]: item.get("severity", "warning")
+            for item in alerts
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+            and item.get("state") == "firing" and item.get("severity") in {"warning", "critical"}
+        }
+        for name, severity in current.items():
+            if name not in self.active:
+                messages.append(("firing", name, severity))
+        for name, severity in self.active.items():
+            if name not in current:
+                messages.append(("resolved", name, severity))
+        self.active = current
+        self.unavailable_streak = 0
+        if self.unavailable_sent:
+            messages.append(("visibility_restored", "HrMonitoringReachable", "warning"))
+            self.unavailable_sent = False
+        return messages
+
+    def failure(self) -> list[tuple[str, str, str]]:
+        self.unavailable_streak += 1
+        if self.unavailable_streak >= self.unavailable_threshold and not self.unavailable_sent:
+            self.unavailable_sent = True
+            return [("visibility_lost", "HrMonitoringUnreachable", "critical")]
+        return []

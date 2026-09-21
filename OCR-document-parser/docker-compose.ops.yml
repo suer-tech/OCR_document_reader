@@ -13,6 +13,8 @@ services:
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:?Set read-only OPS_DATABASE_URL}
       OPS_PROMETHEUS_URL: http://prometheus:9090
       OPS_LOKI_URL: http://loki:3100
+      OPS_HR_BASE_URL: ${OPS_HR_BASE_URL:-}
+      OPS_HR_READ_TOKEN: ${OPS_HR_READ_TOKEN:-}
       OPS_PULSE_URL: http://awg-gateway:8080
       OPS_FIXER_URL: http://awg-gateway:8081
       OPS_ENABLE_FIXER: ${OPS_ENABLE_FIXER:-true}

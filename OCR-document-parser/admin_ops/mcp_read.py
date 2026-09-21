@@ -48,6 +48,30 @@ async def system_overview() -> dict:
     return await call("system_overview", {})
 
 
+@mcp.tool(annotations=READ_ONLY)
+async def hr_days(days: int = 8, same_time: bool = True) -> dict:
+    """Read HR candidate terminal runs, unique candidates, successes, failures, retries and duration for up to 31 days. For 'is today busy?' use same_time=True so every day has the same Asia/Yekaterinburg cutoff. This is HR only, never OCR documents."""
+    return await call("hr_days", {"days": days, "same_time": same_time})
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def hr_metric_history(metric: str, hours: int = 24) -> dict:
+    """Read sampled HR Prometheus history. metric: terminal_runs_24h, failed_runs_1h, oldest_active_seconds, request_rate, active_connections, queue_ready, consumer_count, host_cpu_percent, host_memory_percent, disk_free_percent, web_up, processing_ready."""
+    return await call("hr_metric_history", {"metric": metric, "hours": hours})
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def hr_log_events(hours: int = 24, level: str = "error", limit: int = 30) -> dict:
+    """Read only allowlisted sanitized HR technical events for up to 336 hours. No candidate identity/content, raw lines, stack traces, paths, URLs or secrets."""
+    return await call("hr_log_events", {"hours": hours, "level": level, "limit": limit})
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def hr_overview() -> dict:
+    """Read current sanitized HR availability, backlog, host capacity, today's aggregate candidate counts and active alerts."""
+    return await call("hr_overview", {})
+
+
 if __name__ == "__main__":
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

@@ -16,6 +16,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from admin_ops.config import OpsSettings
+from admin_ops.hr_tools import HR_TOOL_MODELS, call_hr
 from ocr_platform.storage.models import Document, PipelineRun
 
 METRICS = {
@@ -62,6 +63,7 @@ class LogEvents(Arguments):
 TOOL_MODELS = {
     "document_days": DocumentDays, "metric_history": MetricHistory,
     "log_events": LogEvents, "system_overview": Arguments,
+    **HR_TOOL_MODELS,
 }
 
 
@@ -244,11 +246,15 @@ class ReadTools:
                     result = await metric_history(self.settings, args, now)
                 elif name == "log_events":
                     result = await log_events(self.settings, args, now)
+                elif name in HR_TOOL_MODELS:
+                    result = await call_hr(self.settings, name, args)
                 else:
                     result = {"status": "ok", "as_of": now.isoformat(), "timezone": self.settings.timezone,
-                              "tools": list(TOOL_MODELS), "metrics": list(METRICS),
-                              "architecture": "OCR API -> RabbitMQ -> worker -> PostgreSQL. Prometheus stores sampled metrics; Loki stores structured app events. Pulse is read-only; code changes require /fix. Sources can be unavailable independently.",
-                              "limits": "Documents: up to 31 days per call, last 365 days if retained; metrics: last 30 days if retained; Loki: last 14 days if retained. No raw logs, SQL, shell, documents, secrets or filesystem tools."}
+                              "tools": list(TOOL_MODELS), "ocr_metrics": list(METRICS),
+                              "systems": {"ocr": "local PostgreSQL + Prometheus + Loki",
+                                          "hr": "separate HR VPS bounded HTTPS operations gateway"},
+                              "architecture": "OCR and HR retain monitoring locally on separate VPS hosts. Pulse is read-only and receives bounded sanitized results. Code changes require /fix and currently target only OCR.",
+                              "limits": "OCR documents and HR candidates are distinct units. No raw logs, arbitrary queries, SQL, shell, candidate/document contents, secrets or filesystem tools. Sources can be unavailable independently."}
             if len(json.dumps(result, allow_nan=False)) > 60000:
                 return {"status": "unavailable", "reason": "result_limit_exceeded"}
             return result
