@@ -1,0 +1,212 @@
+{
+  "$defs": {
+    "Rtk3Claim": {
+      "description": "Отдельное требование (очередь) в рамках профиля rtk3.",
+      "properties": {
+        "priority_queue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Очередность удовлетворения (например, '3 очередь', 'За реестром'), либо null",
+          "title": "Priority Queue"
+        },
+        "principal_debt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Сумма основного долга (включает проценты и госпошлину, исключает судебные расходы, как в ТЗ).",
+          "title": "Principal Debt"
+        },
+        "financial_sanctions": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Сумма финансовых санкций (пени, неустойки, штрафы).",
+          "title": "Financial Sanctions"
+        },
+        "total_amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Общая сумма по данной очереди (основной долг + санкции).",
+          "title": "Total Amount"
+        }
+      },
+      "required": [
+        "priority_queue",
+        "principal_debt",
+        "financial_sanctions",
+        "total_amount"
+      ],
+      "title": "Rtk3Claim",
+      "type": "object"
+    }
+  },
+  "description": "Результат извлечения данных из профиля rtk3 (ЕФРСБ Включение кредитора).",
+  "properties": {
+    "inclusion_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Дата вынесения определения в формате ДД.ММ.ГГГГ, либо null",
+      "title": "Inclusion Date"
+    },
+    "inclusion_date_confidence": {
+      "title": "Inclusion Date Confidence",
+      "type": "number"
+    },
+    "inclusion_date_reasoning": {
+      "title": "Inclusion Date Reasoning",
+      "type": "string"
+    },
+    "creditor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Наименование кредитора",
+      "title": "Creditor"
+    },
+    "creditor_confidence": {
+      "title": "Creditor Confidence",
+      "type": "number"
+    },
+    "creditor_reasoning": {
+      "title": "Creditor Reasoning",
+      "type": "string"
+    },
+    "total_claimed_amount": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Общая сумма заявленных требований по всему документу",
+      "title": "Total Claimed Amount"
+    },
+    "total_claimed_amount_confidence": {
+      "title": "Total Claimed Amount Confidence",
+      "type": "number"
+    },
+    "total_claimed_amount_reasoning": {
+      "title": "Total Claimed Amount Reasoning",
+      "type": "string"
+    },
+    "claims": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/Rtk3Claim"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Список требований (разбивка по очередям)",
+      "title": "Claims"
+    },
+    "claims_confidence": {
+      "title": "Claims Confidence",
+      "type": "number"
+    },
+    "claims_reasoning": {
+      "title": "Claims Reasoning",
+      "type": "string"
+    },
+    "grounds": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Основания возникновения задолженности (например, реквизиты договоров)",
+      "title": "Grounds"
+    },
+    "grounds_confidence": {
+      "title": "Grounds Confidence",
+      "type": "number"
+    },
+    "grounds_reasoning": {
+      "title": "Grounds Reasoning",
+      "type": "string"
+    },
+    "secured_by_pledge": {
+      "description": "Обеспечено ли требование залогом (True/False)",
+      "title": "Secured By Pledge",
+      "type": "boolean"
+    },
+    "secured_by_pledge_confidence": {
+      "title": "Secured By Pledge Confidence",
+      "type": "number"
+    },
+    "secured_by_pledge_reasoning": {
+      "title": "Secured By Pledge Reasoning",
+      "type": "string"
+    },
+    "has_text_distortions": {
+      "description": "True, если текст документа содержит искажения/ошибки OCR. False, если текст чёткий.",
+      "title": "Has Text Distortions",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "inclusion_date",
+    "inclusion_date_confidence",
+    "inclusion_date_reasoning",
+    "creditor",
+    "creditor_confidence",
+    "creditor_reasoning",
+    "total_claimed_amount",
+    "total_claimed_amount_confidence",
+    "total_claimed_amount_reasoning",
+    "claims",
+    "claims_confidence",
+    "claims_reasoning",
+    "grounds",
+    "grounds_confidence",
+    "grounds_reasoning",
+    "secured_by_pledge",
+    "secured_by_pledge_confidence",
+    "secured_by_pledge_reasoning",
+    "has_text_distortions"
+  ],
+  "title": "Rtk3Result",
+  "type": "object"
+}

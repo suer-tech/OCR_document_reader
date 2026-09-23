@@ -135,6 +135,98 @@ class RtkTaxCombinedResult(BaseModel):
     grounds_reasoning: str
 
 
+class Rtk2Result(BaseModel):
+    """Результат извлечения данных из судебного Определения (профиль rtk2)."""
+
+    case_number: str | None = Field(
+        description="Номер дела (например, 'А29-3258/2026'), либо null"
+    )
+    case_number_confidence: float
+    case_number_reasoning: str
+
+    decision_date: str | None = Field(
+        description="Дата вынесения определения в формате ДД.ММ.ГГГГ, либо null"
+    )
+    decision_date_confidence: float
+    decision_date_reasoning: str
+
+    debtor_full_name: str | None = Field(
+        description="ФИО должника в именительном падеже (например, 'Кузнецов Александр Александрович'), либо null"
+    )
+    debtor_full_name_confidence: float
+    debtor_full_name_reasoning: str
+
+    procedure_type: str | None = Field(
+        description="Тип процедуры банкротства: 'реструктуризация долгов' или 'реализация имущества', либо null"
+    )
+    procedure_type_confidence: float
+    procedure_type_reasoning: str
+
+    financial_manager_full_name: str | None = Field(
+        description="ФИО финансового управляющего в именительном падеже, либо null"
+    )
+    financial_manager_full_name_confidence: float
+    financial_manager_full_name_reasoning: str
+
+    hearing_date: str | None = Field(
+        description=(
+            "Дата назначенного судебного заседания (СЗ) в формате ДД.ММ.ГГГГ. "
+            "Если заседание предполагается, но дата не указана — дата определения + 1 месяц. "
+            "Если документ прямо предусматривает рассмотрение без судебного заседания — null."
+        )
+    )
+    hearing_date_confidence: float
+    hearing_date_reasoning: str
+
+    review_required: bool = Field(
+        description=(
+            "True, если суд обязал управляющего предоставить отзыв (есть триггерные слова: "
+            "'отзыв', 'предоставить отзыв', 'управляющему предоставить'). False иначе."
+        )
+    )
+    review_required_confidence: float
+    review_required_reasoning: str
+
+    has_text_distortions: bool = Field(
+        description="True, если текст документа содержит искажения/ошибки OCR. False, если текст чёткий."
+    )
+
+
+class Rtk3Claim(BaseModel):
+    """Отдельное требование (очередь) в рамках профиля rtk3."""
+    priority_queue: str | None = Field(description="Очередность удовлетворения (например, '3 очередь', 'За реестром'), либо null")
+    principal_debt: float | None = Field(description="Сумма основного долга (включает проценты и госпошлину, исключает судебные расходы, как в ТЗ).")
+    financial_sanctions: float | None = Field(description="Сумма финансовых санкций (пени, неустойки, штрафы).")
+    total_amount: float | None = Field(description="Общая сумма по данной очереди (основной долг + санкции).")
+
+class Rtk3Result(BaseModel):
+    """Результат извлечения данных из профиля rtk3 (ЕФРСБ Включение кредитора)."""
+    inclusion_date: str | None = Field(description="Дата вынесения определения в формате ДД.ММ.ГГГГ, либо null")
+    inclusion_date_confidence: float
+    inclusion_date_reasoning: str
+
+    creditor: str | None = Field(description="Наименование кредитора")
+    creditor_confidence: float
+    creditor_reasoning: str
+
+    total_claimed_amount: float | None = Field(description="Общая сумма заявленных требований по всему документу")
+    total_claimed_amount_confidence: float
+    total_claimed_amount_reasoning: str
+
+    claims: list[Rtk3Claim] | None = Field(description="Список требований (разбивка по очередям)")
+    claims_confidence: float
+    claims_reasoning: str
+
+    grounds: str | None = Field(description="Основания возникновения задолженности (например, реквизиты договоров)")
+    grounds_confidence: float
+    grounds_reasoning: str
+
+    secured_by_pledge: bool = Field(description="Обеспечено ли требование залогом (True/False)")
+    secured_by_pledge_confidence: float
+    secured_by_pledge_reasoning: str
+
+    has_text_distortions: bool = Field(description="True, если текст документа содержит искажения/ошибки OCR. False, если текст чёткий.")
+
 class GenericFieldResult(BaseModel):
     value: Any = Field(description="Извлеченное значение поля, либо null")
     confidence: float
@@ -720,13 +812,18 @@ _active_model: contextvars.ContextVar["Model"] = contextvars.ContextVar(
 _active_temperature: contextvars.ContextVar[float] = contextvars.ContextVar(
     "_active_temperature", default=0.5
 )
+_active_max_tokens: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "_active_max_tokens", default=None
+)
 
 
 def _active_model_settings():
-    return ModelSettings(
-        temperature=_active_temperature.get(),
-        timeout=180.0,
-    )
+    max_tokens = _active_max_tokens.get()
+    if max_tokens is not None:
+        return ModelSettings(
+            temperature=_active_temperature.get(), timeout=180.0, max_tokens=max_tokens
+        )
+    return ModelSettings(temperature=_active_temperature.get(), timeout=180.0)
 
 
 class ReasoningEffortOpenAIModel(OpenAIModel):
@@ -1143,6 +1240,25 @@ agent_passport_registration_combined = Agent(
     model_settings=default_settings,
 )
 
+agent_rtk2_combined = Agent(
+    model,
+    deps_type=str,
+    result_type=Rtk2Result,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
+agent_rtk3_combined = Agent(
+    model,
+    deps_type=str,
+    result_type=Rtk3Result,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
+# agent_rtk2_combined intentionally has no tools -- Opredelenie docs do not require web search
 # Attach tools to combined agents
 agent_rtk_combined.tool(search_creditor_inn)
 agent_rtk_combined.tool(search_creditor_name)
@@ -1257,15 +1373,25 @@ async def run_agent_extraction(
     )
     temp = float(llm_cfg.get("temperature", 0.5))
     temp_token = _active_temperature.set(temp)
+    max_tokens = llm_cfg.get("max_tokens")
+    max_tokens_token = _active_max_tokens.set(
+        int(max_tokens) if max_tokens is not None else None
+    )
     logger.info(f"Set active temperature={temp} from profile config")
 
     try:
-        return await _run_agent_extraction_impl(
+        result = await _run_agent_extraction_impl(
             text, fields_config, profile_id, profile_config, storage_path, _vision_fallback_used
         )
+        if profile_id == "rtk2":
+            from ocr_platform.services.rtk2_postprocessing import guard_rtk2_results
+
+            return guard_rtk2_results(result.get("_raw_text") or text, result)
+        return result
     finally:
         _active_model.reset(token)
         _active_temperature.reset(temp_token)
+        _active_max_tokens.reset(max_tokens_token)
 
 
 async def _run_agent_extraction_impl(
@@ -1765,6 +1891,210 @@ async def _run_agent_extraction_impl(
                             fallback_fields["_raw_text"] = corrected_text
                             return fallback_fields
 
+    if profile_id == "rtk2":
+        rtk2_llm_fields = [
+            "decision_date",
+            "debtor_full_name",
+            "procedure_type",
+            "financial_manager_full_name",
+            "hearing_date",
+            "review_required",
+        ]
+        present_rtk2_fields = [f for f in rtk2_llm_fields if f in fields_config]
+        if present_rtk2_fields:
+            logger.info(
+                f"Executing combined rtk2 extraction for {len(present_rtk2_fields)} fields: {present_rtk2_fields}"
+            )
+            combined_prompt_parts = []
+            for f in present_rtk2_fields:
+                f_instruction = get_field_instruction(
+                    profile_id or "rtk2",
+                    f,
+                    default=fields_config[f].get("prompt_instruction", ""),
+                )
+                combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
+            combined_instructions = "\n\n".join(combined_prompt_parts)
+            combined_prompt = (
+                f"Instruction: You are extracting multiple fields at once from a Russian court ruling document (Определение) "
+                f"related to personal bankruptcy proceedings. "
+                f"Here are the specific instructions for each field:\n\n"
+                f"{combined_instructions}\n\n"
+                f"Document Text:\n{text}"
+            )
+
+            max_attempts = 3
+            combined_rtk2_data = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = await agent_rtk2_combined.run(
+                        combined_prompt,
+                        deps=text,
+                        model_settings=_active_model_settings(),
+                    )
+                    combined_rtk2_data = result.data
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Combined rtk2 extraction attempt {attempt} failed: {e}"
+                    )
+                    if attempt == max_attempts:
+                        logger.error(
+                            "Combined rtk2 extraction completely failed. Falling back to individual extraction."
+                        )
+                    elif attempt == 2:
+                        await asyncio.sleep(15)
+
+            if combined_rtk2_data:
+                rtk2_field_mapping = {
+                    "decision_date": (
+                        "decision_date", "decision_date_confidence", "decision_date_reasoning"
+                    ),
+                    "debtor_full_name": (
+                        "debtor_full_name", "debtor_full_name_confidence", "debtor_full_name_reasoning"
+                    ),
+                    "procedure_type": (
+                        "procedure_type", "procedure_type_confidence", "procedure_type_reasoning"
+                    ),
+                    "financial_manager_full_name": (
+                        "financial_manager_full_name",
+                        "financial_manager_full_name_confidence",
+                        "financial_manager_full_name_reasoning",
+                    ),
+                    "hearing_date": (
+                        "hearing_date", "hearing_date_confidence", "hearing_date_reasoning"
+                    ),
+                    "review_required": (
+                        "review_required", "review_required_confidence", "review_required_reasoning"
+                    ),
+                }
+                for field_name in present_rtk2_fields:
+                    val_attr, conf_attr, reason_attr = rtk2_field_mapping[field_name]
+                    val = getattr(combined_rtk2_data, val_attr, None)
+                    conf = getattr(combined_rtk2_data, conf_attr, 0.0)
+                    reason = getattr(combined_rtk2_data, reason_attr, "")
+                    results[field_name] = {
+                        "value": val,
+                        "confidence": conf,
+                        "reasoning": reason,
+                        "source": "rtk2_combined",
+                    }
+
+                if not _vision_fallback_used and combined_rtk2_data.has_text_distortions and storage_path:
+                    logger.info(
+                        "vision_fallback_triggered_rtk2", storage_path=storage_path
+                    )
+                    corrected_text = await _correct_text_via_vision(storage_path, model=_vision_model)
+                    if corrected_text:
+                        fallback_fields = await run_agent_extraction(
+                            corrected_text, fields_config, profile_id, profile_config,
+                            _vision_fallback_used=True,
+                        )
+                        if fallback_fields:
+                            fallback_fields["_raw_text"] = corrected_text
+                            return fallback_fields
+    if profile_id == "rtk3":
+        rtk3_llm_fields = [
+            "inclusion_date",
+            "creditor",
+            "total_claimed_amount",
+            "claims",
+            "grounds",
+            "secured_by_pledge",
+        ]
+        present_rtk3_fields = [f for f in rtk3_llm_fields if f in fields_config]
+        if present_rtk3_fields:
+            logger.info(
+                f"Executing combined rtk3 extraction for {len(present_rtk3_fields)} fields: {present_rtk3_fields}"
+            )
+            combined_prompt_parts = []
+            for f in present_rtk3_fields:
+                f_instruction = get_field_instruction(
+                    profile_id or "rtk3",
+                    f,
+                    default=fields_config[f].get("prompt_instruction", ""),
+                )
+                combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
+            combined_instructions = "\n\n".join(combined_prompt_parts)
+            combined_prompt = (
+                f"Instruction: You are extracting multiple fields at once from a Russian court ruling document (Определение) "
+                f"related to inclusion of a creditor into the register (Включение кредитора ЕФРСБ). "
+                f"Here are the specific instructions for each field:\n\n"
+                f"{combined_instructions}\n\n"
+                f"Document Text:\n{text}"
+            )
+
+            max_attempts = 3
+            combined_rtk3_data = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = await agent_rtk3_combined.run(
+                        combined_prompt,
+                        deps=text,
+                        model_settings=_active_model_settings(),
+                    )
+                    combined_rtk3_data = result.data
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Combined rtk3 extraction attempt {attempt} failed: {e}"
+                    )
+                    if attempt == max_attempts:
+                        logger.error(
+                            "Combined rtk3 extraction completely failed. Falling back to individual extraction."
+                        )
+                    elif attempt == 2:
+                        await asyncio.sleep(15)
+
+            if combined_rtk3_data:
+                rtk3_field_mapping = {
+                    "inclusion_date": (
+                        "inclusion_date", "inclusion_date_confidence", "inclusion_date_reasoning"
+                    ),
+                    "creditor": (
+                        "creditor", "creditor_confidence", "creditor_reasoning"
+                    ),
+                    "total_claimed_amount": (
+                        "total_claimed_amount", "total_claimed_amount_confidence", "total_claimed_amount_reasoning"
+                    ),
+                    "claims": (
+                        "claims", "claims_confidence", "claims_reasoning"
+                    ),
+                    "grounds": (
+                        "grounds", "grounds_confidence", "grounds_reasoning"
+                    ),
+                    "secured_by_pledge": (
+                        "secured_by_pledge", "secured_by_pledge_confidence", "secured_by_pledge_reasoning"
+                    ),
+                }
+                for field_name in present_rtk3_fields:
+                    val_attr, conf_attr, reason_attr = rtk3_field_mapping[field_name]
+                    val = getattr(combined_rtk3_data, val_attr, None)
+
+                    if field_name == "claims" and val is not None:
+                        val = [claim.model_dump() for claim in val]
+
+                    conf = getattr(combined_rtk3_data, conf_attr, 0.0)
+                    reason = getattr(combined_rtk3_data, reason_attr, "")
+                    results[field_name] = {
+                        "value": val,
+                        "confidence": conf,
+                        "reasoning": reason,
+                        "source": "rtk3_combined",
+                    }
+
+                if not _vision_fallback_used and combined_rtk3_data.has_text_distortions and storage_path:
+                    logger.info(
+                        "vision_fallback_triggered_rtk3", storage_path=storage_path
+                    )
+                    corrected_text = await _correct_text_via_vision(storage_path, model=_vision_model)
+                    if corrected_text:
+                        fallback_fields = await run_agent_extraction(
+                            corrected_text, fields_config, profile_id, profile_config,
+                            _vision_fallback_used=True,
+                        )
+                        if fallback_fields:
+                            fallback_fields["_raw_text"] = corrected_text
+                            return fallback_fields
     if profile_id == "passport_main":
         passport_main_fields = [
             "passport_series",
@@ -2822,7 +3152,7 @@ async def _run_agent_extraction_impl(
     creditor_inn_info = results.get("creditor_inn")
     creditor_info = results.get("creditor")
 
-    if creditor_info and creditor_info.get("value"):
+    if "creditor_inn" in fields_config and creditor_info and creditor_info.get("value"):
         inn_val = creditor_inn_info.get("value") if creditor_inn_info else None
         if not inn_val:
             cred_name = creditor_info.get("value")

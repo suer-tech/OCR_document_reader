@@ -19,7 +19,7 @@ class IngestDocumentRequest(BaseModel):
     )
     document_type: Optional[str] = Field(
         default=None,
-        description="Явно переданный тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), passport_main (Паспорт РФ — главная страница), passport_registration (Паспорт РФ — страница прописки), unknown (Неизвестно/Автоопределение). Если не передан, система определяет тип автоматически.",
+        description="Явно переданный тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), passport_main (Паспорт РФ — главная страница), passport_registration (Паспорт РФ — страница прописки), rtk2 (Определение), rtk3 (Включение кредитора ЕФРСБ), unknown (Неизвестно/Автоопределение). Если не передан, система определяет тип автоматически.",
     )
     document_type_hint: Optional[str] = Field(
         default=None,

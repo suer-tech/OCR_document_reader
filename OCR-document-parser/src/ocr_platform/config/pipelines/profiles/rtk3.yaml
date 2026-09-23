@@ -1,0 +1,109 @@
+profile_id: rtk3
+
+applicable_sources:
+  - crm
+  - email
+  - portal
+  - external
+  - other
+
+document_type: rtk3
+name: "Включение кредитора ЕФРСБ"
+description: "Определение о включении требований кредитора в реестр (ЕФРСБ)"
+version: "1.0"
+
+models:
+  ocr:
+    provider: router_ai
+    model: google/gemini-2.5-flash-lite
+    timeout_seconds: 300.0
+  llm_extraction:
+    provider: router_ai
+    model: x-ai/grok-4.20
+    temperature: 0.0
+    max_tokens: 4096
+    timeout_seconds: 180.0
+    reasoning_effort: low
+
+thresholds:
+  technical_quality_min: 0.6
+  semantic_confidence_min: 0.7
+  overall_quality_min_auto_accept: 0.75
+  warnings_require_review: false
+
+fields:
+  inclusion_date:
+    required: true
+    label_ru: "Дата определения"
+    description_ru: "Дата вынесения определения в формате ДД.ММ.ГГГГ."
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки дату вынесения определения. Ищи дату в шапке или конце документа.
+      Не путай с датами заседаний и ранее вынесенных судебных актов.
+      Верни ДД.ММ.ГГГГ либо null, если дата не найдена.
+
+  creditor:
+    required: true
+    label_ru: "Кредитор"
+    description_ru: "ФИО или наименование кредитора, чьи требования включаются в реестр."
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки ФИО или наименование компании-кредитора, чьи требования включаются в реестр.
+      Ищи формулировки «включить требования» и «признать обоснованными требования».
+
+  total_claimed_amount:
+    required: false
+    label_ru: "Общая сумма требований"
+    description_ru: "Общая сумма заявленных требований по всему документу."
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки общую сумму всех заявленных требований кредитора по всему документу.
+      Если единая сумма не указана, сложи основной долг, пени, проценты и штрафы.
+      Верни число либо null, если суммы установить нельзя.
+
+  claims:
+    required: false
+    label_ru: "Требования по очередям"
+    description_ru: "Список требований с разбивкой по очередям."
+    extraction_method: "llm"
+    prompt_instruction: |
+      Для каждой очереди, к которой отнесено требование, создай объект с полями:
+      priority_queue: номер или название очереди (например, «2 очередь», «3 очередь», «за реестром»);
+      principal_debt: основной долг, проценты и госпошлина для этой очереди; судебные расходы,
+        указанные отдельным абзацем, не учитывай;
+      financial_sanctions: пени, неустойки и штрафы;
+      total_amount: principal_debt + financial_sanctions.
+      Верни массив объектов либо null, если разбивка не установлена.
+
+  grounds:
+    required: false
+    label_ru: "Основания возникновения задолженности"
+    description_ru: "Основания задолженности, на которые ссылается суд."
+    extraction_method: "llm"
+    prompt_instruction: |
+      Извлеки основания возникновения задолженности, на которые ссылается суд.
+      Например: договор займа, кредитный договор или решение суда с реквизитами.
+      Верни строку либо null.
+
+  secured_by_pledge:
+    required: true
+    label_ru: "Обеспечение залогом"
+    description_ru: "Обеспечено ли требование залогом имущества должника."
+    extraction_method: "llm"
+    prompt_instruction: |
+      Определи, обеспечено ли требование залогом имущества должника.
+      Если это прямо указано, верни true; в противном случае false.
+
+pipeline:
+  - name: store_original
+    type: storage
+  - name: detect_document_type
+    type: classifier
+  - name: extract_entities
+    type: extraction
+  - name: validate_entities
+    type: validation
+  - name: compute_quality
+    type: quality
+  - name: route_to_human_review
+    type: routing

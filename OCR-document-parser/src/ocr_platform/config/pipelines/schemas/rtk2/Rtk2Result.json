@@ -1,0 +1,169 @@
+{
+  "description": "Результат извлечения данных из судебного Определения (профиль rtk2).",
+  "properties": {
+    "case_number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Номер дела (например, 'А29-3258/2026'), либо null",
+      "title": "Case Number"
+    },
+    "case_number_confidence": {
+      "title": "Case Number Confidence",
+      "type": "number"
+    },
+    "case_number_reasoning": {
+      "title": "Case Number Reasoning",
+      "type": "string"
+    },
+    "decision_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Дата вынесения определения в формате ДД.ММ.ГГГГ, либо null",
+      "title": "Decision Date"
+    },
+    "decision_date_confidence": {
+      "title": "Decision Date Confidence",
+      "type": "number"
+    },
+    "decision_date_reasoning": {
+      "title": "Decision Date Reasoning",
+      "type": "string"
+    },
+    "debtor_full_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ФИО должника в именительном падеже (например, 'Кузнецов Александр Александрович'), либо null",
+      "title": "Debtor Full Name"
+    },
+    "debtor_full_name_confidence": {
+      "title": "Debtor Full Name Confidence",
+      "type": "number"
+    },
+    "debtor_full_name_reasoning": {
+      "title": "Debtor Full Name Reasoning",
+      "type": "string"
+    },
+    "procedure_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Тип процедуры банкротства: 'реструктуризация долгов' или 'реализация имущества', либо null",
+      "title": "Procedure Type"
+    },
+    "procedure_type_confidence": {
+      "title": "Procedure Type Confidence",
+      "type": "number"
+    },
+    "procedure_type_reasoning": {
+      "title": "Procedure Type Reasoning",
+      "type": "string"
+    },
+    "financial_manager_full_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ФИО финансового управляющего в именительном падеже, либо null",
+      "title": "Financial Manager Full Name"
+    },
+    "financial_manager_full_name_confidence": {
+      "title": "Financial Manager Full Name Confidence",
+      "type": "number"
+    },
+    "financial_manager_full_name_reasoning": {
+      "title": "Financial Manager Full Name Reasoning",
+      "type": "string"
+    },
+    "hearing_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Дата назначенного судебного заседания (СЗ) в формате ДД.ММ.ГГГГ. Если заседание предполагается, но дата не указана — дата определения + 1 месяц. Если документ прямо предусматривает рассмотрение без судебного заседания — null.",
+      "title": "Hearing Date"
+    },
+    "hearing_date_confidence": {
+      "title": "Hearing Date Confidence",
+      "type": "number"
+    },
+    "hearing_date_reasoning": {
+      "title": "Hearing Date Reasoning",
+      "type": "string"
+    },
+    "review_required": {
+      "description": "True, если суд обязал управляющего предоставить отзыв (есть триггерные слова: 'отзыв', 'предоставить отзыв', 'управляющему предоставить'). False иначе.",
+      "title": "Review Required",
+      "type": "boolean"
+    },
+    "review_required_confidence": {
+      "title": "Review Required Confidence",
+      "type": "number"
+    },
+    "review_required_reasoning": {
+      "title": "Review Required Reasoning",
+      "type": "string"
+    },
+    "has_text_distortions": {
+      "description": "True, если текст документа содержит искажения/ошибки OCR. False, если текст чёткий.",
+      "title": "Has Text Distortions",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "case_number",
+    "case_number_confidence",
+    "case_number_reasoning",
+    "decision_date",
+    "decision_date_confidence",
+    "decision_date_reasoning",
+    "debtor_full_name",
+    "debtor_full_name_confidence",
+    "debtor_full_name_reasoning",
+    "procedure_type",
+    "procedure_type_confidence",
+    "procedure_type_reasoning",
+    "financial_manager_full_name",
+    "financial_manager_full_name_confidence",
+    "financial_manager_full_name_reasoning",
+    "hearing_date",
+    "hearing_date_confidence",
+    "hearing_date_reasoning",
+    "review_required",
+    "review_required_confidence",
+    "review_required_reasoning",
+    "has_text_distortions"
+  ],
+  "title": "Rtk2Result",
+  "type": "object"
+}

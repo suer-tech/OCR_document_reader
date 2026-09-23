@@ -41,6 +41,7 @@ def validate_fields(
             fields_cfg = (
                 profile_config.get("fields_llm")
                 or profile_config.get("fields_nlp")
+                or profile_config.get("fields")
                 or {}
             )
         for field_name, cfg in fields_cfg.items():

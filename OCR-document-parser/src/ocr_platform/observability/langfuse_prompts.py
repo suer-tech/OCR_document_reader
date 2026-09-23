@@ -204,7 +204,7 @@ def _load_field_instruction_prompts() -> dict[str, tuple[str, str]]:
             / "pipelines"
             / "profiles"
         )
-        for profile_id in ("rtk", "court_decision_ru", "passport_main", "passport_registration"):
+        for profile_id in ("rtk", "rtk2", "rtk3", "court_decision_ru", "passport_main", "passport_registration"):
             yaml_path = profiles_dir / f"{profile_id}.yaml"
             if not yaml_path.exists():
                 continue

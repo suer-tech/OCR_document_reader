@@ -24,6 +24,7 @@ from ocr_platform.orchestration.mlflow_backfill import backfill_pipeline_runs_to
 from ocr_platform.queueing.rabbitmq import IngestJob, publish_ingest_job
 from ocr_platform.storage import file_storage, models, repository
 from ocr_platform.services.validation_service import court_field_issues, review_requirement
+from ocr_platform.services.document_content_validation import validate_document_content
 
 logger = get_logger(__name__)
 
@@ -186,6 +187,10 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=400, detail="content_base64 is invalid"
             ) from exc
+        try:
+            validate_document_content(content_bytes, request.content_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         idempotency_key = request.idempotency_key or _build_idempotency_key(
             content_hash=content_hash,
@@ -328,7 +333,7 @@ def create_app() -> FastAPI:
         ),
         document_type: str = Form(
             ...,
-            description="Тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), passport_main (Паспорт РФ — главная страница), passport_registration (Паспорт РФ — страница прописки), unknown (Неизвестно/Автоопределение)",
+            description="Тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), rtk2 (Определение), rtk3 (Включение кредитора ЕФРСБ), passport_main (Паспорт РФ — главная страница), passport_registration (Паспорт РФ — страница прописки), unknown (Неизвестно/Автоопределение)",
         ),
         idempotency_key: str = Form(..., description="Ключ идемпотентности"),
         external_id: str | None = Form(None, description="Внешний идентификатор"),
@@ -348,6 +353,10 @@ def create_app() -> FastAPI:
                 status_code=400,
                 detail=f"unsupported file type: {file.filename or file.content_type}. Use pdf, image (png/jpg), or text.",
             )
+        try:
+            validate_document_content(content_bytes, content_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         source_type = source_type.strip().lower() or "external"
         if source_type not in ("crm", "email", "portal", "external", "other"):
