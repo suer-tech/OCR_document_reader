@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 _EXTARCTION_SYSTEM_DEFAULT = (
     "You are an expert legal document analyst. "
     "Extract the requested field accurately based on the provided text and instructions. "
+    "All confidence fields MUST be numbers between 0 and 1 inclusive (for example 0.95, never 95). "
     "IMPORTANT: You MUST respond ONLY with raw, valid JSON matching the requested schema. "
     "Do not wrap the JSON in markdown blocks like ```json ... ```. "
     "Do not include any other text."

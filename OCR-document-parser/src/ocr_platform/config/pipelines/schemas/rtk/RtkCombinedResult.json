@@ -13,6 +13,8 @@
       "title": "Creditor Inn"
     },
     "creditor_inn_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "type": "number",
       "title": "Creditor Inn Confidence"
     },
@@ -49,6 +51,8 @@
       "title": "Amounts"
     },
     "claims_amount_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "type": "number",
       "title": "Claims Amount Confidence"
     },
@@ -70,6 +74,8 @@
       "title": "Grounds"
     },
     "grounds_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "type": "number",
       "title": "Grounds Confidence"
     },

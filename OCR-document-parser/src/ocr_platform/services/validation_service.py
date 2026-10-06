@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple, Any
 
 from ocr_platform.api.schemas import ValidationIssue
 from ocr_platform.services.court_decision_additional import ADDITIONAL_FIELDS, COURT_ISSUE_CODE
+from ocr_platform.services.rtk3_claims import CLAIMED_AMOUNT_REVIEW_CODES, claimed_amount_issues
 
 
 def court_field_issues(fields: dict) -> list[ValidationIssue]:
@@ -15,9 +16,19 @@ def court_field_issues(fields: dict) -> list[ValidationIssue]:
     ]
 
 
+def profile_field_issues(fields: dict, profile_id: str | None = None) -> list[ValidationIssue]:
+    issues = court_field_issues(fields)
+    if profile_id == "rtk3":
+        issues.extend(claimed_amount_issues(fields))
+    return issues
+
+
 def review_requirement(overall: float | None, issues: list[ValidationIssue]) -> tuple[bool, str | None]:
     if any(issue.code == COURT_ISSUE_CODE for issue in issues):
         return True, "court_field_requires_review"
+    for issue in issues:
+        if issue.code in CLAIMED_AMOUNT_REVIEW_CODES:
+            return True, issue.code
     if overall is not None and overall >= 0.75:
         return False, None
     return True, "low_quality_or_missing_fields"
@@ -57,7 +68,7 @@ def validate_fields(
             "decision_date",
         ]
 
-    issues: List[ValidationIssue] = court_field_issues(fields)
+    issues: List[ValidationIssue] = profile_field_issues(fields, profile_id)
 
     for name in required_fields:
         if name not in fields or fields[name].get("value") in (None, "", []):

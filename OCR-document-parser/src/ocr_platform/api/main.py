@@ -23,7 +23,7 @@ from ocr_platform.observability.metrics import (
 from ocr_platform.orchestration.mlflow_backfill import backfill_pipeline_runs_to_mlflow
 from ocr_platform.queueing.rabbitmq import IngestJob, publish_ingest_job
 from ocr_platform.storage import file_storage, models, repository
-from ocr_platform.services.validation_service import court_field_issues, review_requirement
+from ocr_platform.services.validation_service import profile_field_issues, review_requirement
 from ocr_platform.services.document_content_validation import validate_document_content
 
 logger = get_logger(__name__)
@@ -103,8 +103,10 @@ def create_app() -> FastAPI:
 ## Основной процесс (Workflow)
 Для получения результата вам необходимо выполнить следующие шаги:
 1. **Загрузите документ** через `POST /documents/upload` (как файл) или `POST /documents/ingest` (в base64). Сохраните `pipeline_run_id` и `document_id`.
-2. **Проверяйте статус** (Polling) через `GET /pipeline-runs/{pipeline_run_id}` (рекомендуется раз в 3-5 секунд), пока `status` не станет `"done"`.
-3. **Получите результат** через `GET /documents/{document_id}/result`. Вы получите сырой текст и структурированные поля с оценкой уверенности.
+2. **Проверяйте статус** (Polling) через `GET /pipeline-runs/{pipeline_run_id}` (рекомендуется раз в 3-5 секунд). При `done` получите результат; при `failed` проверьте `last_error`.
+3. **Получите результат** через `GET /documents/{document_id}/result`. Вы получите текст, поля и оценки качества. Проверьте `validation_issues` и `human_review_required`.
+Полный перечень полей каждого профиля и вложенных полей РТК3 приведён в `DocumentResultResponse.fields`.
+Для результата доступны примеры судебного акта, РТК3 и РТК3 с ручной проверкой.
         """.strip(),
     )
 
@@ -333,7 +335,7 @@ def create_app() -> FastAPI:
         ),
         document_type: str = Form(
             ...,
-            description="Тип документа. Возможные значения: court_decision (Судебное решение), rtk (Заявление о включении в РТК), rtk2 (Определение), rtk3 (Включение кредитора ЕФРСБ), passport_main (Паспорт РФ — главная страница), passport_registration (Паспорт РФ — страница прописки), unknown (Неизвестно/Автоопределение)",
+            description=schemas.DOCUMENT_TYPE_DESCRIPTION,
         ),
         idempotency_key: str = Form(..., description="Ключ идемпотентности"),
         external_id: str | None = Form(None, description="Внешний идентификатор"),
@@ -579,7 +581,10 @@ def create_app() -> FastAPI:
         overall = quality.overall_score if quality else None
 
         validation_status = "ok" if fields else "errors"
-        validation_issues = court_field_issues(data_dict) if isinstance(data_dict, dict) else []
+        validation_issues = (
+            profile_field_issues(data_dict, getattr(run, "profile_id", None))
+            if isinstance(data_dict, dict) else []
+        )
         if validation_issues:
             validation_status = "errors"
         human_review_required, human_review_reason = review_requirement(overall, validation_issues)
@@ -639,6 +644,17 @@ def create_app() -> FastAPI:
             ],
         )
 
+    default_openapi = app.openapi
+
+    def openapi_with_response_examples() -> dict:
+        document = default_openapi()
+        # FastAPI's OpenAPI encoding removes None recursively. Insert examples
+        # afterwards so nullable values remain visible as JSON null in Swagger.
+        response = document["paths"]["/documents/{document_id}/result"]["get"]["responses"]["200"]
+        response["content"]["application/json"]["examples"] = schemas.DOCUMENT_RESULT_EXAMPLES
+        return document
+
+    app.openapi = openapi_with_response_examples
     return app
 
 

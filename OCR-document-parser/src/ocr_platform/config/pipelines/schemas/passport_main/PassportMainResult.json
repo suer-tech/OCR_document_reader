@@ -5,68 +5,68 @@
       "title": "Passport Series",
       "description": "4 digits"
     },
-    "passport_series_confidence": {"type": "number", "title": "Passport Series Confidence"},
+    "passport_series_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Passport Series Confidence"},
     "passport_series_reasoning": {"type": "string", "title": "Passport Series Reasoning"},
     "passport_number": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Passport Number",
       "description": "6 digits"
     },
-    "passport_number_confidence": {"type": "number", "title": "Passport Number Confidence"},
+    "passport_number_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Passport Number Confidence"},
     "passport_number_reasoning": {"type": "string", "title": "Passport Number Reasoning"},
     "last_name": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Last Name"
     },
-    "last_name_confidence": {"type": "number", "title": "Last Name Confidence"},
+    "last_name_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Last Name Confidence"},
     "last_name_reasoning": {"type": "string", "title": "Last Name Reasoning"},
     "first_name": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "First Name"
     },
-    "first_name_confidence": {"type": "number", "title": "First Name Confidence"},
+    "first_name_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "First Name Confidence"},
     "first_name_reasoning": {"type": "string", "title": "First Name Reasoning"},
     "patronymic": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Patronymic"
     },
-    "patronymic_confidence": {"type": "number", "title": "Patronymic Confidence"},
+    "patronymic_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Patronymic Confidence"},
     "patronymic_reasoning": {"type": "string", "title": "Patronymic Reasoning"},
     "gender": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Gender"
     },
-    "gender_confidence": {"type": "number", "title": "Gender Confidence"},
+    "gender_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Gender Confidence"},
     "gender_reasoning": {"type": "string", "title": "Gender Reasoning"},
     "birth_date": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Birth Date"
     },
-    "birth_date_confidence": {"type": "number", "title": "Birth Date Confidence"},
+    "birth_date_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Birth Date Confidence"},
     "birth_date_reasoning": {"type": "string", "title": "Birth Date Reasoning"},
     "birth_place": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Birth Place"
     },
-    "birth_place_confidence": {"type": "number", "title": "Birth Place Confidence"},
+    "birth_place_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Birth Place Confidence"},
     "birth_place_reasoning": {"type": "string", "title": "Birth Place Reasoning"},
     "issue_date": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Issue Date"
     },
-    "issue_date_confidence": {"type": "number", "title": "Issue Date Confidence"},
+    "issue_date_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Issue Date Confidence"},
     "issue_date_reasoning": {"type": "string", "title": "Issue Date Reasoning"},
     "department_code": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Department Code"
     },
-    "department_code_confidence": {"type": "number", "title": "Department Code Confidence"},
+    "department_code_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Department Code Confidence"},
     "department_code_reasoning": {"type": "string", "title": "Department Code Reasoning"},
     "issued_by": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
       "title": "Issued By"
     },
-    "issued_by_confidence": {"type": "number", "title": "Issued By Confidence"},
+    "issued_by_confidence": {"maximum": 1.0, "minimum": 0.0, "type": "number", "title": "Issued By Confidence"},
     "issued_by_reasoning": {"type": "string", "title": "Issued By Reasoning"},
     "has_text_distortions": {
       "type": "boolean",

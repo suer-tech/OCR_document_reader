@@ -14,6 +14,8 @@
       "title": "Case Number"
     },
     "case_number_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "title": "Case Number Confidence",
       "type": "number"
     },
@@ -34,6 +36,8 @@
       "title": "Decision Date"
     },
     "decision_date_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "title": "Decision Date Confidence",
       "type": "number"
     },
@@ -54,6 +58,8 @@
       "title": "Debtor Full Name"
     },
     "debtor_full_name_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "title": "Debtor Full Name Confidence",
       "type": "number"
     },
@@ -74,6 +80,8 @@
       "title": "Procedure Type"
     },
     "procedure_type_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "title": "Procedure Type Confidence",
       "type": "number"
     },
@@ -94,6 +102,8 @@
       "title": "Financial Manager Full Name"
     },
     "financial_manager_full_name_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "title": "Financial Manager Full Name Confidence",
       "type": "number"
     },
@@ -114,6 +124,8 @@
       "title": "Hearing Date"
     },
     "hearing_date_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "title": "Hearing Date Confidence",
       "type": "number"
     },
@@ -127,6 +139,8 @@
       "type": "boolean"
     },
     "review_required_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "title": "Review Required Confidence",
       "type": "number"
     },

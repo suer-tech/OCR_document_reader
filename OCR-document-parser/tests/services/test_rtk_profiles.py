@@ -77,6 +77,7 @@ async def test_rtk3_combined_extraction_preserves_claims_and_false_pledge(
             "principal_debt": 80.0,
             "financial_sanctions": 20.0,
             "total_amount": 100.0,
+            "claimed_amount": None,
         }
     ]
     assert fields["secured_by_pledge"]["value"] is False

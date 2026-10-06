@@ -12,9 +12,10 @@ from typing import Any, Dict, Literal
 from bs4 import BeautifulSoup
 import requests
 from pydantic_ai import Agent, RunContext
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from ocr_platform.observability.logging import get_logger
+from ocr_platform.services.rtk3_claims import format_claimed_amount
 from ocr_platform.services.court_decision_additional import (
     ADDITIONAL_FIELDS, JOINT_INSTRUCTION, CourtAdditionalResult,
     additional_fields_result, additional_fields_failure,
@@ -38,13 +39,13 @@ class CreditorResult(BaseModel):
     creditor_final: str | None = Field(
         description="ИТОГОВОЕ финальное наименование кредитора после анализа"
     )
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
 
 class CreditorInnResult(BaseModel):
     INN: str | None = Field(description="10 или 12 цифр ИНН кредитора")
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
 
@@ -55,7 +56,7 @@ class ClaimsAmountResult(BaseModel):
     amounts: list[float] | None = Field(
         description="Список сумм для каждого обязательства, или null"
     )
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
 
@@ -63,7 +64,7 @@ class GroundsResult(BaseModel):
     grounds: str | None = Field(
         description="Точное значение из списка допустимых оснований, либо null"
     )
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
 
@@ -71,7 +72,7 @@ class TaxCreditorHeaderResult(BaseModel):
     creditor_header: str | None = Field(
         description="Наименование налоговой из шапки документа или null"
     )
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
 
@@ -79,7 +80,7 @@ class RtkCombinedResult(BaseModel):
     creditor_inn: str | None = Field(
         description="ИНН кредитора (10 или 12 цифр), либо null"
     )
-    creditor_inn_confidence: float
+    creditor_inn_confidence: float = Field(ge=0.0, le=1.0)
     creditor_inn_reasoning: str
 
     commitments_count: int | None = Field(
@@ -88,7 +89,7 @@ class RtkCombinedResult(BaseModel):
     amounts: list[float] | None = Field(
         description="Список сумм для каждого обязательства, или null"
     )
-    claims_amount_confidence: float
+    claims_amount_confidence: float = Field(ge=0.0, le=1.0)
     claims_amount_reasoning: str
 
     has_text_distortions: bool = Field(
@@ -98,7 +99,7 @@ class RtkCombinedResult(BaseModel):
     grounds: str | None = Field(
         description="Точное значение из списка допустимых оснований, либо null"
     )
-    grounds_confidence: float
+    grounds_confidence: float = Field(ge=0.0, le=1.0)
     grounds_reasoning: str
 
 
@@ -106,13 +107,13 @@ class RtkTaxCombinedResult(BaseModel):
     creditor_header: str | None = Field(
         description="Наименование налоговой из шапки документа или null"
     )
-    creditor_header_confidence: float
+    creditor_header_confidence: float = Field(ge=0.0, le=1.0)
     creditor_header_reasoning: str
 
     creditor_inn: str | None = Field(
         description="ИНН кредитора (10 или 12 цифр), либо null"
     )
-    creditor_inn_confidence: float
+    creditor_inn_confidence: float = Field(ge=0.0, le=1.0)
     creditor_inn_reasoning: str
 
     commitments_count: int | None = Field(
@@ -121,7 +122,7 @@ class RtkTaxCombinedResult(BaseModel):
     amounts: list[float] | None = Field(
         description="Список сумм для каждого обязательства, или null"
     )
-    claims_amount_confidence: float
+    claims_amount_confidence: float = Field(ge=0.0, le=1.0)
     claims_amount_reasoning: str
 
     has_text_distortions: bool = Field(
@@ -131,7 +132,7 @@ class RtkTaxCombinedResult(BaseModel):
     grounds: str | None = Field(
         description="Точное значение из списка допустимых оснований, либо null"
     )
-    grounds_confidence: float
+    grounds_confidence: float = Field(ge=0.0, le=1.0)
     grounds_reasoning: str
 
 
@@ -141,31 +142,31 @@ class Rtk2Result(BaseModel):
     case_number: str | None = Field(
         description="Номер дела (например, 'А29-3258/2026'), либо null"
     )
-    case_number_confidence: float
+    case_number_confidence: float = Field(ge=0.0, le=1.0)
     case_number_reasoning: str
 
     decision_date: str | None = Field(
         description="Дата вынесения определения в формате ДД.ММ.ГГГГ, либо null"
     )
-    decision_date_confidence: float
+    decision_date_confidence: float = Field(ge=0.0, le=1.0)
     decision_date_reasoning: str
 
     debtor_full_name: str | None = Field(
         description="ФИО должника в именительном падеже (например, 'Кузнецов Александр Александрович'), либо null"
     )
-    debtor_full_name_confidence: float
+    debtor_full_name_confidence: float = Field(ge=0.0, le=1.0)
     debtor_full_name_reasoning: str
 
     procedure_type: str | None = Field(
         description="Тип процедуры банкротства: 'реструктуризация долгов' или 'реализация имущества', либо null"
     )
-    procedure_type_confidence: float
+    procedure_type_confidence: float = Field(ge=0.0, le=1.0)
     procedure_type_reasoning: str
 
     financial_manager_full_name: str | None = Field(
         description="ФИО финансового управляющего в именительном падеже, либо null"
     )
-    financial_manager_full_name_confidence: float
+    financial_manager_full_name_confidence: float = Field(ge=0.0, le=1.0)
     financial_manager_full_name_reasoning: str
 
     hearing_date: str | None = Field(
@@ -175,7 +176,7 @@ class Rtk2Result(BaseModel):
             "Если документ прямо предусматривает рассмотрение без судебного заседания — null."
         )
     )
-    hearing_date_confidence: float
+    hearing_date_confidence: float = Field(ge=0.0, le=1.0)
     hearing_date_reasoning: str
 
     review_required: bool = Field(
@@ -184,7 +185,7 @@ class Rtk2Result(BaseModel):
             "'отзыв', 'предоставить отзыв', 'управляющему предоставить'). False иначе."
         )
     )
-    review_required_confidence: float
+    review_required_confidence: float = Field(ge=0.0, le=1.0)
     review_required_reasoning: str
 
     has_text_distortions: bool = Field(
@@ -198,38 +199,58 @@ class Rtk3Claim(BaseModel):
     principal_debt: float | None = Field(description="Сумма основного долга (включает проценты и госпошлину, исключает судебные расходы, как в ТЗ).")
     financial_sanctions: float | None = Field(description="Сумма финансовых санкций (пени, неустойки, штрафы).")
     total_amount: float | None = Field(description="Общая сумма по данной очереди (основной долг + санкции).")
+    claimed_amount: str | None = Field(
+        default=None,
+        pattern=r"^[0-9]+\.[0-9]{2}$",
+        description=(
+            "Сумма, первоначально заявленная кредитором именно по этой очереди до решения суда; "
+            "строка с точкой и двумя знаками после неё, без пробелов и валюты, либо null. "
+            "Не подменяй включённой суммой и не распределяй общую сумму пропорционально."
+        ),
+    )
+
+    @field_validator("claimed_amount", mode="before")
+    @classmethod
+    def normalize_claimed_amount(cls, value: Any) -> str | None:
+        return format_claimed_amount(value)
+
+
+class Rtk3ClaimsResult(BaseModel):
+    value: list[Rtk3Claim] | None
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str | None
 
 class Rtk3Result(BaseModel):
     """Результат извлечения данных из профиля rtk3 (ЕФРСБ Включение кредитора)."""
     inclusion_date: str | None = Field(description="Дата вынесения определения в формате ДД.ММ.ГГГГ, либо null")
-    inclusion_date_confidence: float
+    inclusion_date_confidence: float = Field(ge=0.0, le=1.0)
     inclusion_date_reasoning: str
 
     creditor: str | None = Field(description="Наименование кредитора")
-    creditor_confidence: float
+    creditor_confidence: float = Field(ge=0.0, le=1.0)
     creditor_reasoning: str
 
     total_claimed_amount: float | None = Field(description="Общая сумма заявленных требований по всему документу")
-    total_claimed_amount_confidence: float
+    total_claimed_amount_confidence: float = Field(ge=0.0, le=1.0)
     total_claimed_amount_reasoning: str
 
     claims: list[Rtk3Claim] | None = Field(description="Список требований (разбивка по очередям)")
-    claims_confidence: float
+    claims_confidence: float = Field(ge=0.0, le=1.0)
     claims_reasoning: str
 
     grounds: str | None = Field(description="Основания возникновения задолженности (например, реквизиты договоров)")
-    grounds_confidence: float
+    grounds_confidence: float = Field(ge=0.0, le=1.0)
     grounds_reasoning: str
 
     secured_by_pledge: bool = Field(description="Обеспечено ли требование залогом (True/False)")
-    secured_by_pledge_confidence: float
+    secured_by_pledge_confidence: float = Field(ge=0.0, le=1.0)
     secured_by_pledge_reasoning: str
 
     has_text_distortions: bool = Field(description="True, если текст документа содержит искажения/ошибки OCR. False, если текст чёткий.")
 
 class GenericFieldResult(BaseModel):
     value: Any = Field(description="Извлеченное значение поля, либо null")
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str | None
 
 
@@ -252,91 +273,91 @@ class CourtDecisionResult(BaseModel):
     debtor_patronymic: str | None = Field(
         description="Отчество должника в именительном падеже, либо null"
     )
-    debtor_name_confidence: float
+    debtor_name_confidence: float = Field(ge=0.0, le=1.0)
     debtor_name_reasoning: str
 
     debtor_gender: str | None = Field(
         description="Пол должника: 'Мужской' или 'Женский', определяется по ФИО (имени и отчеству), либо null"
     )
-    debtor_gender_confidence: float
+    debtor_gender_confidence: float = Field(ge=0.0, le=1.0)
     debtor_gender_reasoning: str
 
     debtor_birth_place: str | None = Field(
         description="Место рождения должника (например, 'гор. Москва' или 'д. Ивановка'), либо null"
     )
-    debtor_birth_place_confidence: float
+    debtor_birth_place_confidence: float = Field(ge=0.0, le=1.0)
     debtor_birth_place_reasoning: str
 
     debtor_snils: str | None = Field(
         description="СНИЛС должника (формат 'XXX-XXX-XXX XX' или 'XXXXXXXXXXX'), либо null"
     )
-    debtor_snils_confidence: float
+    debtor_snils_confidence: float = Field(ge=0.0, le=1.0)
     debtor_snils_reasoning: str
 
     debtor_registration_address: str | None = Field(
         description="Адрес регистрации должника (например, 'г. Москва, ул. Ленина, д. 1, кв. 1'), либо null"
     )
-    debtor_registration_address_confidence: float
+    debtor_registration_address_confidence: float = Field(ge=0.0, le=1.0)
     debtor_registration_address_reasoning: str
 
     debtor_inn: str | None = Field(
         description="ИНН должника (10 или 12 цифр), либо null"
     )
-    debtor_inn_confidence: float
+    debtor_inn_confidence: float = Field(ge=0.0, le=1.0)
     debtor_inn_reasoning: str
 
     judge_full_name: str | None = Field(
         description="ФИО судьи в формате 'Фамилия И.О.' или 'Фамилия Имя Отчество', либо null"
     )
-    judge_full_name_confidence: float
+    judge_full_name_confidence: float = Field(ge=0.0, le=1.0)
     judge_full_name_reasoning: str
 
     financial_manager_full_name: str | None = Field(
         description="ФИО финансового (арбитражного) управляющего, утвержденного судом, в именительном падеже, либо null"
     )
-    financial_manager_full_name_confidence: float
+    financial_manager_full_name_confidence: float = Field(ge=0.0, le=1.0)
     financial_manager_full_name_reasoning: str
 
     court_name: str | None = Field(
         description="Полное название арбитражного суда, либо null"
     )
-    court_name_confidence: float
+    court_name_confidence: float = Field(ge=0.0, le=1.0)
     court_name_reasoning: str
 
     procedure_type: str | None = Field(
         description="Тип процедуры банкротства: 'реализация имущества гражданина', 'реструктуризация долгов', либо null"
     )
-    procedure_type_confidence: float
+    procedure_type_confidence: float = Field(ge=0.0, le=1.0)
     procedure_type_reasoning: str
 
     motivating_part: str | None = Field(
         description="Текст мотивировочной части судебного решения (между 'УСТАНОВИЛ' и 'РЕШИЛ'), либо null"
     )
-    motivating_part_confidence: float
+    motivating_part_confidence: float = Field(ge=0.0, le=1.0)
     motivating_part_reasoning: str
 
     resolutive_part: str | None = Field(
         description="Текст резолютивной части (после 'РЕШИЛ'/'ОПРЕДЕЛИЛ'), либо null"
     )
-    resolutive_part_confidence: float
+    resolutive_part_confidence: float = Field(ge=0.0, le=1.0)
     resolutive_part_reasoning: str
 
     document_basis: str | None = Field(
         description="Основание: 'Решение' (если документ содержит 'РЕШИЛ') или 'Определение' (если документ содержит 'ОПРЕДЕЛИЛ'), либо null"
     )
-    document_basis_confidence: float
+    document_basis_confidence: float = Field(ge=0.0, le=1.0)
     document_basis_reasoning: str
 
     decision_date: str | None = Field(
         description="Дата полного текста решения в формате ДД.ММ.ГГГГ, либо null. Ищи фразу 'Полный текст решения изготовлен' или 'Решение изготовлено'."
     )
-    decision_date_confidence: float
+    decision_date_confidence: float = Field(ge=0.0, le=1.0)
     decision_date_reasoning: str
 
     resolutive_part_date: str | None = Field(
         description="Дата резолютивной части решения в формате ДД.ММ.ГГГГ, либо null. Ищи фразу 'Резолютивная часть решения объявлена'."
     )
-    resolutive_part_date_confidence: float
+    resolutive_part_date_confidence: float = Field(ge=0.0, le=1.0)
     resolutive_part_date_reasoning: str
 
     has_text_distortions: bool = Field(
@@ -350,67 +371,67 @@ class PassportMainResult(BaseModel):
     passport_series: str | None = Field(
         description="Серия паспорта (4 цифры), либо null"
     )
-    passport_series_confidence: float
+    passport_series_confidence: float = Field(ge=0.0, le=1.0)
     passport_series_reasoning: str
 
     passport_number: str | None = Field(
         description="Номер паспорта (6 цифр), либо null"
     )
-    passport_number_confidence: float
+    passport_number_confidence: float = Field(ge=0.0, le=1.0)
     passport_number_reasoning: str
 
     last_name: str | None = Field(
         description="Фамилия владельца паспорта в именительном падеже, либо null"
     )
-    last_name_confidence: float
+    last_name_confidence: float = Field(ge=0.0, le=1.0)
     last_name_reasoning: str
 
     first_name: str | None = Field(
         description="Имя владельца паспорта в именительном падеже, либо null"
     )
-    first_name_confidence: float
+    first_name_confidence: float = Field(ge=0.0, le=1.0)
     first_name_reasoning: str
 
     patronymic: str | None = Field(
         description="Отчество владельца паспорта в именительном падеже, либо null"
     )
-    patronymic_confidence: float
+    patronymic_confidence: float = Field(ge=0.0, le=1.0)
     patronymic_reasoning: str
 
     gender: str | None = Field(
         description="Пол владельца паспорта: 'Мужской' или 'Женский', либо null"
     )
-    gender_confidence: float
+    gender_confidence: float = Field(ge=0.0, le=1.0)
     gender_reasoning: str
 
     birth_date: str | None = Field(
         description="Дата рождения владельца паспорта в формате ДД.ММ.ГГГГ, либо null"
     )
-    birth_date_confidence: float
+    birth_date_confidence: float = Field(ge=0.0, le=1.0)
     birth_date_reasoning: str
 
     birth_place: str | None = Field(
         description="Место рождения владельца паспорта, либо null"
     )
-    birth_place_confidence: float
+    birth_place_confidence: float = Field(ge=0.0, le=1.0)
     birth_place_reasoning: str
 
     issue_date: str | None = Field(
         description="Дата выдачи паспорта в формате ДД.ММ.ГГГГ, либо null"
     )
-    issue_date_confidence: float
+    issue_date_confidence: float = Field(ge=0.0, le=1.0)
     issue_date_reasoning: str
 
     department_code: str | None = Field(
         description="Код подразделения (формат XXX-XXX), либо null"
     )
-    department_code_confidence: float
+    department_code_confidence: float = Field(ge=0.0, le=1.0)
     department_code_reasoning: str
 
     issued_by: str | None = Field(
         description="Наименование органа, выдавшего паспорт, либо null"
     )
-    issued_by_confidence: float
+    issued_by_confidence: float = Field(ge=0.0, le=1.0)
     issued_by_reasoning: str
 
     has_text_distortions: bool = Field(
@@ -424,7 +445,7 @@ class PassportRegistrationResult(BaseModel):
     registration_address: str | None = Field(
         description="Адрес регистрации (прописки), либо null"
     )
-    registration_address_confidence: float
+    registration_address_confidence: float = Field(ge=0.0, le=1.0)
     registration_address_reasoning: str
 
     has_text_distortions: bool = Field(
@@ -1258,6 +1279,15 @@ agent_rtk3_combined = Agent(
     model_settings=default_settings,
 )
 
+agent_rtk3_claims = Agent(
+    model,
+    deps_type=str,
+    result_type=Rtk3ClaimsResult,
+    retries=3,
+    system_prompt=SYSTEM_PROMPT,
+    model_settings=default_settings,
+)
+
 # agent_rtk2_combined intentionally has no tools -- Opredelenie docs do not require web search
 # Attach tools to combined agents
 agent_rtk_combined.tool(search_creditor_inn)
@@ -2013,6 +2043,9 @@ async def _run_agent_extraction_impl(
                     f,
                     default=fields_config[f].get("prompt_instruction", ""),
                 )
+                if f == "claims":
+                    # Keep the additive contract even with an older Langfuse prompt.
+                    f_instruction += "\n\n" + fields_config[f].get("claimed_amount_instruction", "")
                 combined_prompt_parts.append(f"--- FIELD: {f} ---\n{f_instruction}")
             combined_instructions = "\n\n".join(combined_prompt_parts)
             combined_prompt = (
@@ -2409,9 +2442,14 @@ async def _run_agent_extraction_impl(
                 field_name,
                 default=field_def.get("prompt_instruction", ""),
             )
+            if profile_id == "rtk3" and field_name == "claims":
+                prompt_instruction += "\n\n" + field_def.get("claimed_amount_instruction", "")
             # Court appointments and signatures can be on later pages. Keep the
             # full document in individual extraction, including combined fallback.
-            field_input_text = text if profile_id == "court_decision_ru" else text[:10000]
+            field_input_text = (
+                text if profile_id == "court_decision_ru" or (profile_id == "rtk3" and field_name == "claims")
+                else text[:10000]
+            )
             if profile_id == "passport_registration" and field_name in {
                 "post_index",
                 "region",
@@ -3097,6 +3135,8 @@ async def _run_agent_extraction_impl(
                     )
                     if profile_id == "court_decision_ru" and field_name == "early_report_required":
                         agent = agent_early_report_required
+                    if profile_id == "rtk3" and field_name == "claims":
+                        agent = agent_rtk3_claims
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         try:
@@ -3117,6 +3157,8 @@ async def _run_agent_extraction_impl(
 
                     data = result.data
                     val = data.value
+                    if profile_id == "rtk3" and field_name == "claims" and val is not None:
+                        val = [claim.model_dump() for claim in val]
                     confidence = data.confidence
                     reasoning = data.reasoning
 

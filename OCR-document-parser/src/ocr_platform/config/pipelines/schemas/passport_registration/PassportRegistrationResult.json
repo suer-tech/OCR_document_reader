@@ -12,6 +12,8 @@
       "title": "Registration Address"
     },
     "registration_address_confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
       "type": "number",
       "title": "Registration Address Confidence"
     },
