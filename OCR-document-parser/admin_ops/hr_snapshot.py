@@ -15,7 +15,14 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from admin_ops.hr_protocol import CODES, SERVICES, safe_code, safe_stage
+from admin_ops.hr_protocol import (
+    CODES,
+    SERVICES,
+    STAGES,
+    daily_report,
+    safe_code,
+    safe_stage,
+)
 
 
 def command(args, input_text=None):
@@ -26,12 +33,34 @@ def command(args, input_text=None):
     return result.stdout
 
 
-def database_query():
+def database_query(summary_hour=19, summary_minute=5):
+    if type(summary_hour) is not int or type(summary_minute) is not int or not (0 <= summary_hour < 24 and 0 <= summary_minute < 60):
+        raise ValueError("invalid summary cutoff")
     codes = ",".join("'" + code.replace("'", "''") + "'" for code in sorted(CODES))
+    stages = ",".join("'" + stage + "'" for stage in sorted(STAGES))
     # No candidate names, IDs, payloads, raw errors, prompts or credentials.
     return f"""BEGIN TRANSACTION READ ONLY;
 SET LOCAL statement_timeout = '5s';
-WITH safe_attempts AS (
+WITH windows AS (
+ SELECT day AT TIME ZONE 'Asia/Yekaterinburg' AS start,
+  (day + make_interval(hours=>{summary_hour},mins=>{summary_minute})) AT TIME ZONE 'Asia/Yekaterinburg' AS finish
+ FROM (SELECT date_trunc('day',now() AT TIME ZONE 'Asia/Yekaterinburg') - i * interval '1 day' AS day
+       FROM generate_series(0,1) i) d
+), completed AS (
+ SELECT w.start,r.state,g.candidate_id,
+  CASE WHEN r.state='SUCCEEDED' AND a.started IS NOT NULL AND r.last_progress_at::timestamptz >= a.started
+   THEN extract(epoch FROM r.last_progress_at::timestamptz - a.started) END AS seconds
+ FROM windows w JOIN agent_runs r ON r.last_progress_at::timestamptz >= w.start
+  AND r.last_progress_at::timestamptz < least(w.finish,now()) AND r.state IN ('SUCCEEDED','FAILED','CANCELLED')
+ LEFT JOIN agent_goals g ON g.id=r.goal_id
+ LEFT JOIN LATERAL (SELECT min(a.started_at::timestamptz) AS started FROM agent_tasks t
+   JOIN agent_attempts a ON a.task_id=t.id WHERE t.run_id=r.id) a ON true
+), daily_errors AS (
+ SELECT w.start,CASE WHEN t.routing_class IN ({stages}) THEN t.routing_class ELSE 'unknown' END AS stage,count(*) AS count
+ FROM windows w JOIN agent_attempts a ON a.finished_at::timestamptz >= w.start
+  AND a.finished_at::timestamptz < least(w.finish,now()) AND a.state IN ('FAILED','UNKNOWN_OUTCOME')
+ JOIN agent_tasks t ON t.id=a.task_id GROUP BY w.start,stage
+), safe_attempts AS (
  SELECT a.task_id,a.finished_at,a.attempt_number,t.routing_class,
   CASE WHEN a.error_code IN ({codes}) THEN a.error_code ELSE 'TECHNICAL_ERROR' END AS code
  FROM agent_attempts a JOIN agent_tasks t ON t.id=a.task_id
@@ -39,6 +68,27 @@ WITH safe_attempts AS (
   AND a.finished_at::timestamptz >= now()-interval '24 hours'
 )
 SELECT json_build_object(
+ 'daily_reports',(SELECT json_agg(json_build_object(
+   'start',w.start,'end',w.finish,'as_of',least(w.finish,now()),
+   'candidates',(SELECT count(DISTINCT candidate_id) FROM completed WHERE start=w.start),
+   'completed_runs',(SELECT count(*) FROM completed WHERE start=w.start),
+   'succeeded',(SELECT count(*) FROM completed WHERE start=w.start AND state='SUCCEEDED'),
+   'failed',(SELECT count(*) FROM completed WHERE start=w.start AND state='FAILED'),
+   'cancelled',(SELECT count(*) FROM completed WHERE start=w.start AND state='CANCELLED'),
+   'timed_runs',(SELECT count(seconds) FROM completed WHERE start=w.start),
+   'avg_seconds',(SELECT avg(seconds) FROM completed WHERE start=w.start),
+   'p95_seconds',(SELECT percentile_disc(0.95) WITHIN GROUP (ORDER BY seconds) FROM completed WHERE start=w.start),
+   'failed_attempts',COALESCE((SELECT sum(count) FROM daily_errors WHERE start=w.start),0),
+   'retry_attempts',(SELECT count(*) FROM agent_attempts WHERE attempt_number>1
+     AND started_at::timestamptz >= w.start AND started_at::timestamptz < least(w.finish,now())),
+   'error_stages',COALESCE((SELECT json_agg(json_build_object('stage',stage,'count',count)) FROM daily_errors WHERE start=w.start),'[]'::json),
+   'active_runs',(SELECT count(*) FROM agent_runs WHERE state='ACTIVE'),
+   'waiting_runs',(SELECT count(*) FROM agent_runs WHERE state='WAITING_FOR_HUMAN'),
+   'queued_tasks',(SELECT count(*) FROM agent_tasks t JOIN agent_runs r ON r.id=t.run_id
+     WHERE t.state='RUNNABLE' AND r.state='ACTIVE'),
+   'running_tasks',(SELECT count(*) FROM agent_tasks t JOIN agent_runs r ON r.id=t.run_id
+     WHERE t.state='RUNNING' AND r.state='ACTIVE')
+  )) FROM windows w),
  'incidents', COALESCE((SELECT json_agg(x) FROM (
   SELECT * FROM (
    SELECT DISTINCT ON (a.task_id, a.code)
@@ -75,7 +125,7 @@ COMMIT;
 """
 
 
-def collect(project="hh-agent", postgres_container="hh-agent-postgres-1"):
+def collect(project="hh-agent", postgres_container="hh-agent-postgres-1", summary_hour=19, summary_minute=5):
     now = datetime.now(timezone.utc).isoformat()
     snapshot = {"schema_version": 1, "generated_at": now,
                 "sources": {"docker": "unavailable", "database": "unavailable", "events": "unavailable"},
@@ -105,7 +155,7 @@ def collect(project="hh-agent", postgres_container="hh-agent-postgres-1"):
     try:
         data = json.loads(command(["docker", "exec", "-i", "-u", "postgres", postgres_container,
                                    "psql", "-X", "-U", "hh_agent", "-d", "hh_agent", "-Atq",
-                                   "-v", "ON_ERROR_STOP=1"], database_query()))
+                                   "-v", "ON_ERROR_STOP=1"], database_query(summary_hour, summary_minute)))
         incidents = data.get("incidents", [])
         snapshot["sources"].update(database="ok", events="truncated" if len(incidents) > 1000 else "ok")
         for item in incidents[:1000]:
@@ -122,9 +172,14 @@ def collect(project="hh-agent", postgres_container="hh-agent-postgres-1"):
             })
         snapshot["stats"] = {key: max(0, float(data.get(key) or 0)) for key in
                              ("active_runs", "failed_runs_24h", "oldest_progress_seconds")}
+        reports = data.get("daily_reports")
+        if not isinstance(reports, list) or len(reports) != 2:
+            raise ValueError("missing daily aggregates")
+        snapshot["daily_reports"] = [daily_report(item) for item in reports]
     except (subprocess.SubprocessError, ValueError, TypeError, KeyError, OSError):
         snapshot["sources"].update(database="unavailable", events="unavailable")
         snapshot["incidents"], snapshot["stats"] = [], {}
+        snapshot.pop("daily_reports", None)
     try:
         disk = shutil.disk_usage("/")
         snapshot["host"] = {"disk_free_percent": round(100 * disk.free / disk.total, 1)}
@@ -143,11 +198,14 @@ def main():
     parser.add_argument("--postgres-container", default="hh-agent-postgres-1")
     parser.add_argument("--output")
     parser.add_argument("--group")
+    parser.add_argument("--summary-hour", type=int, default=19)
+    parser.add_argument("--summary-minute", type=int, default=5)
     args = parser.parse_args()
     if not all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}", value)
                for value in (args.project, args.postgres_container)):
         parser.error("invalid source name")
-    body = json.dumps(collect(args.project, args.postgres_container), ensure_ascii=False, allow_nan=False)
+    body = json.dumps(collect(args.project, args.postgres_container, args.summary_hour, args.summary_minute),
+                      ensure_ascii=False, allow_nan=False)
     if len(body.encode()) > 262144:
         raise ValueError("snapshot exceeds boundary limit")
     if not args.output:

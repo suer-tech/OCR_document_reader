@@ -15,6 +15,7 @@ from admin_ops.alerts import AlertTracker
 from admin_ops.config import OpsSettings, get_ops_settings
 from admin_ops.daily_summary import DailySummaries, build_summary
 from admin_ops.github import PublicationError, create_draft_pr
+from admin_ops.hr_daily_summary import HrDailySummaries
 from admin_ops.hr_incidents import HrIncidentMonitor
 from admin_ops.read_tools import ReadTools
 from admin_ops.release import (
@@ -569,6 +570,7 @@ class AdminBot:
         deployment_task = asyncio.create_task(self.monitor_deployments())
         summary_task = asyncio.create_task(DailySummaries(self.settings, self.send).run())
         hr_monitor_task = asyncio.create_task(HrIncidentMonitor(self.settings, self.send).run())
+        hr_summary_task = asyncio.create_task(HrDailySummaries(self.settings, self.send).run())
         try:
             while True:
                 try:
@@ -595,7 +597,9 @@ class AdminBot:
             deployment_task.cancel()
             summary_task.cancel()
             hr_monitor_task.cancel()
-            await asyncio.gather(alert_task, deployment_task, summary_task, hr_monitor_task, return_exceptions=True)
+            hr_summary_task.cancel()
+            await asyncio.gather(alert_task, deployment_task, summary_task, hr_monitor_task, hr_summary_task,
+                                 return_exceptions=True)
             await self.aclose()
 
     async def monitor_alerts(self) -> None:

@@ -157,42 +157,51 @@ class DailySummaries:
     def __init__(self, settings, send):
         self.settings, self.send = settings, send
 
+    # Internal constants only: table names are never supplied by an external source.
+    namespace = "daily_summary"
+    schedule_prefix = "daily_summary"
+
+    async def build(self, end, now):
+        return await build_summary(self.settings, end, now)
+
     def connect(self):
         Path(self.settings.state_path).parent.mkdir(parents=True, exist_ok=True)
         return sqlite3.connect(self.settings.state_path, timeout=5)
 
     async def tick(self, now: datetime | None = None) -> int:
-        if not self.settings.daily_summary_enabled:
+        if not getattr(self.settings, self.schedule_prefix + "_enabled"):
             return 0
+        assert self.namespace in {"daily_summary", "hr_daily_summary"}
+        state, deliveries = self.namespace + "_state", self.namespace + "_deliveries"
         now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(self.settings.timezone))
-        cutoff = now.replace(hour=self.settings.daily_summary_hour,
-                             minute=self.settings.daily_summary_minute, second=0, microsecond=0)
+        cutoff = now.replace(hour=getattr(self.settings, self.schedule_prefix + "_hour"),
+                             minute=getattr(self.settings, self.schedule_prefix + "_minute"), second=0, microsecond=0)
         if now < cutoff:
             cutoff -= timedelta(days=1)
         key = cutoff.isoformat()
         admins = sorted(self.settings.allowed_admin_ids)
         with closing(self.connect()) as db, db:
-            db.execute("CREATE TABLE IF NOT EXISTS daily_summary_state (key TEXT PRIMARY KEY, value REAL NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS daily_summary_deliveries "
+            db.execute(f"CREATE TABLE IF NOT EXISTS {state} (key TEXT PRIMARY KEY, value REAL NOT NULL)")
+            db.execute(f"CREATE TABLE IF NOT EXISTS {deliveries} "
                        "(cutoff TEXT, recipient INTEGER, body TEXT NOT NULL, sent_at REAL, lease_until REAL, "
                        "PRIMARY KEY(cutoff, recipient))")
-            db.execute("INSERT OR IGNORE INTO daily_summary_state VALUES ('activated_at', ?)", (now.timestamp(),))
-            activated = db.execute("SELECT value FROM daily_summary_state WHERE key='activated_at'").fetchone()[0]
-            existing = db.execute("SELECT body FROM daily_summary_deliveries WHERE cutoff=? LIMIT 1", (key,)).fetchone()
+            db.execute(f"INSERT OR IGNORE INTO {state} VALUES ('activated_at', ?)", (now.timestamp(),))
+            activated = db.execute(f"SELECT value FROM {state} WHERE key='activated_at'").fetchone()[0]
+            existing = db.execute(f"SELECT body FROM {deliveries} WHERE cutoff=? LIMIT 1", (key,)).fetchone()
         if cutoff.timestamp() >= activated:
-            body = existing[0] if existing else await build_summary(self.settings, cutoff, now)
+            body = existing[0] if existing else await self.build(cutoff, now)
             with closing(self.connect()) as db, db:
-                db.executemany("INSERT OR IGNORE INTO daily_summary_deliveries (cutoff,recipient,body) VALUES (?,?,?)",
+                db.executemany(f"INSERT OR IGNORE INTO {deliveries} (cutoff,recipient,body) VALUES (?,?,?)",
                                [(key, admin, body) for admin in admins])
         with closing(self.connect()) as db:
-            pending = db.execute("SELECT cutoff,recipient,body FROM daily_summary_deliveries "
+            pending = db.execute(f"SELECT cutoff,recipient,body FROM {deliveries} "
                                  "WHERE sent_at IS NULL ORDER BY cutoff,recipient").fetchall()
         sent = 0
         for delivery_key, admin, body in pending:
             if admin not in admins:
                 continue
             with closing(self.connect()) as db, db:
-                claimed = db.execute("UPDATE daily_summary_deliveries SET lease_until=? "
+                claimed = db.execute(f"UPDATE {deliveries} SET lease_until=? "
                                      "WHERE cutoff=? AND recipient=? AND sent_at IS NULL "
                                      "AND (lease_until IS NULL OR lease_until<=?)",
                                      (now.timestamp() + 120, delivery_key, admin, now.timestamp())).rowcount
@@ -201,16 +210,16 @@ class DailySummaries:
             try:
                 await self.send(admin, body)
             except Exception as exc:  # noqa: BLE001 - retry delivery without killing the scheduler
-                logger.warning("daily_summary_delivery_failed: %s", type(exc).__name__)
+                logger.warning("%s_delivery_failed: %s", self.namespace, type(exc).__name__)
                 with closing(self.connect()) as db, db:
-                    db.execute("UPDATE daily_summary_deliveries SET lease_until=NULL WHERE cutoff=? AND recipient=?",
+                    db.execute(f"UPDATE {deliveries} SET lease_until=NULL WHERE cutoff=? AND recipient=?",
                                (delivery_key, admin))
             else:
                 with closing(self.connect()) as db, db:
-                    db.execute("UPDATE daily_summary_deliveries SET sent_at=?,lease_until=NULL WHERE cutoff=? AND recipient=?",
+                    db.execute(f"UPDATE {deliveries} SET sent_at=?,lease_until=NULL WHERE cutoff=? AND recipient=?",
                                (now.timestamp(), delivery_key, admin))
                 sent += 1
-                logger.info("daily_summary_sent: %s", delivery_key)
+                logger.info("%s_sent: %s", self.namespace, delivery_key)
         return sent
 
     async def run(self):
@@ -218,5 +227,5 @@ class DailySummaries:
             try:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001 - scheduler survives transient source/state failures
-                logger.error("daily_summary_tick_failed: %s", type(exc).__name__)
+                logger.error("%s_tick_failed: %s", self.namespace, type(exc).__name__)
             await asyncio.sleep(60)

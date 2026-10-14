@@ -24,6 +24,9 @@ class OpsSettings(BaseSettings):
     daily_summary_enabled: bool = True
     daily_summary_hour: int = Field(default=19, ge=0, le=23)
     daily_summary_minute: int = Field(default=0, ge=0, le=59)
+    hr_daily_summary_enabled: bool = True
+    hr_daily_summary_hour: int = Field(default=19, ge=0, le=23)
+    hr_daily_summary_minute: int = Field(default=5, ge=0, le=59)
     hr_monitor_enabled: bool = True
     hr_monitor_host: str = ""
     hr_monitor_user: str = "hh-ops-monitor"
