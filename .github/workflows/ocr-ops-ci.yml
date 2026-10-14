@@ -60,3 +60,8 @@ jobs:
           docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,nosuid,nodev,size=128m ocr-admin-ci python -m admin_ops.sdk_code_smoke
       - name: Run administrator and monitoring smoke tests
         run: python -m pytest OCR-document-parser/admin_ops/tests OCR-document-parser/tests/test_prometheus_exposition.py -q
+      - name: Verify candidate incidents against isolated PostgreSQL
+        working-directory: OCR-document-parser
+        env:
+          OPS_HR_MONITOR_TEST_CONSENT: synthetic-only
+        run: python -m admin_ops.tests.run_hr_incident_postgres_acceptance --local-docker

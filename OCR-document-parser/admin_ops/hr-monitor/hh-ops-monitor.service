@@ -1,0 +1,21 @@
+[Unit]
+Description=Sanitized read-only candidate service incident snapshot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hh-ops-monitor
+ExecStart=/usr/bin/python3 -m admin_ops.hr_snapshot --output /var/lib/hh-ops-monitor/status.json --group hh-ops-monitor
+RuntimeDirectory=hh-ops-monitor
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+Environment=DOCKER_CONFIG=/run/hh-ops-monitor/docker
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hh-ops-monitor
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=128M
+TimeoutStartSec=30
