@@ -8,7 +8,7 @@
 
 `/approve` создаёт draft PR; `/confirm` проверяет точный SHA и успешный `validate-hh`, затем сливает в production и запускает `hh-production-deploy.yml`. Workflow независимо проверяет PR/CI, а отдельный SSH key допускает только `deploy <40-character SHA>` через фиксированный host wrapper. Бот не получает shell на VPS кандидатов. Эти проверки не закрывают отдельный обязательный production-like E2E gate кандидатов, который остаётся BLOCKED без подготовленной среды и синхронизации требований.
 
-При настройке нужны production-ветка с актуальным VPS-кодом и GitHub secrets `HH_VPS_HOST`, `HH_VPS_SSH_KEY`, `HH_VPS_KNOWN_HOSTS` в репозитории кандидатов. В конфигурации бота задаются только не секретные `OPS_HH_GITHUB_REPO` и `OPS_HH_GITHUB_BASE_BRANCH`; используется уже защищённый GitHub token admin-bot. Для обновления пересоздайте только `admin-bot` и `fixer-ai`, сохранив состояние и Codex login directories.
+При настройке нужны production-ветка с актуальным VPS-кодом и GitHub secrets `HH_VPS_HOST`, `HH_VPS_SSH_KEY`, `HH_VPS_KNOWN_HOSTS` в репозитории кандидатов. В конфигурации бота задаются `OPS_HH_GITHUB_REPO`, `OPS_HH_GITHUB_BASE_BRANCH` и отдельный защищённый `OPS_HH_GITHUB_TOKEN` с доступом к репозиторию кандидатов. Если отдельный token не задан, используется прежний token admin-bot; его права должны включать этот репозиторий. Наладчик не получает ни один token. Для обновления пересоздайте только `admin-bot` и `fixer-ai`, сохранив состояние и Codex login directories.
 
 ## Ежедневная краткая сводка
 
