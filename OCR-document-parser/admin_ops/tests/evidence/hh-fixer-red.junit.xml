@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.740" timestamp="2026-10-14T11:51:25.252003+05:00" hostname="WIN-4E9RD0TRUH1"><testcase classname="admin_ops.tests.test_hh_fixer_acceptance" name="test_fix_hh_routes_to_candidate_target_and_persists_identity" time="0.804"><failure message="AssertionError: candidate command must reach the fixer with target=hh; Неизвестная команда. Для диалога пишите обычным текстом; для правок — /fix задача. Список команд: /help.&#10;assert [] == [('http://awg...rget': 'hh'})]&#10;  &#10;  Right contains one more item: ('http://awg-gateway:8081/fix', {'request': 'Заполни организационные моменты', 'target': 'hh'})&#10;  Use -v to get more diff">tmp_path = WindowsPath('C:/Users/user2/AppData/Local/Temp/pytest-of-user2/pytest-356/test_fix_hh_routes_to_candidat0')
+
+    def test_fix_hh_routes_to_candidate_target_and_persists_identity(tmp_path):
+        state = str(tmp_path / "state.sqlite3")
+        bot_module.init_state(state)
+    
+        async def run():
+            bot = AdminBot(OpsSettings(telegram_token="synthetic", admin_ids="123", state_path=state))
+            calls, sent = [], []
+    
+            async def send(admin, text):
+                sent.append(text)
+    
+            async def worker(url, payload):
+                calls.append((url, payload))
+                return proposal(target="hh", repository=HH_REPO, branch=HH_BRANCH)
+    
+            bot.send, bot.worker = send, worker
+            try:
+                await bot.handle(message("/fix_hh Заполни организационные моменты"))
+                if bot.dialog_tasks:
+                    await asyncio.gather(*bot.dialog_tasks.values())
+                assert calls == [(bot.settings.fixer_url + "/fix", {"request": "Заполни организационные моменты", "target": "hh"})], (
+                    "candidate command must reach the fixer with target=hh; " + " | ".join(sent)
+                )
+            finally:
+                await bot.aclose()
+    
+&gt;       asyncio.run(run())
+
+admin_ops\tests\test_hh_fixer_acceptance.py:66: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\..\..\Programs\Python\Python312\Lib\asyncio\runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+..\..\..\Programs\Python\Python312\Lib\asyncio\runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\Programs\Python\Python312\Lib\asyncio\base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    async def run():
+        bot = AdminBot(OpsSettings(telegram_token="synthetic", admin_ids="123", state_path=state))
+        calls, sent = [], []
+    
+        async def send(admin, text):
+            sent.append(text)
+    
+        async def worker(url, payload):
+            calls.append((url, payload))
+            return proposal(target="hh", repository=HH_REPO, branch=HH_BRANCH)
+    
+        bot.send, bot.worker = send, worker
+        try:
+            await bot.handle(message("/fix_hh Заполни организационные моменты"))
+            if bot.dialog_tasks:
+                await asyncio.gather(*bot.dialog_tasks.values())
+&gt;           assert calls == [(bot.settings.fixer_url + "/fix", {"request": "Заполни организационные моменты", "target": "hh"})], (
+                "candidate command must reach the fixer with target=hh; " + " | ".join(sent)
+            )
+E           AssertionError: candidate command must reach the fixer with target=hh; Неизвестная команда. Для диалога пишите обычным текстом; для правок — /fix задача. Список команд: /help.
+E           assert [] == [('http://awg...rget': 'hh'})]
+E             
+E             Right contains one more item: ('http://awg-gateway:8081/fix', {'request': 'Заполни организационные моменты', 'target': 'hh'})
+E             Use -v to get more diff
+
+admin_ops\tests\test_hh_fixer_acceptance.py:60: AssertionError</failure></testcase></testsuite></testsuites>

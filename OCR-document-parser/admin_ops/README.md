@@ -1,5 +1,15 @@
 # Админ-бот OCR: Пульс и Наладчик
 
+## Анализ кандидатов в том же боте
+
+`/fix_hh задача` готовит отдельное предложение для `suer-tech/ai-candidate-screening`, ветка `production`; `/analyze_hh вопрос` читает её без правок. Для предложения кандидатов применяются обычные `/diff ID`, `/approve ID`, `/confirm ID SHA8`, `/status ID` и `/deploy ID`. Репозиторий и ветка сохраняются в SQLite вместе с target: рестарт не переводит HH-предложение в OCR. В сообщении предложения указан выбранный проект. Обычный `/fix` продолжает обслуживать OCR.
+
+Наладчик использует существующую авторизацию Codex и изолированный GitHub clone, без SSH, Docker socket, runtime credentials или материалов кандидатов. Править можно только исходники/тесты внутри `web/server`, `web/app`, `web/tests`: до пяти текстовых файлов, до 500 kB каждый и до 50 000 символов diff. Больший лимит файла нужен для существующего `production-runtime.ts`; OCR сохраняет 100 kB. Запрещены удаления, fixtures/evidence, secrets, package manifests, workflow, deployment и OpenSpec. Read-only анализ предоставляет только отфильтрованные tracked source files через прежний MCP reader.
+
+`/approve` создаёт draft PR; `/confirm` проверяет точный SHA и успешный `validate-hh`, затем сливает в production и запускает `hh-production-deploy.yml`. Workflow независимо проверяет PR/CI, а отдельный SSH key допускает только `deploy <40-character SHA>` через фиксированный host wrapper. Бот не получает shell на VPS кандидатов. Эти проверки не закрывают отдельный обязательный production-like E2E gate кандидатов, который остаётся BLOCKED без подготовленной среды и синхронизации требований.
+
+При настройке нужны production-ветка с актуальным VPS-кодом и GitHub secrets `HH_VPS_HOST`, `HH_VPS_SSH_KEY`, `HH_VPS_KNOWN_HOSTS` в репозитории кандидатов. В конфигурации бота задаются только не секретные `OPS_HH_GITHUB_REPO` и `OPS_HH_GITHUB_BASE_BRANCH`; используется уже защищённый GitHub token admin-bot. Для обновления пересоздайте только `admin-bot` и `fixer-ai`, сохранив состояние и Codex login directories.
+
 ## Ежедневная краткая сводка
 
 `admin-bot` самостоятельно отправляет каждому администратору из `OPS_ADMIN_IDS` одну сводку в день, без Codex/LLM. По умолчанию — **19:00, Asia/Yekaterinburg**, за текущий день **00:00–19:00**. Завершения после 19:00 не входят в этот период. Для полного предыдущего календарного дня можно установить час `0`, минуту `0`. Текущее состояние API/worker и очередей помечено временем получения и может отличаться от времени периода при отложенной доставке.

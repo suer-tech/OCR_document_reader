@@ -17,6 +17,8 @@ services:
       OPS_WORK_ROOT: /work
       OPS_GITHUB_REPO: ${OPS_GITHUB_REPO:-suer-tech/OCR_document_reader}
       OPS_GITHUB_BASE_BRANCH: ${OPS_GITHUB_BASE_BRANCH:-main}
+      OPS_HH_GITHUB_REPO: ${OPS_HH_GITHUB_REPO:-suer-tech/ai-candidate-screening}
+      OPS_HH_GITHUB_BASE_BRANCH: ${OPS_HH_GITHUB_BASE_BRANCH:-production}
       CODEX_HOME: /home/ops/.codex
     volumes:
       - ${OPS_FIXER_CODEX_HOME_HOST:?Set absolute path to Fixer Codex login directory}:/home/ops/.codex

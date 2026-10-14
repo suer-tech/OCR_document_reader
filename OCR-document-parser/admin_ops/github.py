@@ -22,7 +22,11 @@ async def create_draft_pr(
     if not re.fullmatch(r"[a-f0-9]{8}", proposal_id):
         raise PublicationError("Invalid proposal id")
     files = proposal.get("files", {})
-    if not files or len(files) > 5 or any(not validate_change_path(path) for path in files):
+    target = proposal.get("target", "ocr")
+    if (target not in {"ocr", "hh"} or proposal.get("repository", repo) != repo
+            or proposal.get("branch", base_branch) != base_branch):
+        raise PublicationError("Proposal target differs from configured repository")
+    if not files or len(files) > 5 or any(not validate_change_path(path, target) for path in files):
         raise PublicationError("Proposal contains disallowed files")
     branch = f"codex/ops-{proposal_id}"
     base_url = f"https://api.github.com/repos/{repo}"
@@ -45,13 +49,13 @@ async def create_draft_pr(
         base_commit = await call("GET", f"/git/commits/{base_sha}")
         tree_entries = []
         for path, content in files.items():
-            if not isinstance(content, str) or len(content.encode("utf-8")) > 100_000:
+            if not isinstance(content, str) or len(content.encode("utf-8")) > (500_000 if target == "hh" else 100_000):
                 raise PublicationError(f"Unsafe file content: {path}")
             blob = await call(
                 "POST", "/git/blobs",
                 json={"content": base64.b64encode(content.encode("utf-8")).decode("ascii"), "encoding": "base64"},
             )
-            tree_entries.append({"path": repo_path(path), "mode": "100644", "type": "blob", "sha": blob["sha"]})
+            tree_entries.append({"path": repo_path(path, target), "mode": "100644", "type": "blob", "sha": blob["sha"]})
         tree = await call(
             "POST", "/git/trees",
             json={"base_tree": base_commit["tree"]["sha"], "tree": tree_entries},
@@ -59,7 +63,7 @@ async def create_draft_pr(
         commit = await call(
             "POST", "/git/commits",
             json={
-                "message": f"ops: administrator-approved OCR fix {proposal_id}",
+                "message": f"ops: administrator-approved {target.upper()} fix {proposal_id}",
                 "tree": tree["sha"],
                 "parents": [base_sha],
             },
@@ -68,7 +72,7 @@ async def create_draft_pr(
         pr = await call(
             "POST", "/pulls",
             json={
-                "title": f"OCR maintenance proposal {proposal_id}",
+                "title": f"{target.upper()} maintenance proposal {proposal_id}",
                 "head": branch,
                 "base": base_branch,
                 "draft": True,

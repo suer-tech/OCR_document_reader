@@ -93,6 +93,7 @@ async def public_check_runs(base_url: str, head_sha: str, required_check: str) -
 
 
 def validate_pr_files(files: list[dict], proposal: dict) -> None:
+    target = proposal.get("target", "ocr")
     expected = set(proposal.get("files", {}))
     if not isinstance(files, list) or not expected or len(files) != len(expected) or len(files) > 5:
         raise ReleaseError("PR file list changed or exceeds policy")
@@ -100,8 +101,8 @@ def validate_pr_files(files: list[dict], proposal: dict) -> None:
         if not isinstance(file, dict):
             raise ReleaseError("GitHub returned an invalid PR file")
         path = file.get("filename", "")
-        relative = project_path(path)
-        if relative is None or relative not in expected or not validate_change_path(relative) or file.get("status") not in {"modified", "added"}:
+        relative = project_path(path, target)
+        if relative is None or relative not in expected or not validate_change_path(relative, target) or file.get("status") not in {"modified", "added"}:
             raise ReleaseError(f"Disallowed PR change: {path}")
 
 
@@ -157,7 +158,7 @@ async def merge_approved_pr(
             raise ReleaseError("Base branch moved before merge")
         merged = await request_json(
             client, base_url, "PUT", f"/pulls/{number}/merge",
-            json={"sha": head_sha, "merge_method": "squash", "commit_title": f"OCR ops fix {proposal_id}"},
+            json={"sha": head_sha, "merge_method": "squash", "commit_title": f"{proposal.get('target', 'ocr').upper()} ops fix {proposal_id}"},
         )
         merge_sha = merged.get("sha")
         if merged.get("merged") is not True or not re.fullmatch(r"[a-f0-9]{40}", merge_sha or ""):

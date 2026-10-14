@@ -44,5 +44,5 @@ if __name__ == "__main__":
         raw = manifest.read(2_000_001)
     if len(raw) > 2_000_000:
         raise ValueError("source inventory too large")
-    reader = CodeReader(Path(os.environ["OCR_CODE_ROOT"]), json.loads(raw))
+    reader = CodeReader(Path(os.environ["OCR_CODE_ROOT"]), json.loads(raw), os.environ.get("OPS_CODE_TARGET", "ocr"))
     mcp.run(transport="stdio")

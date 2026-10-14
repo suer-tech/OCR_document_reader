@@ -8,16 +8,16 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from admin_ops.code_read import CODE_TOOLS, allowed_code_path
 from admin_ops.config import get_ops_settings
-from admin_ops.paths import PROJECT_DIR, project_path, repo_path
+from admin_ops.paths import PROJECT_DIR, project_path
 from admin_ops.read_relay import ReadJobs
 from admin_ops.read_tools import TOOL_MODELS
-from admin_ops.code_read import CODE_TOOLS, allowed_code_path
 
 app = FastAPI(title="OCR administrator Codex worker", docs_url=None, redoc_url=None)
 read_jobs = ReadJobs()
@@ -62,6 +62,7 @@ class ReadReply(BaseModel):
 
 class FixRequest(BaseModel):
     request: str = Field(min_length=1, max_length=1500)
+    target: Literal["ocr", "hh"] = "ocr"
 
 
 def require_internal_token(x_ops_token: str = Header(default="")) -> None:
@@ -77,25 +78,31 @@ def git(cwd: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def validate_change_path(path: str) -> bool:
+def validate_change_path(path: str, target: str = "ocr") -> bool:
     candidate = PurePosixPath(path)
     if candidate.is_absolute() or ".." in candidate.parts or "\\" in path or ":" in path or "//" in path:
         return False
-    if not path.startswith(("src/ocr_platform/", "tests/")):
+    if target == "hh":
+        blocked = {"fixtures", "evidence", "candidate", "credentials", "secrets", "node_modules", "test-results", "playwright-report"}
+        return (path.startswith(("web/server/", "web/app/", "web/tests/"))
+                and candidate.suffix in {".ts", ".tsx", ".mjs", ".js", ".json"}
+                and not any(part.startswith(".") or part.lower() in blocked for part in candidate.parts)
+                and not any(word in candidate.name.lower() for word in ("secret", "credential", ".env")))
+    if target != "ocr" or not path.startswith(("src/ocr_platform/", "tests/")):
         return False
     if path.endswith((".env", ".db", ".sqlite3")):
         return False
     return candidate.suffix in {".py", ".yaml", ".yml", ".json", ".toml"}
 
 
-def collect_proposal(worktree: Path, base_sha: str, summary: str) -> dict:
-    root = worktree.parent
-    if worktree.name != PROJECT_DIR or not (root / ".git").exists():
+def collect_proposal(worktree: Path, base_sha: str, summary: str, target: str = "ocr") -> dict:
+    root = worktree if target == "hh" else worktree.parent
+    if target not in {"ocr", "hh"} or (target == "ocr" and worktree.name != PROJECT_DIR) or not (root / ".git").exists():
         raise ValueError("Expected project subdirectory inside an isolated repository clone")
     untracked = git(root, "ls-files", "--others", "--exclude-standard").splitlines()
     for path in untracked:
-        relative = project_path(path)
-        if relative is None or not validate_change_path(relative):
+        relative = project_path(path, target)
+        if relative is None or not validate_change_path(relative, target):
             raise ValueError(f"Disallowed new file: {path}")
         git(root, "add", "-N", "--", path)
     changes = [line.split("\t", 1) for line in git(root, "diff", "--name-status", "HEAD").splitlines()]
@@ -103,18 +110,18 @@ def collect_proposal(worktree: Path, base_sha: str, summary: str) -> dict:
         raise ValueError("Proposal must change between 1 and 5 files")
     files: dict[str, str] = {}
     for entry in changes:
-        relative = project_path(entry[1]) if len(entry) == 2 else None
-        if len(entry) != 2 or entry[0] not in {"M", "A"} or relative is None or not validate_change_path(relative):
+        relative = project_path(entry[1], target) if len(entry) == 2 else None
+        if len(entry) != 2 or entry[0] not in {"M", "A"} or relative is None or not validate_change_path(relative, target):
             raise ValueError(f"Disallowed change: {entry}")
         path = relative
         original = worktree / path
-        target = original.resolve()
-        if not target.is_relative_to(worktree.resolve()) or original.is_symlink():
+        resolved = original.resolve()
+        if not resolved.is_relative_to(worktree.resolve()) or any((worktree / Path(*original.relative_to(worktree).parts[:index])).is_symlink() for index in range(1, len(original.relative_to(worktree).parts) + 1)):
             raise ValueError(f"Unsafe file path: {path}")
-        if target.stat().st_size > 100_000:
+        if resolved.stat().st_size > (500_000 if target == "hh" else 100_000):
             raise ValueError(f"File too large: {path}")
-        files[path] = target.read_text(encoding="utf-8")
-    diff = git(root, "diff", "--no-ext-diff", "--", repo_path("src/ocr_platform"), repo_path("tests"))
+        files[path] = resolved.read_text(encoding="utf-8")
+    diff = git(root, "diff", "--no-ext-diff", "HEAD")
     if len(diff) > 50_000:
         raise ValueError("Diff too large for Telegram review")
     python_files = [path for path in files if path.endswith(".py")]
@@ -124,7 +131,7 @@ def collect_proposal(worktree: Path, base_sha: str, summary: str) -> dict:
         except SyntaxError as exc:
             raise ValueError("Python syntax check failed") from exc
     return {
-        "base_sha": base_sha, "files": files, "diff": diff,
+        "base_sha": base_sha, "files": files, "diff": diff, "target": target,
         "summary": summary[:1500], "checks": {"python_syntax": "passed" if python_files else "not_applicable"},
     }
 
@@ -243,12 +250,12 @@ async def request_read(job_id: str, call: ReadCall, x_read_token: str = Header(d
     return await job.ask(call.name, args)
 
 
-def code_config(root: Path, manifest: Path) -> dict:
+def code_config(root: Path, manifest: Path, target: str = "ocr") -> dict:
     return {"features.shell_tool": False, "web_search": "disabled", "agents.enabled": False,
             "mcp_servers.ocr_code": {
                 "command": sys.executable, "args": ["-m", "admin_ops.mcp_code"],
                 "cwd": str(Path(__file__).resolve().parents[1]),
-                "env": {"OCR_CODE_ROOT": str(root.resolve()), "OCR_CODE_MANIFEST": str(manifest.resolve()),
+                "env": {"OCR_CODE_ROOT": str(root.resolve()), "OCR_CODE_MANIFEST": str(manifest.resolve()), "OPS_CODE_TARGET": target,
                         "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
                 "required": True, "startup_timeout_sec": 20, "tool_timeout_sec": 20,
                 "enabled_tools": CODE_TOOLS,
@@ -257,7 +264,7 @@ def code_config(root: Path, manifest: Path) -> dict:
 
 @app.post("/analyze", dependencies=[Depends(require_internal_token)])
 async def analyze(request: FixRequest) -> dict:
-    settings = get_ops_settings()
+    settings = get_ops_settings().for_target(request.target)
     if settings.role != "fixer":
         raise HTTPException(status_code=404)
     if not settings.github_repo:
@@ -265,30 +272,30 @@ async def analyze(request: FixRequest) -> dict:
     with tempfile.TemporaryDirectory(prefix="analyze-", dir=settings.work_root) as folder:
         root = Path(folder) / "repo"
         await asyncio.to_thread(clone_source, settings.github_repo, settings.github_base_branch, root)
-        worktree = root / PROJECT_DIR
+        worktree = root if request.target == "hh" else root / PROJECT_DIR
         if not worktree.is_dir():
             raise HTTPException(status_code=503, detail="OCR project directory is absent in GitHub clone")
         base_sha = git(root, "rev-parse", "HEAD")
         # Generated by trusted application code, outside the clone and never model-supplied.
-        paths = [p for p in git(root, "ls-files", "-z").split("\0") if allowed_code_path(p)]
+        paths = [p for p in git(root, "ls-files", "-z").split("\0") if allowed_code_path(p, request.target)]
         if len(paths) > 10000:
             raise HTTPException(status_code=503, detail="Source inventory limit exceeded")
         manifest = Path(folder) / "code-files.json"
         manifest.write_text(json.dumps(paths), encoding="utf-8")
         answer = await run_codex(
             cwd=str(worktree), sandbox="read_only", prompt=request.request,
-            instructions=ANALYZE_INSTRUCTIONS,
-            config=code_config(root, manifest),
+            instructions=ANALYZE_INSTRUCTIONS + ("\nThe target is HH candidate analysis, not OCR. Changes require /fix_hh." if request.target == "hh" else ""),
+            config=code_config(root, manifest, request.target),
         )
         if git(root, "rev-parse", "HEAD") != base_sha or git(root, "status", "--porcelain", "--untracked-files=all"):
             raise HTTPException(status_code=409, detail="Analysis checkout changed unexpectedly")
-        return {"answer": answer[:12000], "base_sha": base_sha,
+        return {"answer": answer[:12000], "base_sha": base_sha, "target": request.target,
                 "repository": settings.github_repo, "branch": settings.github_base_branch}
 
 
 @app.post("/fix", dependencies=[Depends(require_internal_token)])
 async def fix(request: FixRequest) -> dict:
-    settings = get_ops_settings()
+    settings = get_ops_settings().for_target(request.target)
     if settings.role != "fixer":
         raise HTTPException(status_code=404)
     if not settings.github_repo:
@@ -296,7 +303,7 @@ async def fix(request: FixRequest) -> dict:
     with tempfile.TemporaryDirectory(prefix="fix-", dir=settings.work_root) as folder:
         root = Path(folder) / "repo"
         await asyncio.to_thread(clone_source, settings.github_repo, settings.github_base_branch, root)
-        worktree = root / PROJECT_DIR
+        worktree = root if request.target == "hh" else root / PROJECT_DIR
         if not worktree.is_dir():
             raise HTTPException(status_code=503, detail="OCR project directory is absent in GitHub clone")
         base_sha = git(root, "rev-parse", "HEAD")
@@ -311,12 +318,29 @@ async def fix(request: FixRequest) -> dict:
             "Avoid unrelated changes. The final diff is independently validated.\n"
             f"Administrator request: {request.request}"
         )
-        summary = await run_codex(cwd=str(worktree), sandbox="workspace_write", prompt=prompt)
+        if request.target == "hh":
+            prompt = (
+                "You are Naladchik, maintaining the HH candidate-analysis service. Work only in this isolated source clone. "
+                "Make the smallest requested fix in web/server, web/app or web/tests. "
+                "Do not edit OpenSpec, workflows, deployment, package manifests, credentials or other files. "
+                "Never delete files, access real candidate materials, use provider/Drive/Telegram effects, commit, push, create a PR, merge or deploy. "
+                "Use only synthetic tests; report what passed, failed or could not run. Do not claim production readiness. "
+                "The final diff is independently bounded and validated. Answer in Russian.\n"
+                f"Administrator request: {request.request}"
+            )
+        if request.target == "hh":
+            summary = await run_codex(cwd=str(worktree), sandbox="workspace_write", prompt=request.request,
+                                      instructions=prompt.split("Administrator request:", 1)[0],
+                                      config={"web_search": "disabled", "agents.enabled": False})
+        else:
+            summary = await run_codex(cwd=str(worktree), sandbox="workspace_write", prompt=prompt)
         if git(root, "rev-parse", "HEAD") != base_sha:
             raise HTTPException(status_code=422, detail="Source revision changed unexpectedly")
         if not git(root, "status", "--porcelain", "--untracked-files=all"):
-            return {"status": "no_changes", "summary": summary[:12000], "base_sha": base_sha}
+            return {"status": "no_changes", "summary": summary[:12000], "base_sha": base_sha, "target": request.target,
+                    "repository": settings.github_repo, "branch": settings.github_base_branch}
         try:
-            return collect_proposal(worktree, base_sha, summary)
+            return {**collect_proposal(worktree, base_sha, summary, request.target), "target": request.target,
+                    "repository": settings.github_repo, "branch": settings.github_base_branch}
         except (ValueError, OSError, UnicodeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

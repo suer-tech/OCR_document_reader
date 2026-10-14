@@ -36,9 +36,25 @@ class OpsSettings(BaseSettings):
     github_base_branch: str = "main"
     github_required_check: str = "validate"
     github_deploy_workflow: str = "ocr-production-deploy.yml"
+    hh_github_repo: str = "suer-tech/ai-candidate-screening"
+    hh_github_base_branch: str = "production"
+    hh_github_required_check: str = "validate-hh"
+    hh_github_deploy_workflow: str = "hh-production-deploy.yml"
     codex_model: str = ""
     role: str = ""
     work_root: str = "/work"
+
+    def for_target(self, target: str) -> OpsSettings:
+        if target == "ocr":
+            return self
+        if target != "hh":
+            raise ValueError("Unknown maintenance target")
+        return self.model_copy(update={
+            "github_repo": self.hh_github_repo,
+            "github_base_branch": self.hh_github_base_branch,
+            "github_required_check": self.hh_github_required_check,
+            "github_deploy_workflow": self.hh_github_deploy_workflow,
+        })
 
     @property
     def allowed_admin_ids(self) -> set[int]:
