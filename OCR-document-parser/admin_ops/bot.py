@@ -13,7 +13,9 @@ import httpx
 
 from admin_ops.alerts import AlertTracker
 from admin_ops.config import OpsSettings, get_ops_settings
+from admin_ops.daily_summary import DailySummaries, build_summary
 from admin_ops.github import PublicationError, create_draft_pr
+from admin_ops.read_tools import ReadTools
 from admin_ops.release import (
     ReleaseError,
     deployment_result,
@@ -22,7 +24,6 @@ from admin_ops.release import (
     reconciled_merge_sha,
 )
 from admin_ops.stats import load_daily_report, prometheus_snapshot
-from admin_ops.read_tools import ReadTools
 
 logger = logging.getLogger(__name__)
 
@@ -357,12 +358,15 @@ class AdminBot:
                 "Я Пульс. Пишите обычным текстом — /pulse не обязателен. Помню последние 6 ответов в текущем сеансе; после перезапуска история сбрасывается.\n\n"
                 "Анализ исходного кода без правок: /analyze вопрос. Например: /analyze Как вычисляется early_report_deadline? Читаю опубликованную ветку GitHub, не рабочие файлы VPS.\n\n"
                 "Правки кода запускаются только командой /fix задача. Обычное сообщение ничего не меняет.\n\n"
-                "Команды: /today, /health, /pulse вопрос, /analyze вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
+                "Команды: /today, /summary, /health, /pulse вопрос, /analyze вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /summary — краткая сводка за сегодня. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
         elif command == "/today":
             daily = await asyncio.to_thread(load_daily_report, self.settings.database_url, self.settings.timezone)
             await self.send(admin_id, format_daily(daily))
         elif command == "/health":
             await self.send(admin_id, format_health(await prometheus_snapshot(self.settings.prometheus_url)))
+        elif command == "/summary":
+            now = datetime.now(timezone.utc)
+            await self.send(admin_id, await build_summary(self.settings, now, now))
         elif command == "/analyze":
             if not self.settings.enable_fixer:
                 await self.send(admin_id, "Наладчик выключен; анализ кода недоступен.")
@@ -534,6 +538,7 @@ class AdminBot:
         offset = get_offset(self.settings.state_path)
         alert_task = asyncio.create_task(self.monitor_alerts())
         deployment_task = asyncio.create_task(self.monitor_deployments())
+        summary_task = asyncio.create_task(DailySummaries(self.settings, self.send).run())
         try:
             while True:
                 try:
@@ -558,7 +563,8 @@ class AdminBot:
         finally:
             alert_task.cancel()
             deployment_task.cancel()
-            await asyncio.gather(alert_task, deployment_task, return_exceptions=True)
+            summary_task.cancel()
+            await asyncio.gather(alert_task, deployment_task, summary_task, return_exceptions=True)
             await self.aclose()
 
     async def monitor_alerts(self) -> None:
