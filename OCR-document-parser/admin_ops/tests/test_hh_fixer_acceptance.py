@@ -12,12 +12,12 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from admin_ops import ai, bot as bot_module, release
+from admin_ops import ai, release
+from admin_ops import bot as bot_module
 from admin_ops.bot import AdminBot
-from admin_ops.config import OpsSettings
-from admin_ops.paths import repo_path, project_path
 from admin_ops.code_read import CodeReader
-
+from admin_ops.config import OpsSettings
+from admin_ops.paths import project_path, repo_path
 
 HH_REPO = "suer-tech/ai-candidate-screening"
 HH_BRANCH = "production"
