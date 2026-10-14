@@ -186,7 +186,7 @@ def main():
         created = True
         for attempt in range(45):
             try:
-                remote.run(["docker", "exec", identity, "pg_isready", "-U", "hh_agent", "-d", "hh_agent"])
+                remote.run(["docker", "exec", identity, "pg_isready", "-h", "127.0.0.1", "-U", "hh_agent", "-d", "hh_agent"])
                 break
             except RuntimeError:
                 if attempt == 44:
