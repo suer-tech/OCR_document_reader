@@ -155,6 +155,14 @@ class AdminBot:
         await self.telegram_client.aclose()
         await self.client.aclose()
 
+    def proposal_settings(self, proposal: dict) -> OpsSettings:
+        target = proposal.get("target", "ocr")
+        settings = self.settings.for_target(target)
+        if (proposal.get("repository", settings.github_repo) != settings.github_repo
+                or proposal.get("branch", settings.github_base_branch) != settings.github_base_branch):
+            raise ValueError("Proposal repository identity differs from configured target")
+        return settings
+
     async def show_typing(self, admin_id: int) -> None:
         while True:
             try:
@@ -179,7 +187,7 @@ class AdminBot:
             if len(queue) == 1 else
             f"Принял вопрос в очередь. Перед ним вопросов: {len(queue) - 1}."
         )
-        if mode == "analyze":
+        if mode in {"analyze", "analyze_hh"}:
             acknowledgement += " Анализ кода в режиме только чтения; правок и PR не будет."
         try:
             await self.send(admin_id, acknowledgement)
@@ -195,9 +203,12 @@ class AdminBot:
                 question, mode = queue[0]
                 typing_task = asyncio.create_task(self.show_typing(admin_id))
                 try:
-                    async with asyncio.timeout(540 if mode == "analyze" else 360):
-                        if mode == "analyze":
-                            answer = await self.worker(f"{self.settings.fixer_url}/analyze", {"request": question})
+                    async with asyncio.timeout(540 if mode in {"analyze", "analyze_hh"} else 360):
+                        if mode in {"analyze", "analyze_hh"}:
+                            payload = {"request": question}
+                            if mode == "analyze_hh":
+                                payload["target"] = "hh"
+                            answer = await self.worker(f"{self.settings.fixer_url}/analyze", payload)
                             await self.send(admin_id,
                                 f"Анализ {answer['repository']} / {answer['branch']} @ {answer['base_sha'][:12]}\n"
                                 "Это версия GitHub, её совпадение с VPS не проверялось.\n\n" + answer["answer"])
@@ -215,7 +226,7 @@ class AdminBot:
                     status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                     logger.error("%s_dialog_failed: %s status=%s", mode, type(exc).__name__, status)
                     try:
-                        if mode == "analyze":
+                        if mode in {"analyze", "analyze_hh"}:
                             await self.send(admin_id, f"Анализ кода не выполнен ({type(exc).__name__}, HTTP {status or '—'}). Проверьте логи fixer-ai. Правки и PR не создавались.")
                         else:
                             await self.send(admin_id, f"Не удалось получить ответ ({type(exc).__name__}). Повторите вопрос или используйте /health и /today.")
@@ -303,12 +314,13 @@ class AdminBot:
                 "as_of": datetime.now(timezone.utc).isoformat(), "timezone": self.settings.timezone}
 
     async def start_deploy(self, proposal_id: str, proposal: dict, pr_url: str | None) -> None:
+        settings = self.proposal_settings(proposal)
         proposal["deploy_requested_at"] = datetime.now(timezone.utc).isoformat()
         save_proposal_progress(self.settings.state_path, proposal_id, proposal, "dispatching", pr_url)
         result = await dispatch_production_deploy(
-            token=self.settings.github_token, repo=self.settings.github_repo,
-            base_branch=self.settings.github_base_branch,
-            workflow=self.settings.github_deploy_workflow,
+            token=settings.github_token, repo=settings.github_repo,
+            base_branch=settings.github_base_branch,
+            workflow=settings.github_deploy_workflow,
             merge_sha=proposal["merge_sha"], proposal_id=proposal_id,
             pr_number=proposal["pr_number"],
         )
@@ -317,9 +329,10 @@ class AdminBot:
         save_proposal_progress(self.settings.state_path, proposal_id, proposal, "deploy_queued", pr_url)
 
     async def refresh_deployment(self, proposal_id: str, proposal: dict, pr_url: str | None) -> str:
+        settings = self.proposal_settings(proposal)
         result = await deployment_result(
-            token=self.settings.github_token, repo=self.settings.github_repo,
-            workflow=self.settings.github_deploy_workflow,
+            token=settings.github_token, repo=settings.github_repo,
+            workflow=settings.github_deploy_workflow,
             merge_sha=proposal["merge_sha"], run_id=proposal.get("deploy_run_id"),
             proposal_id=proposal_id, requested_at=proposal.get("deploy_requested_at"),
         )
@@ -359,7 +372,7 @@ class AdminBot:
             await self.send(admin_id,
                 "Я Пульс. Пишите обычным текстом — /pulse не обязателен. Помню последние 6 ответов в текущем сеансе; после перезапуска история сбрасывается.\n\n"
                 "Анализ исходного кода без правок: /analyze вопрос. Например: /analyze Как вычисляется early_report_deadline? Читаю опубликованную ветку GitHub, не рабочие файлы VPS.\n\n"
-                "Правки кода запускаются только командой /fix задача. Обычное сообщение ничего не меняет.\n\n"
+                "OCR: /fix задача. Анализ кандидатов: /fix_hh задача и /analyze_hh вопрос. Обычное сообщение ничего не меняет.\n\n"
                 "Команды: /today, /summary, /health, /pulse вопрос, /analyze вопрос, /fix задача, /diff ID, /approve ID, /confirm ID SHA8, /deploy ID, /status ID. /summary — краткая сводка за сегодня. /approve создаёт PR; только /confirm после CI разрешает merge и деплой.")
         elif command == "/today":
             daily = await asyncio.to_thread(load_daily_report, self.settings.database_url, self.settings.timezone)
@@ -369,27 +382,39 @@ class AdminBot:
         elif command == "/summary":
             now = datetime.now(timezone.utc)
             await self.send(admin_id, await build_summary(self.settings, now, now))
-        elif command == "/analyze":
+        elif command in {"/analyze", "/analyze_hh"}:
             if not self.settings.enable_fixer:
                 await self.send(admin_id, "Наладчик выключен; анализ кода недоступен.")
             elif not argument.strip():
                 await self.send(admin_id, "Укажите вопрос: /analyze Как вычисляется early_report_deadline? Анализ без правок.")
             else:
-                await self.enqueue_dialog(admin_id, argument.strip(), mode="analyze")
-        elif command == "/fix":
+                await self.enqueue_dialog(admin_id, argument.strip(), mode="analyze_hh" if command == "/analyze_hh" else "analyze")
+        elif command in {"/fix", "/fix_hh"}:
             if not self.settings.enable_fixer:
                 await self.send(admin_id, "Наладчик выключен. Для включения нужен изолированный Codex worker и настройка OPS_ENABLE_FIXER=true.")
             elif not argument.strip():
                 await self.send(admin_id, "Укажите задачу после /fix.")
             else:
-                proposal = await self.worker(f"{self.settings.fixer_url}/fix", {"request": argument.strip()[:1500]})
+                target = "hh" if command == "/fix_hh" else "ocr"
+                payload = {"request": argument.strip()[:1500]}
+                if target == "hh":
+                    payload["target"] = target
+                await self.send(admin_id, f"Готовлю правку для {'анализа кандидатов' if target == 'hh' else 'OCR'} в изолированной копии. Деплой потребует отдельного подтверждения.")
+                proposal = await self.worker(f"{self.settings.fixer_url}/fix", payload)
+                settings = self.settings.for_target(target)
+                if (proposal.get("target", target) != target
+                        or proposal.get("repository", settings.github_repo) != settings.github_repo
+                        or proposal.get("branch", settings.github_base_branch) != settings.github_base_branch):
+                    await self.send(admin_id, "Ответ исполнителя относится к другому проекту. Предложение не сохранено.")
+                    return
+                proposal = {**proposal, "target": target, "repository": settings.github_repo, "branch": settings.github_base_branch}
                 if proposal.get("status") == "no_changes":
                     await self.send(admin_id, "Файлы не изменены, предложение и PR не созданы. Для вопросов по коду используйте /analyze.\n\n" + proposal["summary"])
                     return
                 proposal_id = save_proposal(self.settings.state_path, proposal)
                 await self.send(
                     admin_id,
-                    f"Предложение {proposal_id} ({len(proposal['files'])} файлов).\n"
+                    f"Предложение {proposal_id}: {settings.github_repo} / {settings.github_base_branch} ({len(proposal['files'])} файлов).\n"
                     f"Синтаксис Python: {proposal.get('checks', {}).get('python_syntax', 'unknown')}\n"
                     f"{proposal['summary'][:1200]}\n\n"
                     f"Прочитайте полный diff: /diff {proposal_id}\n"
@@ -409,12 +434,13 @@ class AdminBot:
             elif found[1] != "proposed":
                 await self.send(admin_id, "Предложение уже публикуется или требует ручной проверки.")
             else:
+                settings = self.proposal_settings(found[0])
                 set_proposal_status(self.settings.state_path, proposal_id, "publishing")
                 try:
                     pr_details = await create_draft_pr(
                         proposal_id=proposal_id, proposal=found[0],
-                        token=self.settings.github_token, repo=self.settings.github_repo,
-                        base_branch=self.settings.github_base_branch,
+                        token=settings.github_token, repo=settings.github_repo,
+                        base_branch=settings.github_base_branch,
                     )
                 except PublicationError as exc:
                     set_proposal_status(self.settings.state_path, proposal_id, "needs_review")
@@ -447,20 +473,21 @@ class AdminBot:
                 await self.send(admin_id, "SHA не совпадает с проверенной ревизией PR.")
             else:
                 proposal, _, pr_url = found
+                settings = self.proposal_settings(proposal)
                 save_proposal_progress(self.settings.state_path, proposal_id, proposal, "confirming", pr_url)
                 try:
                     merge_sha = await merge_approved_pr(
                         proposal_id=proposal_id, proposal=proposal,
-                        token=self.settings.github_token, repo=self.settings.github_repo,
-                        base_branch=self.settings.github_base_branch,
-                        required_check=self.settings.github_required_check,
+                        token=settings.github_token, repo=settings.github_repo,
+                        base_branch=settings.github_base_branch,
+                        required_check=settings.github_required_check,
                     )
                 except ReleaseError as exc:
                     try:
                         merge_sha = await reconciled_merge_sha(
-                            token=self.settings.github_token, repo=self.settings.github_repo,
+                            token=settings.github_token, repo=settings.github_repo,
                             pr_number=proposal["pr_number"], proposal_id=proposal_id,
-                            proposal=proposal, base_branch=self.settings.github_base_branch,
+                            proposal=proposal, base_branch=settings.github_base_branch,
                         )
                     except ReleaseError:
                         save_proposal_progress(self.settings.state_path, proposal_id, proposal, "needs_review", pr_url)
@@ -504,11 +531,12 @@ class AdminBot:
                 await self.send(admin_id, f"{proposal_id}: {status}. Workflow: {found[0].get('deploy_run_url') or 'ожидается'}")
             elif found[1] == "confirming":
                 proposal, _, pr_url = found
+                settings = self.proposal_settings(proposal)
                 try:
                     merge_sha = await reconciled_merge_sha(
-                        token=self.settings.github_token, repo=self.settings.github_repo,
+                        token=settings.github_token, repo=settings.github_repo,
                         pr_number=proposal["pr_number"], proposal_id=proposal_id,
-                        proposal=proposal, base_branch=self.settings.github_base_branch,
+                        proposal=proposal, base_branch=settings.github_base_branch,
                     )
                 except ReleaseError:
                     await self.send(admin_id, f"{proposal_id}: состояние merge неизвестно. Проверьте PR вручную: {pr_url}")

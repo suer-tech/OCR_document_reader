@@ -35,6 +35,11 @@ services:
       OPS_GITHUB_BASE_BRANCH: ${OPS_GITHUB_BASE_BRANCH:-main}
       OPS_GITHUB_REQUIRED_CHECK: validate
       OPS_GITHUB_DEPLOY_WORKFLOW: ocr-production-deploy.yml
+      OPS_HH_GITHUB_REPO: ${OPS_HH_GITHUB_REPO:-suer-tech/ai-candidate-screening}
+      OPS_HH_GITHUB_TOKEN: ${OPS_HH_GITHUB_TOKEN:-}
+      OPS_HH_GITHUB_BASE_BRANCH: ${OPS_HH_GITHUB_BASE_BRANCH:-production}
+      OPS_HH_GITHUB_REQUIRED_CHECK: validate-hh
+      OPS_HH_GITHUB_DEPLOY_WORKFLOW: hh-production-deploy.yml
       OPS_STATE_PATH: /state/proposals.sqlite3
     volumes:
       - ${OPS_STATE_HOST_DIR:?Set absolute path to writable bot state directory}:/state

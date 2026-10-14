@@ -9,7 +9,7 @@ SUFFIXES = {".py", ".yaml", ".yml", ".toml", ".json", ".sh", ".sql", ".ini", ".c
 BLOCKED_PARTS = {"fixtures", "data", "documents", "документы", "models", "logs", "reports", "__pycache__"}
 
 
-def allowed_code_path(value: str) -> bool:
+def allowed_code_path(value: str, target: str = "ocr") -> bool:
     if not isinstance(value, str) or not value or len(value) > 500 or "\\" in value or ":" in value:
         return False
     path = PurePosixPath(value)
@@ -18,6 +18,13 @@ def allowed_code_path(value: str) -> bool:
     if any(part.startswith(".") or part.lower() in BLOCKED_PARTS for part in path.parts):
         return False
     if any(word in path.name.lower() for word in ("secret", "credential", "auth.json", ".env")):
+        return False
+    if target == "hh":
+        return (not any(part.lower() in {"candidate", "secrets", "credentials", "evidence", "test-results", "playwright-report", "node_modules"} for part in path.parts)
+                and ((value.startswith(("web/server/", "web/app/", "web/tests/", "web/scripts/", "deploy/"))
+                 and path.suffix in SUFFIXES | {".ts", ".tsx", ".js", ".mjs", ".ps1"})
+                or value in {"web/package.json", "web/tsconfig.json", "web/vite.config.ts", "web/Dockerfile"}))
+    if target != "ocr":
         return False
     prefixes = ("OCR-document-parser/src/", "OCR-document-parser/tests/", "OCR-document-parser/admin_ops/",
                 "OCR-document-parser/observability/", "OCR-document-parser/scripts/")
@@ -28,11 +35,11 @@ def allowed_code_path(value: str) -> bool:
 
 
 class CodeReader:
-    def __init__(self, root: Path, tracked_paths: list[str]):
+    def __init__(self, root: Path, tracked_paths: list[str], target: str = "ocr"):
         self.root = root.resolve(strict=True)
         if len(tracked_paths) > 10000:
             raise ValueError("source inventory limit exceeded")
-        self.paths = sorted({p for p in tracked_paths if allowed_code_path(p)})
+        self.paths = sorted({p for p in tracked_paths if allowed_code_path(p, target)})
         self.allowed = set(self.paths)
 
     def _read(self, path: str) -> bytes:

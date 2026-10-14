@@ -1,5 +1,15 @@
 # Админ-бот OCR: Пульс и Наладчик
 
+## Анализ кандидатов в том же боте
+
+`/fix_hh задача` готовит отдельное предложение для `suer-tech/ai-candidate-screening`, ветка `production`; `/analyze_hh вопрос` читает её без правок. Для предложения кандидатов применяются обычные `/diff ID`, `/approve ID`, `/confirm ID SHA8`, `/status ID` и `/deploy ID`. Репозиторий и ветка сохраняются в SQLite вместе с target: рестарт не переводит HH-предложение в OCR. В сообщении предложения указан выбранный проект. Обычный `/fix` продолжает обслуживать OCR.
+
+Наладчик использует существующую авторизацию Codex и изолированный GitHub clone, без SSH, Docker socket, runtime credentials или материалов кандидатов. Править можно только исходники/тесты внутри `web/server`, `web/app`, `web/tests`: до пяти текстовых файлов, до 500 kB каждый и до 50 000 символов diff. Больший лимит файла нужен для существующего `production-runtime.ts`; OCR сохраняет 100 kB. Запрещены удаления, fixtures/evidence, secrets, package manifests, workflow, deployment и OpenSpec. Read-only анализ предоставляет только отфильтрованные tracked source files через прежний MCP reader.
+
+`/approve` создаёт draft PR; `/confirm` проверяет точный SHA и успешный `validate-hh`, затем сливает в production и запускает `hh-production-deploy.yml`. Workflow независимо проверяет PR/CI, а отдельный SSH key допускает только `deploy <40-character SHA>` через фиксированный host wrapper. Бот не получает shell на VPS кандидатов. Эти проверки не закрывают отдельный обязательный production-like E2E gate кандидатов, который остаётся BLOCKED без подготовленной среды и синхронизации требований.
+
+При настройке нужны production-ветка с актуальным VPS-кодом и GitHub secrets `HH_VPS_HOST`, `HH_VPS_SSH_KEY`, `HH_VPS_KNOWN_HOSTS` в репозитории кандидатов. В конфигурации бота задаются `OPS_HH_GITHUB_REPO`, `OPS_HH_GITHUB_BASE_BRANCH` и отдельный защищённый `OPS_HH_GITHUB_TOKEN` с доступом к репозиторию кандидатов. Если отдельный token не задан, используется прежний token admin-bot; его права должны включать этот репозиторий. Наладчик не получает ни один token. Для обновления пересоздайте только `admin-bot` и `fixer-ai`, сохранив состояние и Codex login directories.
+
 ## Ежедневная краткая сводка
 
 HH-агент получает отдельную сводку в **19:05 Asia/Yekaterinburg** за текущий день **00:00–19:05** в тот же бот: кандидаты без повторов, завершённые запуски/исходы, среднее/p95 времени, ошибки по этапам, повторные попытки и текущая очередь. Настройки `OPS_HR_DAILY_SUMMARY_ENABLED=true`, `OPS_HR_DAILY_SUMMARY_HOUR=19`, `OPS_HR_DAILY_SUMMARY_MINUTE=5`. Данные берутся через существующий restricted observer, без credentials приложения и персональных данных. Подробности периодов/повторов: [hr-monitor/README.md](hr-monitor/README.md).
