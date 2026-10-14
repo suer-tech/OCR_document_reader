@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.734" timestamp="2026-10-14T12:37:14.833758+05:00" hostname="WIN-4E9RD0TRUH1"><testcase classname="admin_ops.tests.test_hh_code_writer_acceptance" name="test_namespace_denied_hh_fix_uses_bounded_file_tools_and_produces_real_proposal" time="0.662"><failure message="AssertionError: HH fix must produce the bounded source diff when shell namespaces are unavailable; bwrap: No permissions to create a new namespace&#10;assert None == {'web/server/candidate-pipeline/synthetic.ts': &quot;// keep first line\nexport const organizational = 'from materials';\n// keep final line\n&quot;}&#10; +  where None = &lt;built-in method get of dict object at 0x00000229A574B9C0&gt;('files')&#10; +    where &lt;built-in method get of dict object at 0x00000229A574B9C0&gt; = {'base_sha': 'e12ec59bf12708b515ef9c3cf0f8ca34c849f306', 'branch': 'production', 'repository': 'suer-tech/ai-candidate-screening', 'status': 'no_changes', ...}.get">monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x00000229A5744620&gt;
+tmp_path = WindowsPath('C:/Users/user2/AppData/Local/Temp/pytest-of-user2/pytest-367/test_namespace_denied_hh_fix_u0')
+isolated_source = (WindowsPath('C:/Users/user2/AppData/Local/Temp/pytest-of-user2/pytest-367/test_namespace_denied_hh_fix_u0/seed'), WindowsPath('C:/Users/user2/AppData/Local/Temp/pytest-of-user2/pytest-367/test_namespace_denied_hh_fix_u0/isolated-clone'))
+
+    def test_namespace_denied_hh_fix_uses_bounded_file_tools_and_produces_real_proposal(monkeypatch, tmp_path, isolated_source):
+        seed, _ = isolated_source
+        settings = OpsSettings(role="fixer", internal_token="x" * 32, work_root=str(tmp_path))
+        monkeypatch.setattr(ai, "get_ops_settings", lambda: settings)
+        seen = []
+    
+        def clone(repo, branch, root):
+            assert repo == "suer-tech/ai-candidate-screening" and branch == "production"
+            subprocess.run(["git", "clone", "--local", str(seed), str(root)], check=True, capture_output=True)
+    
+        async def namespace_denied_runner(**kwargs):
+            seen.append(kwargs)
+            # This reproduces the host restriction at the runner boundary without
+            # calling a real provider or allowing a shell to touch source files.
+            if (kwargs.get("config") or {}).get("features.shell_tool") is not False:
+                return "bwrap: No permissions to create a new namespace"
+            config = kwargs["config"]["mcp_servers.ocr_code"]
+            assert {"write_code_file", "replace_code_text"}.issubset(config["enabled_tools"])
+            assert kwargs["sandbox"] == "read_only", "native SDK writes must remain disabled"
+            controlled = writer(Path(kwargs["cwd"]))
+            controlled.replace_code_text(SOURCE, "'missing'", "'from materials'")
+            return "Synthetic bounded MCP fix"
+    
+        monkeypatch.setattr(ai, "clone_source", clone)
+        monkeypatch.setattr(ai, "run_codex", namespace_denied_runner)
+        with TestClient(ai.app) as client:
+            response = client.post("/fix", headers={"X-Ops-Token": "x" * 32}, json={"target": "hh", "request": "Fill synthetic organizational conditions"})
+        assert response.status_code == 200, response.text
+        result = response.json()
+&gt;       assert result.get("files") == {SOURCE: UPDATED}, (
+            "HH fix must produce the bounded source diff when shell namespaces are unavailable; " + result.get("summary", "")
+        )
+E       AssertionError: HH fix must produce the bounded source diff when shell namespaces are unavailable; bwrap: No permissions to create a new namespace
+E       assert None == {'web/server/candidate-pipeline/synthetic.ts': "// keep first line\nexport const organizational = 'from materials';\n// keep final line\n"}
+E        +  where None = &lt;built-in method get of dict object at 0x00000229A574B9C0&gt;('files')
+E        +    where &lt;built-in method get of dict object at 0x00000229A574B9C0&gt; = {'base_sha': 'e12ec59bf12708b515ef9c3cf0f8ca34c849f306', 'branch': 'production', 'repository': 'suer-tech/ai-candidate-screening', 'status': 'no_changes', ...}.get
+
+admin_ops\tests\test_hh_code_writer_acceptance.py:70: AssertionError</failure></testcase></testsuite></testsuites>

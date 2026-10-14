@@ -445,7 +445,13 @@ def test_hh_worker_fix_clones_configured_target_and_returns_real_diff(hh_worker,
 
     async def codex(**kwargs):
         seen.append(kwargs)
-        (Path(kwargs["cwd"]) / "web/server/example.ts").write_text("export const value = 2;\n", encoding="utf-8")
+        from admin_ops.code_write import CodeWriter
+        config = kwargs["config"]
+        assert kwargs["sandbox"] == "read_only"
+        assert config["features.shell_tool"] is False
+        assert config["mcp_servers.ocr_code"]["env"]["OPS_CODE_WRITE"] == "true"
+        controlled = CodeWriter(Path(kwargs["cwd"]), ["web/server/example.ts"])
+        controlled.replace_code_text("web/server/example.ts", "value = 1", "value = 2")
         return "synthetic fix"
 
     monkeypatch.setattr(ai, "run_codex", codex)
@@ -457,7 +463,7 @@ def test_hh_worker_fix_clones_configured_target_and_returns_real_diff(hh_worker,
     assert clones == [(HH_REPO, HH_BRANCH)]
     assert result["target"] == "hh" and result["repository"] == HH_REPO and result["branch"] == HH_BRANCH
     assert result["files"] == {"web/server/example.ts": "export const value = 2;\n"}
-    assert seen[0]["sandbox"] == "workspace_write"
+    assert seen[0]["sandbox"] == "read_only"
     assert not Path(seen[0]["cwd"]).exists(), "isolated candidate checkout must be removed"
 
 

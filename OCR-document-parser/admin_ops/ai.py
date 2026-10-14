@@ -7,7 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from admin_ops.code_read import CODE_TOOLS, allowed_code_path
 from admin_ops.config import get_ops_settings
-from admin_ops.paths import PROJECT_DIR, project_path
+from admin_ops.paths import PROJECT_DIR, project_path, validate_change_path
 from admin_ops.read_relay import ReadJobs
 from admin_ops.read_tools import TOOL_MODELS
 
@@ -76,23 +76,6 @@ def git(cwd: Path, *args: str) -> str:
         ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, timeout=30
     )
     return completed.stdout.strip()
-
-
-def validate_change_path(path: str, target: str = "ocr") -> bool:
-    candidate = PurePosixPath(path)
-    if candidate.is_absolute() or ".." in candidate.parts or "\\" in path or ":" in path or "//" in path:
-        return False
-    if target == "hh":
-        blocked = {"fixtures", "evidence", "candidate", "credentials", "secrets", "node_modules", "test-results", "playwright-report"}
-        return (path.startswith(("web/server/", "web/app/", "web/tests/"))
-                and candidate.suffix in {".ts", ".tsx", ".mjs", ".js", ".json"}
-                and not any(part.startswith(".") or part.lower() in blocked for part in candidate.parts)
-                and not any(word in candidate.name.lower() for word in ("secret", "credential", ".env")))
-    if target != "ocr" or not path.startswith(("src/ocr_platform/", "tests/")):
-        return False
-    if path.endswith((".env", ".db", ".sqlite3")):
-        return False
-    return candidate.suffix in {".py", ".yaml", ".yml", ".json", ".toml"}
 
 
 def collect_proposal(worktree: Path, base_sha: str, summary: str, target: str = "ocr") -> dict:
@@ -250,15 +233,20 @@ async def request_read(job_id: str, call: ReadCall, x_read_token: str = Header(d
     return await job.ask(call.name, args)
 
 
-def code_config(root: Path, manifest: Path, target: str = "ocr") -> dict:
+def code_config(root: Path, manifest: Path, target: str = "ocr", *, writable: bool = False) -> dict:
+    if writable and target != "hh":
+        raise ValueError("Bounded code writes are available only for HH")
+    from admin_ops.code_write import WRITE_TOOLS
+
     return {"features.shell_tool": False, "web_search": "disabled", "agents.enabled": False,
             "mcp_servers.ocr_code": {
                 "command": sys.executable, "args": ["-m", "admin_ops.mcp_code"],
                 "cwd": str(Path(__file__).resolve().parents[1]),
                 "env": {"OCR_CODE_ROOT": str(root.resolve()), "OCR_CODE_MANIFEST": str(manifest.resolve()), "OPS_CODE_TARGET": target,
+                        "OPS_CODE_WRITE": "true" if writable else "false",
                         "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
                 "required": True, "startup_timeout_sec": 20, "tool_timeout_sec": 20,
-                "enabled_tools": CODE_TOOLS,
+                "enabled_tools": CODE_TOOLS + WRITE_TOOLS if writable else CODE_TOOLS,
             }}
 
 
@@ -324,14 +312,20 @@ async def fix(request: FixRequest) -> dict:
                 "Make the smallest requested fix in web/server, web/app or web/tests. "
                 "Do not edit OpenSpec, workflows, deployment, package manifests, credentials or other files. "
                 "Never delete files, access real candidate materials, use provider/Drive/Telegram effects, commit, push, create a PR, merge or deploy. "
-                "Use only synthetic tests; report what passed, failed or could not run. Do not claim production readiness. "
+                "Use only the source MCP list/search/read/write_code_file/replace_code_text tools. "
+                "Shell and native file edits are unavailable. Do not attempt shell, apply_patch or repository scripts. "
+                "Use replace_code_text for an exact unique block in an existing file; write_code_file for a complete new file. "
+                "Tests run in CI after administrator approval; state that they have not been run here. Do not claim production readiness. "
                 "The final diff is independently bounded and validated. Answer in Russian.\n"
                 f"Administrator request: {request.request}"
             )
         if request.target == "hh":
-            summary = await run_codex(cwd=str(worktree), sandbox="workspace_write", prompt=request.request,
+            paths = [p for p in git(root, "ls-files", "-z").split("\0") if allowed_code_path(p, request.target)]
+            manifest = Path(folder) / "code-files.json"
+            manifest.write_text(json.dumps(paths), encoding="utf-8")
+            summary = await run_codex(cwd=str(worktree), sandbox="read_only", prompt=request.request,
                                       instructions=prompt.split("Administrator request:", 1)[0],
-                                      config={"web_search": "disabled", "agents.enabled": False})
+                                      config=code_config(root, manifest, "hh", writable=True))
         else:
             summary = await run_codex(cwd=str(worktree), sandbox="workspace_write", prompt=prompt)
         if git(root, "rev-parse", "HEAD") != base_sha:
