@@ -137,7 +137,7 @@ def test_delivery_uses_telegram_boundary_and_survives_restart_and_partial_failur
 
 
 def test_restart_catches_latest_due_summary_without_initial_backlog(monkeypatch, tmp_path):
-    settings = OpsSettings(state_path=str(tmp_path / "state.db"), admin_ids="123")
+    settings = OpsSettings(state_path=str(tmp_path / "state.db"), admin_ids="123", daily_summary_hour=21)
     sent = []
 
     async def build(*args):
@@ -169,3 +169,8 @@ def test_disabled_schedule_never_reads_sources_or_sends(tmp_path):
 def test_invalid_schedule_rejected(field, value):
     with pytest.raises(ValueError):
         OpsSettings(**{field: value})
+
+
+def test_summary_default_is_1900_yekaterinburg():
+    settings = OpsSettings(_env_file=None)
+    assert (settings.daily_summary_hour, settings.daily_summary_minute, settings.timezone) == (19, 0, "Asia/Yekaterinburg")

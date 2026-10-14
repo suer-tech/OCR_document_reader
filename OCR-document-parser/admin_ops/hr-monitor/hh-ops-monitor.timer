@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh candidate service incident snapshot every 15 seconds
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Unit=hh-ops-monitor.service
+
+[Install]
+WantedBy=timers.target

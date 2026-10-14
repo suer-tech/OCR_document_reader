@@ -22,8 +22,14 @@ class OpsSettings(BaseSettings):
     enable_release: bool = True
     timezone: str = "Asia/Yekaterinburg"
     daily_summary_enabled: bool = True
-    daily_summary_hour: int = Field(default=21, ge=0, le=23)
+    daily_summary_hour: int = Field(default=19, ge=0, le=23)
     daily_summary_minute: int = Field(default=0, ge=0, le=59)
+    hr_monitor_enabled: bool = True
+    hr_monitor_host: str = ""
+    hr_monitor_user: str = "hh-ops-monitor"
+    hr_monitor_key: str = "/state/hr-monitor/id_ed25519"
+    hr_monitor_known_hosts: str = "/state/hr-monitor/known_hosts"
+    hr_monitor_url: str = ""
     state_path: str = "/state/proposals.sqlite3"
     github_token: str = ""
     github_repo: str = "suer-tech/OCR_document_reader"
