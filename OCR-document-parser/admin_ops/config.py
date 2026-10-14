@@ -21,6 +21,9 @@ class OpsSettings(BaseSettings):
     enable_fixer: bool = True
     enable_release: bool = True
     timezone: str = "Asia/Yekaterinburg"
+    daily_summary_enabled: bool = True
+    daily_summary_hour: int = Field(default=21, ge=0, le=23)
+    daily_summary_minute: int = Field(default=0, ge=0, le=59)
     state_path: str = "/state/proposals.sqlite3"
     github_token: str = ""
     github_repo: str = "suer-tech/OCR_document_reader"
