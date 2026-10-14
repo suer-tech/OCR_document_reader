@@ -84,8 +84,10 @@ SELECT json_build_object(
    'error_stages',COALESCE((SELECT json_agg(json_build_object('stage',stage,'count',count)) FROM daily_errors WHERE start=w.start),'[]'::json),
    'active_runs',(SELECT count(*) FROM agent_runs WHERE state='ACTIVE'),
    'waiting_runs',(SELECT count(*) FROM agent_runs WHERE state='WAITING_FOR_HUMAN'),
-   'queued_tasks',(SELECT count(*) FROM agent_tasks WHERE state='RUNNABLE'),
-   'running_tasks',(SELECT count(*) FROM agent_tasks WHERE state='RUNNING')
+   'queued_tasks',(SELECT count(*) FROM agent_tasks t JOIN agent_runs r ON r.id=t.run_id
+     WHERE t.state='RUNNABLE' AND r.state='ACTIVE'),
+   'running_tasks',(SELECT count(*) FROM agent_tasks t JOIN agent_runs r ON r.id=t.run_id
+     WHERE t.state='RUNNING' AND r.state='ACTIVE')
   )) FROM windows w),
  'incidents', COALESCE((SELECT json_agg(x) FROM (
   SELECT * FROM (
