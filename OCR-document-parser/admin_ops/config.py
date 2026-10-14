@@ -40,6 +40,7 @@ class OpsSettings(BaseSettings):
     github_required_check: str = "validate"
     github_deploy_workflow: str = "ocr-production-deploy.yml"
     hh_github_repo: str = "suer-tech/ai-candidate-screening"
+    hh_github_token: str = ""
     hh_github_base_branch: str = "production"
     hh_github_required_check: str = "validate-hh"
     hh_github_deploy_workflow: str = "hh-production-deploy.yml"
@@ -53,6 +54,7 @@ class OpsSettings(BaseSettings):
         if target != "hh":
             raise ValueError("Unknown maintenance target")
         return self.model_copy(update={
+            "github_token": self.hh_github_token or self.github_token,
             "github_repo": self.hh_github_repo,
             "github_base_branch": self.hh_github_base_branch,
             "github_required_check": self.hh_github_required_check,

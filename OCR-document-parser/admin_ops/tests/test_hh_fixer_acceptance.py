@@ -581,3 +581,32 @@ def test_hh_release_refuses_non_green_ci_before_any_github_mutation(monkeypatch,
         asyncio.run(release.merge_approved_pr(proposal_id=proposal_id, proposal=saved, token="synthetic",
                     repo=HH_REPO, base_branch=HH_BRANCH, required_check="validate-hh"))
     assert len(calls) == 4
+
+
+def test_hh_credential_scope_uses_dedicated_token_without_mutating_settings():
+    settings = OpsSettings(github_token="synthetic-ocr-token", hh_github_token="synthetic-hh-token")
+    before = settings.model_dump()
+    selected = settings.for_target("hh")
+    assert selected.github_token == "synthetic-hh-token"
+    assert selected.github_repo == HH_REPO
+    assert selected.github_base_branch == HH_BRANCH
+    assert settings.model_dump() == before
+
+
+def test_hh_credential_scope_preserves_legacy_token_fallback_when_unconfigured():
+    settings = OpsSettings(github_token="synthetic-legacy-token", hh_github_token="")
+    before = settings.model_dump()
+    selected = settings.for_target("hh")
+    assert selected.github_token == "synthetic-legacy-token"
+    assert selected.github_repo == HH_REPO
+    assert settings.model_dump() == before
+
+
+def test_ocr_credential_scope_keeps_original_token_even_when_hh_token_is_set():
+    settings = OpsSettings(github_token="synthetic-ocr-token", hh_github_token="synthetic-hh-token")
+    before = settings.model_dump()
+    selected = settings.for_target("ocr")
+    assert selected.github_token == "synthetic-ocr-token"
+    assert selected.github_repo == "suer-tech/OCR_document_reader"
+    assert selected.github_base_branch == "main"
+    assert settings.model_dump() == before
