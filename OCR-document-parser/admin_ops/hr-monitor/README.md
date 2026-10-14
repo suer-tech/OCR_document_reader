@@ -1,6 +1,14 @@
 # Уведомления сервера кандидатов в общий Telegram-бот
 
-Отдельный host observer читает состояния Docker-проекта `hh-agent` и фиксированный read-only запрос к `agent_runs`, `agent_tasks`, `agent_attempts`. Приложение, PostgreSQL schema и application credentials не меняются. Прямого доступа OCR-бота к Docker, БД или shell сервера кандидатов нет.
+Отдельный host observer читает состояния Docker-проекта `hh-agent` и фиксированный read-only запрос к `agent_runs`, `agent_tasks`, `agent_attempts`, а для агрегата уникальных кандидатов — только связь `agent_goals.candidate_id` (IDs не экспортируются). Приложение, PostgreSQL schema и application credentials не меняются. Прямого доступа OCR-бота к Docker, БД или shell сервера кандидатов нет.
+
+## Ежедневная сводка HH
+
+Отдельное сообщение в **19:05 Asia/Yekaterinburg**, период **00:00–19:05 текущего дня**, правая граница исключена. Сводка OCR остаётся в 19:00. `OPS_HR_DAILY_SUMMARY_ENABLED=true`; час/минута `OPS_HR_DAILY_SUMMARY_HOUR=19`, `OPS_HR_DAILY_SUMMARY_MINUTE=5`. Если время HH меняется, синхронно установить observer CLI `--summary-hour/--summary-minute`; observer всегда использует Екатеринбург. Совпадение timezone/границ проверяется, несовпадение даёт явное отсутствие статистики.
+
+Метрики: число уникальных кандидатов среди завершённых runs, количество завершений SUCCEEDED/FAILED/CANCELLED; среднее и nearest-rank p95 времени успешных runs от первой попытки до terminal last_progress_at. Отсутствующие started_at не считаются нулём, показывается покрытие таймингов. Ошибки FAILED/UNKNOWN_OUTCOME attempts считаются по finished_at и фиксированным этапам; retry — started_at в периоде и attempt_number>1. Состояние ACTIVE/WAITING_FOR_HUMAN runs, RUNNABLE/RUNNING tasks и доступность сервисов относятся ко времени свежего снимка и помечены отдельно. Это технические исходы обработок, не рекомендации о найме.
+
+Collector отдаёт два безопасных агрегата (сегодня/вчера), с start/end/as_of. Свежий снимок до cutoff повторно читается на следующем минутном tick; частичный день не сохраняется как полный. При недоступности БД/SSH/снимка бот отправляет явное предупреждение вместо нулевых итогов. Сообщения сохраняются в отдельных `hr_daily_summary_*` SQLite tables в существующем volume; обычный рестарт не повторяет SENT, явная ошибка Telegram повторяется отдельно каждому получателю. Пропущенный последний cutoff после активации догоняется утром; на первом запуске исторической рассылки нет. Потерянный ответ Telegram после фактической доставки допускает повтор.
 
 ## События
 
@@ -25,6 +33,6 @@
 
 ## Проверки и откат
 
-`python -m pytest admin_ops/tests -q`. Независимый `admin_ops/tests/run_hr_incident_postgres_acceptance.py` запускает отдельный synthetic PostgreSQL 16 без опубликованных портов, production mounts или provider calls; требует `OPS_HR_MONITOR_TEST_CONSENT=synthetic-only`. Не использовать production database для тестовых ошибок. Внешняя Telegram-доставка проверяется отдельным явно помеченным synthetic сообщением.
+`python -m pytest admin_ops/tests -q`. Независимые daily acceptance находятся в `test_hr_daily_summary_acceptance.py`; общий `admin_ops/tests/run_hr_incident_postgres_acceptance.py` проверяет инциденты и daily SQL через отдельный synthetic PostgreSQL 16 без опубликованных портов, production mounts или provider calls; требует `OPS_HR_MONITOR_TEST_CONSENT=synthetic-only`. Он обязателен в OCR Ops CI. Не использовать production database для тестовых ошибок. Внешняя Telegram-доставка проверяется отдельным явно помеченным тестовым сообщением.
 
 Отключение: `OPS_HR_MONITOR_ENABLED=false` и пересоздание только OCR admin-bot; `systemctl disable --now hh-ops-monitor.timer` на сервере кандидатов. Состояние, ключи и историю не удалять; candidate runtime не перезапускать. Известные ограничения общей приёмки приложения кандидатов (включая INT-005/TST-011) этим контуром не закрываются.
