@@ -32,6 +32,7 @@ from ocr_platform.orchestration import pipeline_engine, router
 from ocr_platform.services import (
     document_intel_service,
     ocr_service,
+    passport_vision_service,
     quality_service,
     validation_service,
 )
@@ -133,11 +134,26 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             content_type = file_rec.file_type
             storage_path = file_rec.storage_path
             page_type = run.page_type
+        # Passport profiles use the original image/PDF in a single extraction
+        # request. Resolve explicit types before OCR, including the legacy alias.
+        initial_resolution = None
+        direct_vision = False
+        if requested_document_type:
+            initial_resolution = router.resolve_profile(
+                source_type=source_type,
+                requested_document_type=requested_document_type,
+                document_id=document_id,
+                pipeline_run_id=pipeline_run_id,
+                page_type=page_type,
+            )
+            direct_vision = passport_vision_service.is_direct_vision_profile(
+                router.load_profile(initial_resolution.profile_id)
+            )
         # Сначала проверим, нет ли уже извлеченного текста в БД для этого документа (после предыдущих попыток)
-        extracted_text = None
+        extracted_text = "" if direct_vision else None
         ocr_was_used = False
         ocr_latency_ms = None
-        text_source = "database_cache"
+        text_source = "passport_vision" if direct_vision else "database_cache"
 
         with tracer.span(
             "text_extraction",
@@ -154,7 +170,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     .order_by(models.TextVersion.id.desc())
                     .first()
                 )
-                if existing_txt and existing_txt.text.strip():
+                if not direct_vision and existing_txt and existing_txt.text.strip():
                     extracted_text = existing_txt.text
                     logger.info(
                         "restored_text_from_db",
@@ -163,7 +179,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                         text_length=len(extracted_text),
                     )
 
-            if not extracted_text:
+            if not extracted_text and not direct_vision:
                 ocr_config = None
                 if requested_document_type:
                     temp_resolution = router.resolve_profile(
@@ -256,7 +272,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 "pipeline_run_id": pipeline_run_id,
             },
         ) as classification_span:
-            resolution = router.resolve_profile(
+            resolution = initial_resolution or router.resolve_profile(
                 source_type=source_type,
                 requested_document_type=requested_document_type,
                 detection_text=detection_text,
@@ -391,9 +407,12 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 storage_path=storage_path,
             )
             corrected_text = fields.pop("_raw_text", None)
-            if corrected_text:
+            if direct_vision:
+                corrected_text = corrected_text or ""
+                text = corrected_text
+            if corrected_text or direct_vision:
                 logger.info(
-                    "vision_fallback_text_saved",
+                    "passport_vision_text_saved" if direct_vision else "vision_fallback_text_saved",
                     pipeline_run_id=pipeline_run_id,
                     text_length=len(corrected_text),
                 )
@@ -410,11 +429,13 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 extraction_span.update(
                     output={
                         "fields_count": len(fields),
-                        "vision_fallback_used": corrected_text is not None,
+                        "vision_fallback_used": corrected_text is not None and not direct_vision,
+                        "direct_vision": direct_vision,
                     },
                     metadata={
                         "fields_count": len(fields),
-                        "vision_fallback_used": corrected_text is not None,
+                        "vision_fallback_used": corrected_text is not None and not direct_vision,
+                        "direct_vision": direct_vision,
                         "profile_id": profile_id,
                     },
                 )
