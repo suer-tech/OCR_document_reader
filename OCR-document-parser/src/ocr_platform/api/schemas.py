@@ -119,7 +119,7 @@ class FieldValue(BaseModel):
 
 class ValidationIssue(BaseModel):
     code: str = Field(
-        ..., description="Код проблемы: missing_required_field, court_field_requires_review, claimed_amount_by_queue_not_determined или claimed_amount_total_mismatch.", examples=["claimed_amount_by_queue_not_determined"]
+        ..., description="Код проблемы: missing_required_field, court_field_requires_review, claimed_amount_by_queue_not_determined, claimed_amount_total_mismatch или rtk3_requires_review.", examples=["claimed_amount_by_queue_not_determined"]
     )
     message: str = Field(
         ...,
@@ -209,28 +209,37 @@ class DocumentResultResponse(BaseModel):
 * `hearing_date` — Дата ближайшего назначенного заседания; если заседание предполагается, но дата отсутствует — дата определения + 1 месяц; при рассмотрении без заседания — null
 * `review_required` — JSON boolean: обязан ли управляющий представить отзыв. Это требование суда, отдельное от верхнеуровневого human_review_required
 
-Для `rtk3` (Включение кредитора ЕФРСБ):
-* `inclusion_date` — Дата вынесения определения, строка
-* `creditor` — ФИО или наименование кредитора, чьи требования включаются в реестр, строка
-* `total_claimed_amount` — Общая заявленная сумма по всему документу, JSON number или null
-* `claims` — Массив требований по очередям или null. Структура каждой строки описана ниже
-* `grounds` — Основания возникновения задолженности с реквизитами (например, договор займа), строка или null
-* `secured_by_pledge` — JSON boolean: true при прямо указанном обеспечении залогом имущества должника, иначе false
+Для `rtk3` (Включение кредитора ЕФРСБ), обработчик `rtk3_evidence_v2`:
+* `document_case_number` — Номер конкретного спора из определения, включая суффикс
+* `case_number` — Основное дело о банкротстве
+* `debtor_inn` — ИНН должника, строка из 12 цифр с ведущими нулями
+* `creditor_inn` — ИНН кредитора, строка из 10 или 12 цифр с ведущими нулями
+* `inclusion_date` — Дата определения, ДД.ММ.ГГГГ
+* `kad_publication_date` — Отдельная подтверждённая дата публикации КАД; отсутствие требует проверки
+* `creditor` — Наименование кредитора
+* `grounds` — Кредитный договор / Договор займа / Налоговая задолженность / Оплата коммунальных услуг
+* `grounds_ocr` — Исходная формулировка основания из документа
+* `pledge_resolution` — yes / no / separated или null при неоднозначности
+* `secured_by_pledge` — true только для окончательно включённого залогового требования
+* `total_claimed_amount` — По актуальной подтверждённой форме ЕМУ: признанная судом сумма без отдельно выделенной пошлины по текущему спору, не первоначально запрошенная сумма
+* `claims` — Все включённые требования по очередям
 
-Поля каждого объекта `fields.claims.value[]` для РТК3:
-* `priority_queue` — Номер/название очереди: строка, например "2 очередь", "3 очередь", "за реестром", или null
-* `claimed_amount` — Необязательная первоначально заявленная сумма именно этой очереди до решения суда: string или null. Формат "123456.78": точка, строго два знака, без пробелов, валюты и разделителей тысяч
-* `principal_debt` — Фактически включённый основной долг, проценты и госпошлина по очереди; отдельно указанные судебные расходы исключаются. JSON number или null
-* `financial_sanctions` — Включённые пени, неустойки и штрафы по очереди, JSON number или null
-* `total_amount` — Фактически включённая судом сумма очереди: principal_debt + financial_sanctions, JSON number или null
-
-Для нескольких очередей сумма известных claimed_amount по всем строкам сверяется с total_claimed_amount.
-При расхождении human_review_required=true и причина claimed_amount_total_mismatch; суммы сохраняются.
-Если распределение не установлено или неоднозначно, неизвестные claimed_amount остаются null:
-пропорционального распределения и подстановки включённых сумм нет.
-Это требует ручной проверки с причиной claimed_amount_by_queue_not_determined, кроме двух случаев:
-одна строка claims; либо несколько строк, все total_amount известны и их сумма равна total_claimed_amount.
-Исключения снимают только эту причину проверки; низкое общее качество всё ещё может требовать проверки.
+Поля каждого объекта `claims`:
+* `priority_queue` — 1 очередь / 2 очередь / 3 очередь / 4 очередь / За реестром / Иное
+* `principal_debt` — Основной долг, обычные проценты и ранее присуждённые расходы в составе принятого требования; без отдельно выделенной пошлины по текущему спору
+* `financial_sanctions` — Все неустойки, пени, штрафы и иные финансовые санкции
+* `pau_only_amount` — Отдельно присуждённая пошлина по текущему спору, без двойного счёта
+* `claimed_amount` — По подтверждённой форме ЕМУ: principal_debt + financial_sanctions
+* `total_amount` — principal_debt + financial_sanctions + pau_only_amount
+* `is_salary_or_severance` — Только явно подтверждённая зарплата/выходное пособие
+Все денежные значения новых результатов — строки "123456.78" или null; точка, два знака,
+без разделителей тысяч. Неизвестные суммы не заменяются нулём и требуют ручной проверки.
+Ошибка суммы, цитаты, полноты или реквизитов: validation_status=errors,
+human_review_required=true, human_review_reason=rtk3_requires_review независимо от quality.
+Показатели efrsb_total_amount/pau_total_amount и подтверждения amount_mismatch_* формирует ЕМУ.
+Сохранённые исторические результаты rtk3_combined возвращаются без переписывания значений;
+в них деньги могут быть JSON number, а claimed_amount означает первоначально заявленную сумму.
+Для них сохраняются прежние проверки claimed_amount; дополнительно проверяется арифметика.
 
 Для `passport_main` (Паспорт РФ — главная страница):
 * `passport_series` — Серия паспорта (4 цифры)

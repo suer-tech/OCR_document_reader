@@ -12,11 +12,19 @@ async def simple_extract_fields(
     storage_path: str | None = None,
 ) -> Dict[str, dict]:
     """
-    Извлечь структурированные поля из текста документа.
+    Извлечь структурированные поля из текста или оригинальных страниц документа.
 
-    Вызывает обработчик профиля по profile_id из реестра.
+    Для direct_vision передаёт оригинал модели без предварительного OCR.
+    Для остальных профилей использует существующее текстовое извлечение.
     Сохранение, метрики и MLflow остаются в orchestration/run_processor.
     """
+    from ocr_platform.services import passport_vision_service
+
+    if passport_vision_service.is_direct_vision_profile(profile_config):
+        if not storage_path:
+            raise ValueError("Passport direct vision requires the original document")
+        return await passport_vision_service.extract_passport_fields(storage_path, profile_config)
+
     from ocr_platform.services.extraction_agent import run_agent_extraction
 
     fields_config = profile_config.get("fields", {})

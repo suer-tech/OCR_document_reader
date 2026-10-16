@@ -1,3 +1,4 @@
+import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -22,10 +23,13 @@ def test_rtk_profile_is_routed_and_has_active_pipeline(profile_id: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rtk3_combined_extraction_preserves_claims_and_false_pledge(
+async def test_legacy_rtk3_combined_extraction_preserves_claims_and_false_pledge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profile = load_profile("rtk3")
+    profile = copy.deepcopy(load_profile("rtk3"))
+    profile["fields"] = {name: info for name, info in profile["fields"].items() if name in {
+        "inclusion_date", "creditor", "total_claimed_amount", "claims", "grounds", "secured_by_pledge"}}
+    profile.pop("extraction_mode", None)
     data = extraction_agent.Rtk3Result(
         inclusion_date="10.09.2026",
         inclusion_date_confidence=0.9,
@@ -57,6 +61,7 @@ async def test_rtk3_combined_extraction_preserves_claims_and_false_pledge(
     mock_run = AsyncMock(return_value=SimpleNamespace(data=data))
     monkeypatch.setattr(extraction_agent.agent_rtk3_combined, "run", mock_run)
     monkeypatch.setattr(extraction_agent, "_get_lf_client", lambda: None)
+    monkeypatch.setattr(extraction_agent, "get_field_instruction", lambda *a, **kw: kw.get("default", ""))
     monkeypatch.setattr(
         extraction_agent,
         "search_creditor_inn",

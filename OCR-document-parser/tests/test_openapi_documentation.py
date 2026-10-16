@@ -28,9 +28,10 @@ def test_swagger_documents_exact_current_profile_fields(openapi):
         assert documented == set(profile.get("fields", {})), profile["profile_id"]
     assert "`processing_started_at`" in sections[0]
 
-    from ocr_platform.services.extraction_agent import Rtk3Claim
     nested = by_type["rtk3"].split("\nПоля каждого объекта")[1]
-    assert set(re.findall(r"^\* `([^`]+)`", nested, re.MULTILINE)) == set(Rtk3Claim.model_fields)
+    assert set(re.findall(r"^\* `([^`]+)`", nested, re.MULTILINE)) == {
+        "priority_queue", "claimed_amount", "principal_debt", "financial_sanctions",
+        "pau_only_amount", "total_amount", "is_salary_or_severance"}
 
 
 def test_swagger_response_examples_match_contract_and_review_rules(openapi):

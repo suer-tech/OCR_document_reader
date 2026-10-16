@@ -120,6 +120,7 @@ def call_llm_json_with_fallback(
     reasoning_effort: str | None = None,
     mlflow_tags: dict[str, str] | None = None,
     mlflow_params: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
 ) -> LlmJsonResult | None:
     resolved_api_key, resolved_base_url = _resolve_provider_credentials(
         provider, api_key, base_url
@@ -186,6 +187,8 @@ def call_llm_json_with_fallback(
             }
             if reasoning_effort:
                 payload["reasoning_effort"] = reasoning_effort
+            if max_tokens is not None:
+                payload["max_tokens"] = max_tokens
             try:
                 response_text = ""
                 response = client.post(
