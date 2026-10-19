@@ -16,7 +16,7 @@ models:
     timeout_seconds: 300.0
   llm_extraction:
     provider: router_ai
-    model: x-ai/grok-4.20
+    model: anthropic/claude-sonnet-5.5
     temperature: 0.0
     max_tokens: 4096
     timeout_seconds: 180.0

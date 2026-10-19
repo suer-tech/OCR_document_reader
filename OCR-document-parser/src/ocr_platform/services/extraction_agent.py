@@ -11,7 +11,9 @@ from typing import Any, Dict, Literal
 
 from bs4 import BeautifulSoup
 import requests
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import RunContext
+from pydantic_ai.exceptions import UsageLimitExceeded
+from ocr_platform.services.agent_limits import BoundedAgent as Agent
 from pydantic import BaseModel, field_validator
 
 from ocr_platform.observability.logging import get_logger
@@ -847,11 +849,11 @@ def _active_model_settings():
     return ModelSettings(temperature=_active_temperature.get(), timeout=180.0)
 
 
-class ReasoningEffortOpenAIModel(OpenAIModel):
-    """OpenAIModel that passes reasoning_effort from config to the API."""
+class ReasoningEffortOpenAIAgentModel(OpenAIAgentModel):
+    """Request adapter for PydanticAI 0.0.18 and RouterAI tool compatibility."""
 
-    def __init__(self, model_name: str, *, reasoning_effort: str | None = None, **kwargs: Any):
-        super().__init__(model_name, **kwargs)
+    def __init__(self, client, model_name, allow_text_result, tools, reasoning_effort=None):
+        super().__init__(client, model_name, allow_text_result, tools)
         self.reasoning_effort = reasoning_effort
 
     async def _completions_create(
@@ -862,6 +864,9 @@ class ReasoningEffortOpenAIModel(OpenAIModel):
 
         if not self.tools:
             tool_choice: Any = None
+        elif self.model_name.startswith("anthropic/"):
+            # Claude on RouterAI/Bedrock rejects forced tools with thinking.
+            tool_choice = "auto"
         elif not self.allow_text_result:
             tool_choice = "required"
         else:
@@ -874,7 +879,7 @@ class ReasoningEffortOpenAIModel(OpenAIModel):
             model=self.model_name,
             messages=openai_messages,
             n=1,
-            parallel_tool_calls=True if self.tools else NOT_GIVEN,
+            parallel_tool_calls=True if self.tools and not self.model_name.startswith("anthropic/") else NOT_GIVEN,
             tools=self.tools or NOT_GIVEN,
             tool_choice=tool_choice or NOT_GIVEN,
             stream=stream,
@@ -886,7 +891,26 @@ class ReasoningEffortOpenAIModel(OpenAIModel):
         )
         if self.reasoning_effort:
             kwargs["reasoning_effort"] = self.reasoning_effort
-        return await self.client.chat.completions.create(**kwargs)
+        response = await self.client.chat.completions.create(**kwargs)
+        if not stream and not response.choices:
+            from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+            raise UnexpectedModelBehavior(f"Provider returned no choices: {getattr(response, 'error', None)}")
+        return response
+
+
+class ReasoningEffortOpenAIModel(OpenAIModel):
+    def __init__(self, model_name: str, *, reasoning_effort: str | None = None, **kwargs: Any):
+        super().__init__(model_name, **kwargs)
+        self.reasoning_effort = reasoning_effort
+
+    async def agent_model(self, *, function_tools, allow_text_result, result_tools):
+        check_allow_model_requests()
+        tools = [self._map_tool_definition(tool) for tool in function_tools]
+        tools += [self._map_tool_definition(tool) for tool in result_tools or []]
+        return ReasoningEffortOpenAIAgentModel(
+            self.client, self.model_name, allow_text_result, tools, self.reasoning_effort,
+        )
 
 
 def resolve_llm_model(profile_config: dict | None = None) -> "Model":
@@ -1345,6 +1369,8 @@ async def extract_company_name_from_search(inn: str, search_text: str) -> str | 
         try:
             result = await company_name_extraction_agent.run(prompt)
             return result.data.company_name
+        except UsageLimitExceeded:
+            raise
         except Exception as e:
             logger.warning(f"LLM company name extraction attempt {attempt} failed: {e}")
             if attempt == max_attempts:
@@ -1364,6 +1390,8 @@ async def compare_company_names(
         try:
             result = await company_comparison_agent.run(prompt)
             return result.data
+        except UsageLimitExceeded:
+            raise
         except Exception as e:
             logger.warning(f"LLM company comparison attempt {attempt} failed: {e}")
             if attempt == max_attempts:
@@ -1494,6 +1522,8 @@ async def _run_agent_extraction_impl(
                     )
                     combined_data = result.data
                     break
+                except UsageLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Combined RTK extraction attempt {attempt} failed: {e}"
@@ -1646,6 +1676,8 @@ async def _run_agent_extraction_impl(
                                         f"Твой ответ должен СТРОГО соответствовать одному из этих значений: {', '.join(VALID_GROUNDS)}.\n"
                                         f"Если в тексте нет ничего похожего, верни null. Не придумывай свои варианты!"
                                     )
+                            except UsageLimitExceeded:
+                                raise
                             except Exception as e:
                                 logger.warning(
                                     f"Grounds retry attempt {attempt} failed: {e}"
@@ -1692,6 +1724,8 @@ async def _run_agent_extraction_impl(
                     combined_data = result.data
                     break
 
+                except UsageLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Combined tax extraction attempt {attempt} failed: {e}"
@@ -1805,6 +1839,8 @@ async def _run_agent_extraction_impl(
                     )
                     combined_data = result.data
                     break
+                except UsageLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Combined court_decision extraction attempt {attempt} failed: {e}"
@@ -1967,6 +2003,8 @@ async def _run_agent_extraction_impl(
                     )
                     combined_rtk2_data = result.data
                     break
+                except UsageLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Combined rtk2 extraction attempt {attempt} failed: {e}"
@@ -2071,6 +2109,8 @@ async def _run_agent_extraction_impl(
                     )
                     combined_rtk3_data = result.data
                     break
+                except UsageLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Combined rtk3 extraction attempt {attempt} failed: {e}"
@@ -2181,6 +2221,8 @@ async def _run_agent_extraction_impl(
                     )
                     combined_data = result.data
                     break
+                except UsageLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Combined passport_main extraction attempt {attempt} failed: {e}"
@@ -2272,6 +2314,8 @@ async def _run_agent_extraction_impl(
                     )
                     combined_data = result.data
                     break
+                except UsageLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Combined passport_registration extraction attempt {attempt} failed: {e}"
@@ -2335,6 +2379,8 @@ async def _run_agent_extraction_impl(
                 )
                 additional = additional_fields_result(response.data, text)
                 break
+            except UsageLimitExceeded:
+                raise
             except Exception as exc:
                 logger.warning("court_additional_extraction_failed", attempt=attempt + 1, error=str(exc))
         results.update({name: value for name, value in additional.items() if name in fields_config})
@@ -2544,6 +2590,8 @@ async def _run_agent_extraction_impl(
                                     val = _clean_llm_string(data.company_name)
                                     confidence = 0.9 if val else 0.0
                                     reasoning = f"{data.reasoning} | Extracted directly from web search results by INN {cleaned_inn} without reading document text."
+                                except UsageLimitExceeded:
+                                    raise
                                 except Exception as e:
                                     logger.warning(
                                         f"Custom creditor extraction failed: {e}"
@@ -2587,6 +2635,8 @@ async def _run_agent_extraction_impl(
                                 confidence = result.data.confidence
                                 reasoning = result.data.reasoning
                                 break
+                            except UsageLimitExceeded:
+                                raise
                             except Exception as e:
                                 logger.warning(
                                     f"LLM extraction attempt {attempt} failed for tax creditor: {e}"
@@ -2644,6 +2694,8 @@ async def _run_agent_extraction_impl(
                                     model_settings=_active_model_settings(),
                                 )
                                 break
+                            except UsageLimitExceeded:
+                                raise
                             except Exception as e:
                                 import traceback
 
@@ -2669,6 +2721,8 @@ async def _run_agent_extraction_impl(
                                             == "search_creditor_name"
                                         ):
                                             tool_called = True
+                        except UsageLimitExceeded:
+                            raise
                         except Exception as e:
                             logger.error(f"Error checking tool calls: {e}")
 
@@ -2700,6 +2754,8 @@ async def _run_agent_extraction_impl(
                                         deps=text,
                                         model_settings=_active_model_settings(),
                                     )
+                                except UsageLimitExceeded:
+                                    raise
                                 except Exception as e:
                                     logger.warning(
                                         f"Forced LLM call failed for field creditor: {e}"
@@ -2818,6 +2874,8 @@ async def _run_agent_extraction_impl(
                                             "source": "rtk_fallback_inn",
                                         }
                                 break
+                            except UsageLimitExceeded:
+                                raise
                             except Exception as e:
                                 logger.warning(
                                     f"Fallback INN extraction attempt {attempt} failed: {e}"
@@ -2857,6 +2915,8 @@ async def _run_agent_extraction_impl(
                                                 model_settings=_active_model_settings(),
                                             )
                                             data = cred_res.data
+                                        except UsageLimitExceeded:
+                                            raise
                                         except Exception:
                                             pass
 
@@ -2871,6 +2931,8 @@ async def _run_agent_extraction_impl(
                                                         == "search_creditor_name"
                                                     ):
                                                         tool_called = True
+                                    except UsageLimitExceeded:
+                                        raise
                                     except Exception:
                                         pass
 
@@ -2952,6 +3014,8 @@ async def _run_agent_extraction_impl(
                                                         confidence = 0.0
                                                         reasoning = f"{reasoning} | CRITICAL MISMATCH with registry for INN {cleaned_inn} (internet: {web_company_name})."
                                     break
+                                except UsageLimitExceeded:
+                                    raise
                                 except Exception as e:
                                     logger.warning(
                                         f"Fallback creditor attempt {attempt} failed: {e}"
@@ -2974,6 +3038,8 @@ async def _run_agent_extraction_impl(
                                 model_settings=_active_model_settings(),
                             )
                             break
+                        except UsageLimitExceeded:
+                            raise
                         except Exception as e:
                             logger.warning(
                                 f"LLM call attempt {attempt} failed for field claims_amount: {e}"
@@ -3036,6 +3102,8 @@ async def _run_agent_extraction_impl(
                                 deps=text,
                                 model_settings=_active_model_settings(),
                             )
+                        except UsageLimitExceeded:
+                            raise
                         except Exception as e:
                             logger.warning(
                                 f"LLM call attempt {attempt} failed for field grounds: {e}"
@@ -3108,6 +3176,8 @@ async def _run_agent_extraction_impl(
                                 model_settings=_active_model_settings(),
                             )
                             break
+                        except UsageLimitExceeded:
+                            raise
                         except Exception as e:
                             logger.warning(
                                 f"LLM extraction attempt {attempt} failed for field {field_name}: {e}"
@@ -3150,6 +3220,8 @@ async def _run_agent_extraction_impl(
                                 model_settings=_active_model_settings(),
                             )
                             break
+                        except UsageLimitExceeded:
+                            raise
                         except Exception as e:
                             logger.warning(
                                 f"LLM extraction attempt {attempt} failed for field {field_name}: {e}"
@@ -3177,6 +3249,8 @@ async def _run_agent_extraction_impl(
                     ),
                 }
 
+            except UsageLimitExceeded:
+                raise
             except Exception as e:
                 import pydantic_ai
 
@@ -3226,6 +3300,8 @@ async def _run_agent_extraction_impl(
                         "source": "tool_fallback",
                     }
                     logger.info(f"Fallback search for INN returned no valid results.")
+            except UsageLimitExceeded:
+                raise
             except Exception as e:
                 logger.warning(f"Forced search_creditor_inn failed: {e}")
 
@@ -3282,6 +3358,8 @@ async def _run_agent_extraction_impl(
                         logger.info(
                             "Fallback postal-index search returned no valid results."
                         )
+                except UsageLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.warning(f"Forced search_postal_index_by_address failed: {e}")
                     results["post_index"] = {
@@ -3294,6 +3372,8 @@ async def _run_agent_extraction_impl(
     try:
         lf = _get_lf_client()
         lf.update_current_generation(model=_extraction_model_name)
+    except UsageLimitExceeded:
+        raise
     except Exception:
         logger.debug("langfuse_update_generation_skipped")
 

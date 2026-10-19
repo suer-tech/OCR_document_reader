@@ -9,6 +9,7 @@ import pika
 
 from ocr_platform.config.settings import get_settings
 from ocr_platform.observability.logging import get_logger
+from ocr_platform.storage.pipeline_lock import PipelineRunBusy
 
 logger = get_logger(__name__)
 
@@ -110,6 +111,10 @@ def consume_ingest_jobs(handler: Callable[[IngestJob], None]) -> None:
                     )
                     handler(job)
                     _safe_ack(ch, method.delivery_tag)
+                except PipelineRunBusy:
+                    logger.info("ingest_run_busy_requeued", pipeline_run_id=job.pipeline_run_id)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                    connection.sleep(5.0)
                 except Exception:
                     logger.exception("ingest_job_handler_failed")
                     try:

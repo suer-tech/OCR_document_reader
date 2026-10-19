@@ -149,6 +149,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-ocr_user}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-RABBITMQ_PASSWORD}
+      # Longer than the 30-minute pipeline deadline, including cleanup/flush.
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit consumer_timeout 3600000"
     ports:
       - "127.0.0.1:5672:5672"
       - "127.0.0.1:15672:15672" # Панель управления (проксируется через Nginx)

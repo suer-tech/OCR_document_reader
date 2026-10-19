@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse, RetryPromptPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -124,6 +124,6 @@ async def test_repeated_invalid_confidence_exhausts_retries():
         )])
 
     with extraction.agent_generic.override(model=FunctionModel(respond)):
-        with pytest.raises(UnexpectedModelBehavior):
+        with pytest.raises(UsageLimitExceeded):
             await extraction.agent_generic.run("Extract field", deps="document text")
-    assert calls == 4  # Initial answer plus the agent's three correction attempts.
+    assert calls == 3  # The request budget includes schema correction attempts.

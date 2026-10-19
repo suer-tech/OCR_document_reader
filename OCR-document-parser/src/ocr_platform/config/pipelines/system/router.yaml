@@ -22,7 +22,7 @@ detection:
     model: openai/gpt-oss-20b
     fallback_models:
       - openai/gpt-oss-120b
-      - x-ai/grok-4.1-fast
+      - anthropic/claude-sonnet-5.5
     temperature: 0.0
     timeout_seconds: 180.0
     reasoning_effort: low

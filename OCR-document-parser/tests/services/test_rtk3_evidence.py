@@ -415,7 +415,7 @@ async def test_public_dispatch_uses_profile_model_and_one_gateway_call(monkeypat
     fields = await simple_extract_fields(text, load_profile("rtk3"), "rtk3", "run", "doc")
     assert fields["total_claimed_amount"]["value"] == "227065.76"
     gateway.assert_called_once()
-    assert gateway.call_args.kwargs["models"] == ["x-ai/grok-4.20"]
+    assert gateway.call_args.kwargs["models"] == ["anthropic/claude-sonnet-5.5"]
     assert gateway.call_args.kwargs["user_content"] == text
     assert gateway.call_args.kwargs["api_key"] == "test-router-key"
     assert gateway.call_args.kwargs["base_url"] == "https://router.invalid/v1"

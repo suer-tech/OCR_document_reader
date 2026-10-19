@@ -12,6 +12,8 @@ from ocr_platform.queueing.rabbitmq import (
     publish_ingest_job,
 )
 from ocr_platform.storage import models, repository
+from ocr_platform.storage.pipeline_lock import PipelineRunBusy
+from pydantic_ai.exceptions import UsageLimitExceeded
 from langfuse import get_client as get_langfuse_client
 from prometheus_client import start_http_server
 
@@ -49,6 +51,11 @@ def _handle_job(job: IngestJob) -> None:
     try:
         asyncio.run(process_pipeline_run(job.pipeline_run_id))
         get_langfuse_client().flush()
+    except PipelineRunBusy:
+        raise
+    except UsageLimitExceeded as exc:
+        _set_failed(job.pipeline_run_id, job.attempt, f"UsageLimitExceeded: {exc}")
+        logger.error("pipeline_llm_budget_exhausted", pipeline_run_id=job.pipeline_run_id, error=str(exc))
     except Exception as exc:
         next_attempt = job.attempt + 1
         error = f"{type(exc).__name__}: {exc}"

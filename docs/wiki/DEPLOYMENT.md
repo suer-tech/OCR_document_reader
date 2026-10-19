@@ -1,5 +1,7 @@
 # 🚀 Деплой и Эксплуатация (Deployment Guide)
 
+Лимиты LLM и владение задачами очереди: [LLM_BUDGET_AND_QUEUE.md](LLM_BUDGET_AND_QUEUE.md).
+
 Данный документ содержит краткую выжимку по развертыванию OCR платформы на Production серверах (Ubuntu/Linux). Полная версия с деталями настройки Nginx и сертификатов находится в [deployment_guide.md](/deployment_guide.md).
 
 ## 1. Архитектура развертывания

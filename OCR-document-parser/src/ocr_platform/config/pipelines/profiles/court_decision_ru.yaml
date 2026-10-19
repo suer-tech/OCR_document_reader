@@ -16,10 +16,9 @@ models:
     timeout_seconds: 300.0
   llm_extraction:
     provider: router_ai
-    model: x-ai/grok-4.20
+    model: anthropic/claude-sonnet-5.5
     fallback_models:
       - openai/gpt-oss-120b
-      - x-ai/grok-4.1-fast
     temperature: 0.0
     timeout_seconds: 180.0
     reasoning_effort: low

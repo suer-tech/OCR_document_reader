@@ -37,6 +37,7 @@ from ocr_platform.services import (
     validation_service,
 )
 from ocr_platform.storage import models, repository
+from ocr_platform.storage.pipeline_lock import PipelineRunBusy, pipeline_run_lock
 
 logger = get_logger(__name__)
 
@@ -67,6 +68,14 @@ async def _trigger_webhook_safely(webhook_url: str | None, payload: dict) -> Non
 
 
 async def process_pipeline_run(pipeline_run_id: str) -> None:
+    with pipeline_run_lock(pipeline_run_id) as acquired:
+        if not acquired:
+            logger.info("pipeline_run_busy", pipeline_run_id=pipeline_run_id)
+            raise PipelineRunBusy(pipeline_run_id)
+        await _process_pipeline_run_with_timeout(pipeline_run_id)
+
+
+async def _process_pipeline_run_with_timeout(pipeline_run_id: str) -> None:
     try:
         await asyncio.wait_for(
             _process_pipeline_run_impl(pipeline_run_id),
