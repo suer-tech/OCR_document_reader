@@ -1,11 +1,21 @@
 # Extraction request limits and queue ownership
 
 Each PydanticAI extraction operation uses `BoundedAgent`: at most three model
-requests, including tool turns and schema corrections. A fourth request is
-rejected locally by `UsageLimitExceeded`. This is a terminal budget error:
-extraction fallbacks and worker retries must not restart the exhausted operation.
-The document is marked failed and can be explicitly reviewed/retried by an operator.
-Other transient failures retain the existing retry policy.
+requests with tools, including schema corrections. If that budget is exhausted
+after receiving tool results, continue the same task with exactly one additional
+request without any tools, including the `final_result` tool. Keep the original
+document, prior model answers, tool arguments and results. Render historical
+tool-call/return blocks as ordinary text so Anthropic can accept the history
+without tool definitions. Explicitly tell the model to use the already found INN,
+not search again, preserve each party's identity and return raw JSON in the
+original result schema. Validate the JSON and existing result validators before
+returning the usual typed result and continuing the pipeline. Usage includes all
+four requests. Unavailable nullable values remain null, never fabricated.
+
+Explicit stricter caller limits and token budgets are preserved. A budget error
+without tool evidence, or an invalid final answer, remains terminal: fallbacks
+and worker retries must not restart the loop. Other transient failures retain
+the existing retry policy.
 
 All former Grok entries in pipeline configuration use
 `anthropic/claude-sonnet-5.5` through RouterAI. Passport Gemini profiles remain
@@ -32,6 +42,8 @@ does not replace the model request budget. On deployment verify the effective
 broker timeout, empty ready/unacknowledged queue before container replacement,
 the expected worker count, and model selection in running containers.
 
-Regression checks must exercise an endlessly repeating tool, successful tool to
-final-result completion, propagation through extraction/worker retries, nack on
+Regression checks must exercise an endlessly repeating tool followed by a valid
+typed answer without tools, preserved evidence in the actual HTTP request,
+no further requests on an invalid final answer, successful ordinary completion,
+propagation through extraction/worker retries, nack on
 busy delivery, and PostgreSQL exclusion across separate connections/processes.
