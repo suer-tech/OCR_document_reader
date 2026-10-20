@@ -107,12 +107,12 @@ class FieldValue(BaseModel):
     )
     confidence: Optional[float] = Field(
         default=None,
-        description="Оценка уверенности от 0 до 1 включительно; null для служебных полей. Схемы извлечения отклоняют значения вне диапазона и запрашивают исправление у модели. Ранее сохранённые результаты возвращаются без пересчёта. Это оценка извлечения, а не подтверждение достоверности.",
+        description="Оценка уверенности от 0 до 1 включительно; null для служебных полей. Для source=regex_jev это вероятность подтверждения значения моделью JEV (порог задаётся профилем, текущий — 0.6), для LLM — оценка извлечения. Недопустимые оценки отклоняются: ответ JEV направляется в LLM, ответ извлечения запрашивается повторно. Ранее сохранённые результаты возвращаются без пересчёта. Оценка не гарантирует достоверность.",
         examples=[0.95],
     )
     source: Optional[str] = Field(
         default=None,
-        description="Обработчик или метод извлечения, например rtk3_combined, rtk2_combined, court_decision_combined, court_decision, llm, llm_with_tools, regex, regex_legacy; null для служебных полей.",
+        description="Обработчик или метод извлечения, например regex_jev (регулярки с подтверждением JEV), court_llm_fallback (адресное извлечение неподтверждённого поля), rtk3_combined, rtk2_combined, court_decision_combined, court_decision, llm, llm_with_tools, regex, regex_legacy; null для служебных полей.",
         examples=["rtk3_combined"],
     )
 
@@ -176,17 +176,17 @@ class DocumentResultResponse(BaseModel):
 * `judge_full_name` — ФИО судьи
 * `court_name` — Название суда
 * `decision_date` — Дата полного решения
-* `resolutive_part_date` — Дата резолютивной части
+* `resolutive_part_date` — Отдельная дата резолютивной части; при её отсутствии и наличии раздела РЕШИЛ используется дата текущего документа по согласованному правилу; без однозначного источника null
 * `procedure_type` — Тип процедуры (например, реализация имущества)
 * `procedure_end_date` — Дата окончания процедуры
 * `procedure_end_date_is_calculated` — Признак вычисления даты окончания; текущий ответ содержит строку "True" / "False" или null
 * `early_report_deadline` — Заблаговременное предоставление отчета ФУ
 * `early_report_required` — Обязанность управляющего заранее предоставить отчёт (JSON boolean: true/false)
 * `application_acceptance_date` — Дата принятия заявления о банкротстве (ДД.ММ.ГГГГ или null)
-* `next_session_date` — Дата следующего заседания (ДД.ММ.ГГГГ или null)
+* `next_session_date` — Явная дата следующего рассмотрения; если не найдена, дата окончания процедуры по согласованному правилу (ДД.ММ.ГГГГ или null)
 * `next_session_time` — Время того же заседания (ЧЧ:ММ или null)
 * `court_hearing_address` — Адрес проведения того же заседания или null
-* `procedure_duration_months` — Явно указанная продолжительность процедуры (integer или null)
+* `procedure_duration_months` — Явно назначенная продолжительность процедуры в месяцах (integer или null), без расчёта из дат и значения по умолчанию. Regex-кандидат проверяется JEV; при отсутствии подтверждения поле извлекает LLM
 * `procedure_end_date_source` — Строка: explicit_date — явно указана дата; explicit_duration — указан срок в месяцах; not_found — не найдены ни дата, ни срок; при неоднозначности null
 * `financial_manager_full_name` — ФИО финансового управляющего
 * `motivating_part` — Мотивирующая часть судебного решения

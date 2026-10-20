@@ -9,21 +9,52 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-CASE_NUMBER_RE = re.compile(r"(?:Дело|Дела|Делу|Деле)\s*[№N]?\s*([АA]\d{1,3}-?\d+/\d{2,4})", re.IGNORECASE)
+_CASE_DASHES = "-‐‑‒–—−"
+_CASE_NUMBER = rf"[АA]\d{{1,3}}(?:\s*[{_CASE_DASHES}]\s*\d+|\d+)/\d{{2,4}}(?!\w)"
+CASE_NUMBER_RE = re.compile(
+    rf"\b(?:Дело|Дела|Делу|Деле)\s*[№N]?\s*({_CASE_NUMBER})",
+    re.IGNORECASE,
+)
+# Without a case label, accept only a number line in the document header.
+_HEADER_CASE_NUMBER_RE = re.compile(
+    rf"^[ \t]*(?:(?:г\.|город)[ \t]+[А-Яа-яЁё‐-]+"
+    rf"(?:[ \t]+(?-i:[А-ЯЁ])[А-Яа-яЁё‐-]+){{0,2}}[ \t]+)?[№N][ \t]*"
+    rf"([АA]\d{{1,3}}\s*[{_CASE_DASHES}]\s*\d+/\d{{2,4}}(?!\w))",
+    re.IGNORECASE | re.MULTILINE,
+)
+_CASE_HEADER_END_RE = re.compile(
+    r"\b(?:в\s+составе|рассмотрев|рассмотрел|установил[аи]?|руководствуясь)\b",
+    re.IGNORECASE,
+)
 DECISION_DATE_RE = re.compile(r"[«\"]?(\d{1,2})[»\"]?\s+([А-Яа-яЁё]+)\s+(\d{4})\s*(?:года|г\.?)", re.IGNORECASE)
 
-REPORT_TIME_RE = re.compile(
-    r"рассмотрени[ея]\s+отчета.{1,100}?на\s+([«\"]?\d{1,2}[»\"]?\s+[А-Яа-яЁё]+\s+\d{4}\s*года\s+на\s+\d{1,2}\s*час\.?\s*\d{1,2}\s*мин\.?)",
-    re.IGNORECASE | re.DOTALL
+_WRITTEN_END_DATE = (
+    r'[«"“„]*\s*(\d{1,2})\s*[»"”]*\s+([А-Яа-яЁё]+)\s+(\d{4})\s*(?:года|г\.?)'
 )
 EXPLICIT_END_DATE_RE = re.compile(
-    r"до\s+([«\"]?\d{1,2}[»\"]?\s+[А-Яа-яЁё]+\s+\d{4}\s*(?:года|г\.?)|\d{2}\.\d{2}\.\d{4})",
+    rf"\b(?:до|по)\s+({_WRITTEN_END_DATE}|\d{{2}}\.\d{{2}}\.\d{{4}})",
     re.IGNORECASE
 )
 TERM_MONTHS_RE = re.compile(
-    r"(?:на\s+срок|сроком\s+на|на)\s+([А-Яа-яЁё]+|\d+)\s+месяц(?:а|ев)?",
+    r"(?:на\s+срок|сроком\s+на|на)\s+([А-Яа-яЁё]+|\d+)"
+    r"(?:\s*\(\s*([А-Яа-яЁё]+|\d+)\s*\))?\s+месяц(?:а|ев)?",
     re.IGNORECASE
 )
+_PROCEDURE = re.compile(
+    r"\b(?:процедур[а-яё]*|реализаци[а-яё]*\s+имущества|реструктуризаци[а-яё]*\s+долгов)\b", re.I,
+)
+_PROCEDURE_ORDERS = {"ввести", "введением", "открыть", "продлить", "установить", "определить", "вводится", "вводит"}
+_ORDER = re.compile(
+    r"\b(?:ввести|введением|открыть|продлить|установить|определить|вводится|вводит|"
+    r"назначить|назначено|рассмотрени[ея]|обязать|утвердить|представить|предоставить|"
+    r"направить|опубликовать|взыскать|выплатить|отч[её]т[а-яё]*|заседани[а-яё]*)\b", re.I,
+)
+_CONDITIONAL_EXTENSION = re.compile(
+    r"\b(?:при\s+отсутствии|в\s+случае|считается\s+продл[её]н|"
+    r"будет\s+считаться|автоматическ[а-яё]*\s+продл[её]н)", re.I,
+)
+_OTHER_TERM_SUBJECT = re.compile(r"\b(?:финансовому|арбитражному)\s+управляющему\b|\bдолжнику\b", re.I)
+_OPERATIVE_HEADING = r"(?:р\s*е\s*ш\s*и\s*л|о\s*п\s*р\s*е\s*д\s*е\s*л\s*и\s*л)"
 
 WORD_TO_NUM = {
     "один": "1", "одного": "1", "два": "2", "двух": "2", "три": "3", "трех": "3", "трёх": "3",
@@ -49,8 +80,19 @@ MONTHS = {
 }
 
 def extract_case_number(text: str) -> str | None:
+    """Read the current case label or a numbered header; keep the source year."""
     match = CASE_NUMBER_RE.search(text)
-    return match.group(1) if match else None
+    header = text[:2000]
+    header_end = _CASE_HEADER_END_RE.search(header)
+    if header_end:
+        header = header[:header_end.start()]
+    header_match = _HEADER_CASE_NUMBER_RE.search(header)
+    if header_match and (match is None or header_match.start(1) < match.start(1)):
+        match = header_match
+    if match is None:
+        return None
+    value = re.sub(r"\s+", "", match.group(1))
+    return re.sub(rf"[{_CASE_DASHES}]", "-", value)
 
 
 def _to_ru_date(day: str, month_name: str, year: str) -> str | None:
@@ -75,39 +117,99 @@ def extract_decision_date(text: str) -> str | None:
     return _to_ru_date(match.group(1), match.group(2), match.group(3))
 
 
+def _procedure_term_context(text: str, position: int) -> bool:
+    """Tie a term to a procedure order, not to a subsequent report instruction."""
+    prefix = text[max(0, position-1000):position]
+    orders = list(_ORDER.finditer(prefix))
+    if not orders or orders[-1].group().casefold() not in _PROCEDURE_ORDERS:
+        return False
+    order = orders[-1]
+    before = prefix[max(0, order.start()-250):order.start()]
+    before = re.split(r"[.;!?]", before)[-1]
+    after = prefix[order.start():]
+    context = before + after
+    return (bool(_PROCEDURE.search(context))
+            and not _CONDITIONAL_EXTENSION.search(context)
+            and not _OTHER_TERM_SUBJECT.search(after))
+
+
+def _explicit_procedure_dates(text: str, *, reasoning_only: bool = False) -> list[str]:
+    values = []
+    for match in EXPLICIT_END_DATE_RE.finditer(text):
+        if not _procedure_term_context(text, match.start()):
+            continue
+        if reasoning_only:
+            prefix = text[:match.start()]
+            order = re.search(r"\bсуд\s+(?:вводит|продлевает)\s+процедур[а-яё]*\b[^.!?;:]{0,220}$", prefix, re.I)
+            if not order:
+                continue
+            context = prefix[max(0, order.start()-250):order.start()]
+            context = re.split(r"[.!?]\s+|\n\s*\n", context)[-1]
+            if (re.search(r"\b(?:ранее|другой|если|например|цит[а-яё]*|в\s+случае|при\s+отсутствии|"
+                          r"другом\s+деле|решени[а-яё]*\s+от|определени[а-яё]*\s+от)\b", context, re.I)
+                    or re.search(r'[«“"][^»”"]*$', context)):
+                continue
+        val = match.group(1)
+        if not re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", val):
+            written = re.fullmatch(_WRITTEN_END_DATE, val, re.I)
+            if not written:
+                continue
+            val = _to_ru_date(*written.groups())
+        if val and _parse_date_str(val):
+            values.append(val)
+    return values
+
+
 def extract_procedure_end_date_with_meta(text: str) -> tuple[str | None, bool | None]:
-    match_reshil = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", text, re.IGNORECASE)
-    search_text = text[match_reshil.start():] if match_reshil else text
+    headings = [match for pattern in (
+        rf"\b{_OPERATIVE_HEADING}\s*:",
+        rf"(?m)^[^\S\r\n]*{_OPERATIVE_HEADING}[^\S\r\n]*:?[^\S\r\n]*$",
+    ) if (match := re.search(pattern, text, re.I))]
+    search_text = text[min(match.end() for match in headings):] if headings else text
 
-    match3 = REPORT_TIME_RE.search(search_text)
-    if match3:
-        return normalize_whitespace(match3.group(1)), False
+    explicit = _explicit_procedure_dates(search_text)
+    if explicit:
+        return (explicit[0], False) if len(set(explicit)) == 1 else (None, None)
 
-    match2 = EXPLICIT_END_DATE_RE.search(search_text)
-    if match2:
-        val = match2.group(1)
-        if re.match(r"\d{2}\.\d{2}\.\d{4}", val):
-            return val, False
-        m = re.match(r"[«\"]?(\d{1,2})[»\"]?\s+([А-Яа-яЁё]+)\s+(\d{4})\s*(?:года|г\.?)", val, re.IGNORECASE)
-        if m:
-            day, month_name, year = m.groups()
-            month_num = MONTHS.get(month_name.lower())
-            if month_num:
-                return f"{int(day):02d}.{month_num}.{year}", False
-
-    match1 = TERM_MONTHS_RE.search(search_text)
-    if match1:
-        term = match1.group(1).lower()
+    terms = []
+    for match1 in TERM_MONTHS_RE.finditer(search_text):
+        if not _procedure_term_context(search_text, match1.start()):
+            continue
+        term = match1.group(1).casefold()
         if term in WORD_TO_NUM:
             term = WORD_TO_NUM[term]
-        if term.isdigit():
-            decision_date = extract_decision_date(text)
-            if decision_date:
-                base_date = _parse_date_str(decision_date)
-                if base_date:
-                    end_date = _add_months(base_date, int(term))
-                    return end_date.strftime("%d.%m.%Y"), True
-            return term, True
+        if match1.group(2):
+            duplicate = match1.group(2).casefold()
+            duplicate = WORD_TO_NUM.get(duplicate, duplicate)
+            if duplicate != term:
+                continue
+        if term.isdigit() and int(term) > 0:
+            terms.append(term)
+    if terms and len(set(terms)) == 1:
+        term = terms[0]
+        from ocr_platform.services.court_decision_dates import extract_decision_date_candidates
+
+        dates = extract_decision_date_candidates(text, require_act_title=False)
+        candidate = dates.selected
+        decision_date = None
+        if candidate:
+            if candidate.role == "act_header":
+                # A numeric current-act date must precede unrelated body dates.
+                decision_date = candidate.value
+            else:
+                # Keep the existing full/resolutive convention pending operator agreement.
+                decision_date = extract_decision_date(text) or candidate.value
+        if decision_date:
+            base_date = _parse_date_str(decision_date)
+            if base_date:
+                end_date = _add_months(base_date, int(term))
+                return end_date.strftime("%d.%m.%Y"), True
+
+    if not terms and headings:
+        reasoning = text[:min(match.start() for match in headings)]
+        explicit = _explicit_procedure_dates(reasoning, reasoning_only=True)
+        if len(set(explicit)) == 1:
+            return explicit[0], False
 
     return None, None
 

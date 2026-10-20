@@ -28,6 +28,18 @@ class CourtAdditionalResult(BaseModel):
 
 
 ADDITIONAL_FIELDS = tuple(CourtAdditionalResult.model_fields)
+LLM_ADDITIONAL_FIELDS = tuple(name for name in ADDITIONAL_FIELDS if name != "procedure_duration_months")
+
+
+class CourtAdditionalLLMResult(BaseModel):
+    """The duration is extracted by regex and is absent from the LLM schema."""
+    application_acceptance_date: CourtField[str]
+    next_session_date: CourtField[str]
+    next_session_time: CourtField[str]
+    court_hearing_address: CourtField[str]
+    procedure_end_date_source: CourtField[Literal["explicit_date", "explicit_duration", "not_found"]]
+
+
 COURT_ISSUE_CODE = "court_field_requires_review"
 JOINT_INSTRUCTION = """
 Извлеки дополнительные поля судебного акта, не используя значения старых полей.
@@ -50,9 +62,15 @@ def _normalized(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold().replace("ё", "е")
 
 
-def additional_fields_result(data: CourtAdditionalResult, text: str) -> dict[str, dict]:
+def additional_fields_result(
+    data: CourtAdditionalResult | CourtAdditionalLLMResult, text: str,
+    *, duration_field: dict | None = None,
+) -> dict[str, dict]:
     result = {}
     for name in ADDITIONAL_FIELDS:
+        if name == "procedure_duration_months" and duration_field is not None:
+            result[name] = dict(duration_field)
+            continue
         item = getattr(data, name)
         result[name] = {
             "value": item.value,

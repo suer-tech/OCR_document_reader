@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple, Any
 
 from ocr_platform.api.schemas import ValidationIssue
 from ocr_platform.services.court_decision_additional import ADDITIONAL_FIELDS, COURT_ISSUE_CODE
+from ocr_platform.services.court_field_rules import FIELD_RULES as COURT_FIELDS
 from ocr_platform.services.rtk3_claims import CLAIMED_AMOUNT_REVIEW_CODES, claimed_amount_issues
 from ocr_platform.services.rtk3_validation import is_v2, rtk3_issues
 
@@ -13,7 +14,9 @@ def court_field_issues(fields: dict) -> list[ValidationIssue]:
         ValidationIssue(code=COURT_ISSUE_CODE, message=str(info["validation_issue"]),
                         field_name=name, severity="error")
         for name, info in fields.items()
-        if name in ADDITIONAL_FIELDS and isinstance(info, dict) and info.get("validation_issue")
+        if isinstance(info, dict) and info.get("validation_issue") and (
+            name in ADDITIONAL_FIELDS or (name in COURT_FIELDS and info.get("source") in {
+                "regex_jev", "court_llm_fallback"}))
     ]
 
 

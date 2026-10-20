@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
@@ -100,6 +101,38 @@ def build_chat_completions_url(base_url: str) -> str:
     return f"{normalized}/chat/completions"
 
 
+def build_decisions_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/decisions"):
+        return normalized
+    if normalized.endswith("/chat/completions"):
+        normalized = normalized.removesuffix("/chat/completions")
+    return f"{normalized}/decisions"
+
+
+def decision_probabilities(
+    response: dict[str, Any], question_names: list[str]
+) -> dict[str, float]:
+    """Only native, finite noul probabilities can confirm a field."""
+    answers = response.get("answers")
+    if not isinstance(answers, dict):
+        return {}
+    probabilities = {}
+    for name in question_names:
+        answer = answers.get(name)
+        if not isinstance(answer, dict) or answer.get("type") != "noul":
+            continue
+        value = answer.get("noul")
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and 0 <= value <= 1
+        ):
+            probabilities[name] = float(value)
+    return probabilities
+
+
 @observe(as_type="generation", capture_input=True, capture_output=True)
 def call_llm_json_with_fallback(
     *,
@@ -121,6 +154,8 @@ def call_llm_json_with_fallback(
     mlflow_tags: dict[str, str] | None = None,
     mlflow_params: dict[str, Any] | None = None,
     max_tokens: int | None = None,
+    decisions_questions: dict[str, dict[str, Any]] | None = None,
+    decisions_state: str | dict[str, Any] | None = None,
 ) -> LlmJsonResult | None:
     resolved_api_key, resolved_base_url = _resolve_provider_credentials(
         provider, api_key, base_url
@@ -189,19 +224,34 @@ def call_llm_json_with_fallback(
                 payload["reasoning_effort"] = reasoning_effort
             if max_tokens is not None:
                 payload["max_tokens"] = max_tokens
+            if decisions_questions is not None:
+                # Native Decisions does not accept chat parameters or messages.
+                payload = {
+                    "model": model_name,
+                    "state": decisions_state if decisions_state is not None else user_content,
+                    "questions": decisions_questions,
+                }
             try:
                 response_text = ""
                 response = client.post(
-                    build_chat_completions_url(resolved_base_url),
+                    build_decisions_url(resolved_base_url)
+                    if decisions_questions is not None
+                    else build_chat_completions_url(resolved_base_url),
                     json=payload,
                     headers=headers,
                 )
                 response.raise_for_status()
                 data = response.json()
-                response_text = (
-                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                )
-                parsed = json.loads(response_text)
+                if decisions_questions is not None:
+                    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
+                        raise ValueError("Decisions response must contain an answers object")
+                    parsed = data
+                    response_text = json.dumps(data, ensure_ascii=False)
+                else:
+                    response_text = (
+                        data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    )
+                    parsed = json.loads(response_text)
                 usage = _extract_token_usage(data)
 
                 attempt_latency_ms = round((perf_counter() - attempt_started) * 1000, 2)
@@ -281,7 +331,9 @@ def call_llm_json_with_fallback(
                             "input": usage.prompt_tokens if usage else 0,
                             "output": usage.completion_tokens if usage else 0,
                         },
-                        model_parameters={"temperature": temperature},
+                        model_parameters={"api": "decisions"}
+                        if decisions_questions is not None
+                        else {"temperature": temperature},
                     )
                 except Exception:
                     logger.debug("langfuse_update_generation_skipped")
@@ -458,6 +510,11 @@ def _resolve_provider_credentials(
 
     settings = get_settings()
     normalized = provider.strip().lower()
+    if normalized == "router_ai":
+        return (
+            api_key_override or settings.router_ai_api_key,
+            base_url_override or settings.router_ai_base_url,
+        )
     if normalized == "openrouter":
         return (
             api_key_override or settings.openrouter_api_key,

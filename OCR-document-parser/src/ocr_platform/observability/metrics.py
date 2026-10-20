@@ -73,6 +73,15 @@ FIELD_FILL_RATE = Histogram(
     "Ratio of extracted fields with non-empty value",
     ["profile_id"],
 )
+COURT_REGEX_JEV_FIELDS_COUNT = Counter(
+    "ocr_court_regex_jev_fields_total", "Court fields routed by regex/JEV", ["field", "status"]
+)
+COURT_REGEX_JEV_DURATION_SECONDS = Histogram(
+    "ocr_court_regex_jev_duration_seconds", "Court regex/JEV stage duration", ["stage"]
+)
+COURT_DURATION_REGEX_COUNT = Counter(
+    "ocr_court_duration_regex_total", "Explicit procedure-duration regex outcomes", ["status"],
+)
 OCR_STEP_COUNT = Counter(
     "ocr_step_total",
     "OCR step executions by status",

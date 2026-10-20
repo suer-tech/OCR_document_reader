@@ -163,3 +163,31 @@ def test_false_report_flag_is_a_completed_field():
     missing_score = compute_quality_scores("Text", {"early_report_required": {"value": None}})
     assert false_score == true_score
     assert missing_score[1] < false_score[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Дело № А71- 7789/2026", "А71-7789/2026"),
+    ("Дело №А31 – 4501/2026", "А31-4501/2026"),
+    ("РЕШЕНИЕ\nгород Владикавказ № А61-4935/2026\n"
+     "Суд в составе судьи. Дело № А99-999/2020", "А61-4935/2026"),
+    ("Дело № А75", None),
+])
+async def test_case_number_profile_uses_corrected_legacy_parser(monkeypatch, text, expected):
+    profile_path = (
+        Path(extraction_agent.__file__).parents[1]
+        / "config/pipelines/profiles/court_decision_ru.yaml"
+    )
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(extraction_agent, "_active_model_settings", lambda: {})
+    monkeypatch.setattr(extraction_agent, "_get_lf_client", lambda: None)
+    result = await extraction_agent._run_agent_extraction_impl(
+        text, {"case_number": profile["fields"]["case_number"]},
+        profile_id="court_decision_ru",
+    )
+    assert result["case_number"] == {
+        "value": expected,
+        "confidence": 1.0 if expected else 0.0,
+        "reasoning": "Extracted via legacy regex",
+        "source": "regex_legacy",
+    }

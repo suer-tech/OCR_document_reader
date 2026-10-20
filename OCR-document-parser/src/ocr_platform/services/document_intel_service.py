@@ -25,6 +25,13 @@ async def simple_extract_fields(
             raise ValueError("Passport direct vision requires the original document")
         return await passport_vision_service.extract_passport_fields(storage_path, profile_config)
 
+    if profile_id == "court_decision_ru" and profile_config.get("extraction_mode") == "regex_jev":
+        from ocr_platform.services.court_regex_jev import extract_court_regex_jev
+
+        return await extract_court_regex_jev(
+            text, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id,
+        )
+
     from ocr_platform.services.extraction_agent import run_agent_extraction
 
     fields_config = profile_config.get("fields", {})

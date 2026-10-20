@@ -49,20 +49,6 @@ def _unknown_detection(source: str) -> DocumentTypeDetection:
     )
 
 
-def _candidate_models() -> list[str]:
-    settings = get_settings()
-    models = [
-        m.strip() for m in settings.llm_default_fallback_models.split(",") if m.strip()
-    ]
-    if not models:
-        models = [
-            m.strip() for m in settings.openai_doc_type_models.split(",") if m.strip()
-        ]
-    if not models:
-        return ["gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1"]
-    return models[:3]
-
-
 def _build_json_schema(allowed_types: list[str]) -> dict:
     schema = DocumentTypeSgrResponse.model_json_schema()
     schema.setdefault("properties", {})
@@ -86,21 +72,14 @@ def _llm_detect_openrouter(
     pipeline_run_id: str | None = None,
 ) -> tuple[DocumentTypeDetection | None, list[dict]]:
     settings = get_settings()
-    llm_config = llm_config or {}
+    llm_config = llm_config or settings_doc_type_llm_config()
     allowed = sorted(set(allowed_types))
     prompt = get_doc_type_detection_prompt()
-    provider = str(llm_config.get("provider", "openai"))
-    primary_model = str(llm_config.get("model", "")).strip()
-    cfg_fallback = llm_config.get("fallback_models", [])
-    fallback_models = (
-        [str(m).strip() for m in cfg_fallback if str(m).strip()]
-        if isinstance(cfg_fallback, list)
-        else []
-    )
+    provider = str(llm_config.get("provider", "router_ai"))
+    primary_model = str(llm_config.get("model") or "").strip()
     model_chain = [primary_model] if primary_model else []
-    model_chain.extend([m for m in fallback_models if m and m not in model_chain])
     if not model_chain:
-        model_chain = _candidate_models()
+        return None, []
     temperature = float(llm_config.get("temperature", 0.0))
     timeout_seconds = float(
         llm_config.get("timeout_seconds", settings.openai_timeout_seconds)
@@ -130,7 +109,7 @@ def _llm_detect_openrouter(
         },
         mlflow_params={
             "allowed_types": ",".join(allowed),
-            "configured_model": primary_model or "from_default_chain",
+            "configured_model": primary_model,
         },
     )
     if llm_result is None:
@@ -206,7 +185,7 @@ def detect_document_type(
     Если тип не удалось определить, возвращает unknown.
     """
     llm_config = llm_config or settings_doc_type_llm_config()
-    provider = str(llm_config.get("provider", "openai")).strip().lower()
+    provider = str(llm_config.get("provider", "router_ai")).strip().lower()
     allowed = sorted(set(allowed_types))
     attempts: list[dict] = []
 
@@ -246,12 +225,12 @@ def detect_document_type(
 
 def settings_doc_type_llm_config() -> dict[str, Any]:
     """
-    Legacy fallback конфиг для случаев, когда router.yaml не передал llm-конфигурацию.
+    Одна настроенная модель для вызовов без llm-конфигурации router.yaml.
     """
     settings = get_settings()
     return {
-        "provider": "openai",
-        "fallback_models": _candidate_models(),
+        "provider": settings.document_type_llm_provider,
+        "model": settings.document_type_llm_model,
         "temperature": 0.0,
         "timeout_seconds": settings.openai_timeout_seconds,
     }
@@ -259,6 +238,8 @@ def settings_doc_type_llm_config() -> dict[str, Any]:
 
 def _provider_has_credentials(provider: str) -> bool:
     settings = get_settings()
+    if provider == "router_ai":
+        return bool(settings.router_ai_api_key)
     if provider == "openrouter":
         return bool(settings.openrouter_api_key)
     return bool(settings.openai_api_key)

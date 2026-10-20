@@ -120,7 +120,7 @@ async def test_additional_extraction_preserves_legacy_fields(monkeypatch, fails)
     profile = yaml.safe_load((Path(agent.__file__).parents[1] / "config/pipelines/profiles/court_decision_ru.yaml").read_text(encoding="utf-8"))
     legacy_names = ["case_number", "procedure_end_date", "procedure_end_date_is_calculated", "early_report_deadline", "motivating_part", "resolutive_part"]
     legacy = {name: profile["fields"][name] for name in legacy_names}
-    run = AsyncMock(return_value=SimpleNamespace(data=result_data()),
+    run = AsyncMock(return_value=SimpleNamespace(data=result_data(procedure_end_date_source="explicit_duration")),
                     side_effect=RuntimeError("Unavailable") if fails else None)
     monkeypatch.setattr(agent.agent_court_additional, "run", run)
     monkeypatch.setattr(agent, "_active_model_settings", lambda: {})
@@ -135,11 +135,16 @@ async def test_additional_extraction_preserves_legacy_fields(monkeypatch, fails)
     assert set(after) == set(legacy_names) | set(ADDITIONAL_FIELDS)
     assert run.await_count == (3 if fails else 1)
     assert run.await_args.kwargs["deps"] == text
+    duration = after["procedure_duration_months"]
+    assert duration["value"] == 6
+    assert duration["source"] == "regex_court_duration"
+    assert duration["confidence"] == 0
+    assert "procedure_duration_months" not in run.await_args.args[0]
     if fails:
-        assert all(after[name]["value"] is None for name in ADDITIONAL_FIELDS)
+        assert all(after[name]["value"] is None for name in ADDITIONAL_FIELDS if name != "procedure_duration_months")
         assert len(court_field_issues(after)) == 6
     else:
-        assert not court_field_issues(after)
+        assert [issue.field_name for issue in court_field_issues(after)] == ["procedure_duration_months"]
 
 
 @pytest.mark.parametrize("ambiguous", [False, True])

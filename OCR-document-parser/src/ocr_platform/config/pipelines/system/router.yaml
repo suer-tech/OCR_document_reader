@@ -18,11 +18,8 @@ detection:
   use_llm_when_missing_type: true
   min_confidence: 0.7
   llm:
-    provider: openrouter
-    model: openai/gpt-oss-20b
-    fallback_models:
-      - openai/gpt-oss-120b
-      - anthropic/claude-sonnet-5.5
+    provider: router_ai
+    model: anthropic/claude-sonnet-5.5
     temperature: 0.0
     timeout_seconds: 180.0
     reasoning_effort: low

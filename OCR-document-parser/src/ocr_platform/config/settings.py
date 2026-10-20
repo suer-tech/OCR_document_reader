@@ -53,12 +53,13 @@ class Settings(BaseSettings):
     yandex_studio_api_key: str | None = None
     yandex_studio_base_url: str = "https://ai.api.cloud.yandex.net/v1"
 
-    # Используется как общий fallback, если список fallback-моделей
-    # не задан в YAML-конфиге конкретного шага.
-    llm_default_fallback_models: str = "gpt-4.1-mini,gpt-4o-mini,gpt-4.1"
+    # Одна модель классификации для вызовов без конфигурации router.yaml.
+    document_type_llm_provider: str = "router_ai"
+    document_type_llm_model: str = "anthropic/claude-sonnet-5.5"
 
-    # Legacy-настройка оставлена для обратной совместимости.
-    openai_doc_type_models: str = "gpt-4.1-mini,gpt-4o-mini,gpt-4.1"
+    # Legacy-поля принимаются для совместимости, цепочки моделей не используются.
+    llm_default_fallback_models: str = ""
+    openai_doc_type_models: str = ""
     openai_timeout_seconds: float = 180.0
 
     # RabbitMQ queue for async pipeline processing.

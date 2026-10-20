@@ -19,7 +19,7 @@ from pydantic import BaseModel, field_validator
 from ocr_platform.observability.logging import get_logger
 from ocr_platform.services.rtk3_claims import format_claimed_amount
 from ocr_platform.services.court_decision_additional import (
-    ADDITIONAL_FIELDS, JOINT_INSTRUCTION, CourtAdditionalResult,
+    LLM_ADDITIONAL_FIELDS, JOINT_INSTRUCTION, CourtAdditionalLLMResult,
     additional_fields_result, additional_fields_failure,
 )
 from langfuse import observe as _observe
@@ -471,34 +471,13 @@ from ocr_platform.services.agent_tools import (
 
 
 def _extract_motivating_part(text: str) -> str | None:
-    match_ustanovil = re.search(r"У\s*С\s*Т\s*А\s*Н\s*О\s*В\s*И\s*Л", text, re.IGNORECASE)
-    if not match_ustanovil:
-        return None
-    start_pos = match_ustanovil.end()
-    match_reshil = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", text[start_pos:], re.IGNORECASE)
-    if not match_reshil:
-        return None
-    end_pos = start_pos + match_reshil.start()
-    motivating_text = text[start_pos:end_pos]
-    motivating_text = re.sub(r"^[\s:,.\-–—()]+", "", motivating_text)
-    return motivating_text.strip() or None
+    from ocr_platform.services.court_decision_sections import extract_motivating_part
+    return extract_motivating_part(text)
 
 
 def _extract_resolutive_part(text: str) -> str | None:
-    match_reshil = re.search(r"Р\s*Е\s*Ш\s*И\s*Л", text, re.IGNORECASE)
-    if not match_reshil:
-        return None
-    start_pos = match_reshil.end()
-    match_sig = re.search(
-        r"электронная\s+подпись\s+действительна", text[start_pos:], re.IGNORECASE
-    )
-    if match_sig:
-        end_pos = start_pos + match_sig.start()
-        resolutive_text = text[start_pos:end_pos]
-    else:
-        resolutive_text = text[start_pos:]
-    resolutive_text = re.sub(r"^[\s:,.\-–—()]+", "", resolutive_text)
-    return resolutive_text.strip() or None
+    from ocr_platform.services.court_decision_sections import extract_resolutive_part
+    return extract_resolutive_part(text)
 
 
 def _clean_llm_string(s: str | None) -> str | None:
@@ -1174,7 +1153,7 @@ agent_early_report_required = Agent(
 agent_court_additional = Agent(
     model,
     deps_type=str,
-    result_type=CourtAdditionalResult,
+    result_type=CourtAdditionalLLMResult,
     retries=3,
     system_prompt=SYSTEM_PROMPT,
     model_settings=default_settings,
@@ -2361,9 +2340,23 @@ async def _run_agent_extraction_impl(
                             fallback_fields["_raw_text"] = corrected_text
                             return fallback_fields
 
-    if profile_id == "court_decision_ru" and any(f in fields_config for f in ADDITIONAL_FIELDS):
+    if profile_id == "court_decision_ru" and "procedure_duration_months" in fields_config:
+        from ocr_platform.services.court_procedure_duration import procedure_duration_field
+        from ocr_platform.observability.metrics import COURT_DURATION_REGEX_COUNT
+
+        duration = procedure_duration_field(text)
+        results["procedure_duration_months"] = duration
+        status = "found" if duration["value"] is not None else "conflict" if duration.get("validation_issue") else "not_found"
+        COURT_DURATION_REGEX_COUNT.labels(status=status).inc()
+        logger.info("court_duration_regex_extracted", status=status, value=duration["value"],
+                    confirmation_required=bool(duration.get("validation_issue")))
+
+    if profile_id == "court_decision_ru" and any(f in fields_config for f in LLM_ADDITIONAL_FIELDS):
+        from ocr_platform.services.court_procedure_duration import procedure_duration_field
+
+        duration = results.get("procedure_duration_months") or procedure_duration_field(text)
         instructions = [JOINT_INSTRUCTION]
-        for name in ADDITIONAL_FIELDS:
+        for name in LLM_ADDITIONAL_FIELDS:
             if name in fields_config:
                 instructions.append(
                     f"--- FIELD: {name} ---\n" + get_field_instruction(
@@ -2372,12 +2365,13 @@ async def _run_agent_extraction_impl(
                 )
         prompt = "\n\n".join(instructions) + f"\n\nDocument Text:\n{text}"
         additional = additional_fields_failure()
+        additional["procedure_duration_months"] = duration
         for attempt in range(3):
             try:
                 response = await agent_court_additional.run(
                     prompt, deps=text, model_settings=_active_model_settings(),
                 )
-                additional = additional_fields_result(response.data, text)
+                additional = additional_fields_result(response.data, text, duration_field=duration)
                 break
             except UsageLimitExceeded:
                 raise
