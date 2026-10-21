@@ -97,7 +97,8 @@ def test_final_merged_report_must_match_next_date(next_date, report, valid):
 def test_shared_jev_llm_rule_uses_next_date_and_fixed_ten_days():
     rule = FIELD_RULES["early_report_deadline"]
     assert "next_session_date" in rule and "10 календарных" in rule
-    assert "за 3 или 5 дней" in rule
+    assert "любого указанного N" in rule
+    assert "вернуть эту дату без вычитания" in rule
 
 
 def test_llm_retries_wrong_report_calculation_from_verified_next_date(monkeypatch):

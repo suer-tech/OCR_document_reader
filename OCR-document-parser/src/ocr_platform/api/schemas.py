@@ -102,18 +102,23 @@ class FieldValue(BaseModel):
     )
     reasoning: Optional[str] = Field(
         default=None,
-        description="Объяснение модели, почему она извлекла именно это значение.",
+        description="Причина выбора значения. В новых результатах court_decision включает дословную цитату (для длинных частей — отмеченные фрагменты границ); при отсутствии/неоднозначности объясняет null, при расчёте — исходные факты и правило расчёта.",
         examples=["ФИО должника указано в шапке документа после слова 'Должник:'"],
     )
     confidence: Optional[float] = Field(
         default=None,
-        description="Оценка уверенности от 0 до 1 включительно; null для служебных полей. Для source=regex_jev это вероятность подтверждения значения моделью JEV (порог задаётся профилем, текущий — 0.6), для LLM — оценка извлечения. Недопустимые оценки отклоняются: ответ JEV направляется в LLM, ответ извлечения запрашивается повторно. Ранее сохранённые результаты возвращаются без пересчёта. Оценка не гарантирует достоверность.",
+        description="Оценка уверенности от 0 до 1 включительно; null для служебных полей. Для extraction_method=regex_jev это вероятность подтверждения значения моделью JEV (текущий порог — 0.6), для LLM — оценка извлечения. В старых результатах метод хранится в source. Уверенно установленное отсутствие допускает высокую confidence при value=null. Оценка не гарантирует достоверность.",
         examples=[0.95],
     )
     source: Optional[str] = Field(
         default=None,
-        description="Обработчик или метод извлечения, например regex_jev (регулярки с подтверждением JEV), court_llm_fallback (адресное извлечение неподтверждённого поля), rtk3_combined, rtk2_combined, court_decision_combined, court_decision, llm, llm_with_tools, regex, regex_legacy; null для служебных полей.",
-        examples=["rtk3_combined"],
+        description="Для новых результатов court_decision — часть исходного документа: header, motivating_part, resolutive_part, signature_block, document (проверен документ целиком), либо null, если источник значения не установлен. В старых записях и других профилях сохраняется прежнее обозначение обработчика. Исторические ответы не мигрируются.",
+        examples=["resolutive_part"],
+    )
+    extraction_method: Optional[str] = Field(
+        default=None,
+        description="Способ извлечения нового результата court_decision: regex_jev, court_llm_fallback, regex_legacy и др. Не является частью документа. null для служебных полей, старых записей и профилей, ещё не передающих метод отдельно.",
+        examples=["regex_jev"],
     )
 
 
@@ -155,7 +160,7 @@ class DocumentResultResponse(BaseModel):
     )
     fields: Dict[str, FieldValue] = Field(
         default_factory=dict,
-        description="""Словарь: системное имя поля → объект FieldValue с name, value, reasoning, confidence и source.
+        description="""Словарь: системное имя поля → объект FieldValue с name, value, reasoning, confidence, source и extraction_method.
 Ниже описаны значения value. Ненайденные значения могут быть null; обязательность в профиле
 используется для валидации и не гарантирует, что значение найдено. Даты имеют формат ДД.ММ.ГГГГ,
 если для поля не указано иное. Если другой тип не оговорён, value — строка или null.
@@ -176,18 +181,18 @@ class DocumentResultResponse(BaseModel):
 * `judge_full_name` — ФИО судьи
 * `court_name` — Название суда
 * `decision_date` — Дата полного решения
-* `resolutive_part_date` — Отдельная дата резолютивной части; при её отсутствии и наличии раздела РЕШИЛ используется дата текущего документа по согласованному правилу; без однозначного источника null
-* `procedure_type` — Тип процедуры (например, реализация имущества)
+* `resolutive_part_date` — Необязательная явно указанная дата резолютивной части или дата шапки самостоятельной резолютивной части; без такого источника null, дата полного решения не подставляется
+* `procedure_type` — «Реализация имущества» или «Реструктуризация долгов», либо null
 * `procedure_end_date` — Дата окончания процедуры
-* `procedure_end_date_is_calculated` — Признак вычисления даты окончания; текущий ответ содержит строку "True" / "False" или null
-* `early_report_deadline` — Заблаговременное предоставление отчета ФУ
+* `procedure_end_date_is_calculated` — JSON boolean: true, если дата окончания вычислена по сроку в месяцах; false, если дата явно указана; null, если окончание не определено
+* `early_report_deadline` — Явно указанный срок отчёта; без него при требовании заранее/за N дней — next_session_date минус 10 календарных дней, иначе null
 * `early_report_required` — Обязанность управляющего заранее предоставить отчёт (JSON boolean: true/false)
 * `application_acceptance_date` — Дата принятия заявления о банкротстве (ДД.ММ.ГГГГ или null)
 * `next_session_date` — Явная дата следующего рассмотрения; если не найдена, дата окончания процедуры по согласованному правилу (ДД.ММ.ГГГГ или null)
 * `next_session_time` — Время того же заседания (ЧЧ:ММ или null)
 * `court_hearing_address` — Адрес проведения того же заседания или null
 * `procedure_duration_months` — Явно назначенная продолжительность процедуры в месяцах (integer или null), без расчёта из дат и значения по умолчанию. Regex-кандидат проверяется JEV; при отсутствии подтверждения поле извлекает LLM
-* `procedure_end_date_source` — Строка: explicit_date — явно указана дата; explicit_duration — указан срок в месяцах; not_found — не найдены ни дата, ни срок; при неоднозначности null
+* `procedure_end_date_source` — Строка: explicit_date — явно указана дата; explicit_duration — указан срок в месяцах; not_specified — не найдены ни дата, ни срок; при неоднозначности null
 * `financial_manager_full_name` — ФИО финансового управляющего
 * `motivating_part` — Мотивирующая часть судебного решения
 * `resolutive_part` — Резолютивная часть судебного решения
@@ -295,107 +300,189 @@ human_review_required=true, human_review_reason=rtk3_requires_review незав�
         default=None, description="Причина: low_quality_or_missing_fields — низкое качество/нет оценки; court_field_requires_review — проблема дополнительных судебных полей; claimed_amount_by_queue_not_determined — не определено распределение заявленной суммы; claimed_amount_total_mismatch — суммы по очередям не совпадают с общей. Если проверка не нужна — null."
     )
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "document_id": "doc_123abc",
-                    "pipeline_run_id": "run_456def",
-                    "raw_text": "РЕШЕНИЕ Именем Российской Федерации...",
-                    "fields": {
-                        "debtor_full_name": {
-                            "name": "debtor_full_name",
-                            "value": {
-                                "debtor_last_name": "Иванов",
-                                "debtor_first_name": "Иван",
-                                "debtor_patronymic": "Иванович",
-                            },
-                            "reasoning": "ФИО найдено в шапке после слова 'Должник:'.",
-                            "confidence": 0.98,
-                            "source": "court_decision_combined",
-                        },
-                        "debtor_inn": {
-                            "name": "debtor_inn",
-                            "value": "123456789012",
-                            "confidence": 0.95,
-                            "source": "court_decision_combined",
-                        },
-                        "case_number": {
-                            "name": "case_number",
-                            "value": "А05-6/2025",
-                            "confidence": 0.99,
-                            "source": "regex_legacy",
-                        },
-                        "judge_full_name": {
-                            "name": "judge_full_name",
-                            "value": "Петров П.П.",
-                            "confidence": 0.92,
-                            "source": "court_decision_combined",
-                        },
-                        "court_name": {
-                            "name": "court_name",
-                            "value": "Арбитражный суд города Москвы",
-                            "confidence": 0.99,
-                            "source": "court_decision_combined",
-                        },
-                        "decision_date": {
-                            "name": "decision_date",
-                            "value": "15.03.2025",
-                            "confidence": 1.0,
-                            "source": "court_decision_combined",
-                        },
-                        "procedure_type": {
-                            "name": "procedure_type",
-                            "value": "реализация имущества",
-                            "confidence": 0.96,
-                            "source": "court_decision_combined",
-                        },
-                        "procedure_end_date": {
-                            "name": "procedure_end_date",
-                            "value": "15.09.2025",
-                            "confidence": 0.89,
-                            "source": "regex_legacy",
-                        },
-                        "procedure_end_date_is_calculated": {
-                            "name": "procedure_end_date_is_calculated",
-                            "value": "True",
-                            "confidence": 0.95,
-                            "source": "regex_legacy",
-                        },
-                        "early_report_deadline": {
-                            "name": "early_report_deadline",
-                            "value": "01.09.2025",
-                            "confidence": 0.85,
-                            "source": "regex_legacy",
-                        },
-                        "financial_manager_full_name": {
-                            "name": "financial_manager_full_name",
-                            "value": "Сидоров С.С.",
-                            "confidence": 0.95,
-                            "source": "court_decision_combined",
-                        },
-                        "motivating_part": {
-                            "name": "motivating_part",
-                            "value": "Суд, выслушав доводы сторон, установил следующее...",
-                            "confidence": 0.90,
-                            "source": "regex",
-                        },
-                        "resolutive_part": {
-                            "name": "resolutive_part",
-                            "value": "РЕШИЛ: Признать Иванова И.И. банкротом...",
-                            "confidence": 0.99,
-                            "source": "regex",
-                        },
-                    },
-                    "technical_quality_score": 0.8,
-                    "semantic_confidence_score": 0.8,
-                    "overall_quality_score": 0.8,
-                    "validation_status": "ok",
-                    "human_review_required": False,
-                }
-            ]
-        }
-    }
+    model_config = {'json_schema_extra': {'examples': [{'document_id': 'doc_123abc',
+                                         'pipeline_run_id': 'run_456def',
+                                         'raw_text': 'Арбитражный суд города Москвы\n'
+                                                     'РЕШЕНИЕ\n'
+                                                     'Дело № А40-123/2026\n'
+                                                     '01 октября 2026 года\n'
+                                                     'Судья Петров П.П.\n'
+                                                     'Должник: Иванов Иван Иванович, ИНН 051204647801.\n'
+                                                     'УСТАНОВИЛ:\n'
+                                                     'Суд исследовал материалы дела и установил '
+                                                     'неплатёжеспособность должника.\n'
+                                                     'РЕШИЛ:\n'
+                                                     'Признать Иванова Ивана Ивановича банкротом.\n'
+                                                     'Ввести процедуру реализации имущества сроком на шесть '
+                                                     'месяцев.\n'
+                                                     'Утвердить финансовым управляющим Сидорова С.С.\n'
+                                                     'Финансовому управляющему заблаговременно представить '
+                                                     'отчёт.',
+                                         'fields': {'debtor_full_name': {'name': 'debtor_full_name',
+                                                                         'value': {'debtor_last_name': 'Иванов',
+                                                                                   'debtor_first_name': 'Иван',
+                                                                                   'debtor_patronymic': 'Иванович'},
+                                                                         'reasoning': 'ФИО должника приведено к '
+                                                                                      'именительному падежу. '
+                                                                                      'Цитата из документа: '
+                                                                                      '«Должник: Иванов Иван '
+                                                                                      'Иванович».',
+                                                                         'confidence': 0.98,
+                                                                         'source': 'header',
+                                                                         'extraction_method': 'regex_jev'},
+                                                    'debtor_inn': {'name': 'debtor_inn',
+                                                                   'value': '051204647801',
+                                                                   'confidence': 0.95,
+                                                                   'source': 'header',
+                                                                   'extraction_method': 'regex_jev',
+                                                                   'reasoning': 'Выбран ИНН должника, ведущий '
+                                                                                'ноль сохранён. Цитата из '
+                                                                                'документа: «ИНН 051204647801».'},
+                                                    'case_number': {'name': 'case_number',
+                                                                    'value': 'А40-123/2026',
+                                                                    'confidence': 0.99,
+                                                                    'source': 'header',
+                                                                    'extraction_method': 'regex_jev',
+                                                                    'reasoning': 'Выбран номер текущего дела. '
+                                                                                 'Цитата из документа: «Дело № '
+                                                                                 'А40-123/2026».'},
+                                                    'judge_full_name': {'name': 'judge_full_name',
+                                                                        'value': 'Петров П.П.',
+                                                                        'confidence': 0.92,
+                                                                        'source': 'header',
+                                                                        'extraction_method': 'regex_jev',
+                                                                        'reasoning': 'Выбран судья текущего '
+                                                                                     'акта, инициалы не '
+                                                                                     'раскрыты. Цитата из '
+                                                                                     'документа: «Судья Петров '
+                                                                                     'П.П.».'},
+                                                    'court_name': {'name': 'court_name',
+                                                                   'value': 'Арбитражный суд города Москвы',
+                                                                   'confidence': 0.99,
+                                                                   'source': 'header',
+                                                                   'extraction_method': 'regex_jev',
+                                                                   'reasoning': 'Выбран суд текущего акта. '
+                                                                                'Цитата из документа: '
+                                                                                '«Арбитражный суд города '
+                                                                                'Москвы».'},
+                                                    'decision_date': {'name': 'decision_date',
+                                                                      'value': '01.10.2026',
+                                                                      'confidence': 1.0,
+                                                                      'source': 'header',
+                                                                      'extraction_method': 'regex_jev',
+                                                                      'reasoning': 'Выбрана дата текущего акта. '
+                                                                                   'Цитата из документа: «01 '
+                                                                                   'октября 2026 года».'},
+                                                    'procedure_type': {'name': 'procedure_type',
+                                                                       'value': 'Реализация имущества',
+                                                                       'confidence': 0.96,
+                                                                       'source': 'resolutive_part',
+                                                                       'extraction_method': 'regex_jev',
+                                                                       'reasoning': 'Название введённой '
+                                                                                    'процедуры приведено к '
+                                                                                    'формату ТЗ. Цитата из '
+                                                                                    'документа: «Ввести '
+                                                                                    'процедуру реализации '
+                                                                                    'имущества сроком на шесть '
+                                                                                    'месяцев.».'},
+                                                    'procedure_end_date': {'name': 'procedure_end_date',
+                                                                           'value': '01.04.2027',
+                                                                           'confidence': 0.89,
+                                                                           'source': 'resolutive_part',
+                                                                           'extraction_method': 'regex_jev',
+                                                                           'reasoning': 'Окончание рассчитано: '
+                                                                                        '01.10.2026 + 6 месяцев. '
+                                                                                        'Основание даты акта: '
+                                                                                        '«01 октября 2026 года». '
+                                                                                        'Цитата из документа: '
+                                                                                        '«Ввести процедуру '
+                                                                                        'реализации имущества '
+                                                                                        'сроком на шесть '
+                                                                                        'месяцев.».'},
+                                                    'procedure_end_date_is_calculated': {'name': 'procedure_end_date_is_calculated',
+                                                                                         'value': True,
+                                                                                         'confidence': 0.95,
+                                                                                         'source': 'resolutive_part',
+                                                                                         'extraction_method': 'regex_jev',
+                                                                                         'reasoning': 'Дата '
+                                                                                                      'окончания '
+                                                                                                      'вычислена '
+                                                                                                      'по '
+                                                                                                      'продолжительности, '
+                                                                                                      'а не '
+                                                                                                      'напечатана '
+                                                                                                      'как '
+                                                                                                      'готовая '
+                                                                                                      'дата. '
+                                                                                                      'Цитата из '
+                                                                                                      'документа: '
+                                                                                                      '«Ввести '
+                                                                                                      'процедуру '
+                                                                                                      'реализации '
+                                                                                                      'имущества '
+                                                                                                      'сроком на '
+                                                                                                      'шесть '
+                                                                                                      'месяцев.».'},
+                                                    'early_report_deadline': {'name': 'early_report_deadline',
+                                                                              'value': '22.03.2027',
+                                                                              'confidence': 0.85,
+                                                                              'source': 'resolutive_part',
+                                                                              'extraction_method': 'regex_jev',
+                                                                              'reasoning': 'Срок рассчитан по '
+                                                                                           'текущему правилу: '
+                                                                                           'подставленная '
+                                                                                           'следующая дата '
+                                                                                           '01.04.2027 минус 10 '
+                                                                                           'календарных дней. '
+                                                                                           'Цитата из документа: '
+                                                                                           '«Финансовому '
+                                                                                           'управляющему '
+                                                                                           'заблаговременно '
+                                                                                           'представить '
+                                                                                           'отчёт.».'},
+                                                    'financial_manager_full_name': {'name': 'financial_manager_full_name',
+                                                                                    'value': 'Сидоров С.С.',
+                                                                                    'confidence': 0.95,
+                                                                                    'source': 'resolutive_part',
+                                                                                    'extraction_method': 'court_llm_fallback',
+                                                                                    'reasoning': 'Выбран утверждённый управляющий. Цитата из документа: «Утвердить финансовым управляющим Сидорова С.С.».'},
+                                                    'motivating_part': {'name': 'motivating_part',
+                                                                        'value': 'Суд исследовал материалы дела '
+                                                                                 'и установил '
+                                                                                 'неплатёжеспособность должника.',
+                                                                        'confidence': 0.9,
+                                                                        'source': 'motivating_part',
+                                                                        'extraction_method': 'regex_jev',
+                                                                        'reasoning': 'Возвращена мотивировка в '
+                                                                                     'границах УСТАНОВИЛ — '
+                                                                                     'РЕШИЛ. Цитата из '
+                                                                                     'документа: «Суд исследовал '
+                                                                                     'материалы дела и установил '
+                                                                                     'неплатёжеспособность '
+                                                                                     'должника.».'},
+                                                    'resolutive_part': {'name': 'resolutive_part',
+                                                                        'value': 'Признать Иванова Ивана '
+                                                                                 'Ивановича банкротом.\n'
+                                                                                 'Ввести процедуру реализации '
+                                                                                 'имущества сроком на шесть '
+                                                                                 'месяцев.\n'
+                                                                                 'Утвердить финансовым управляющим Сидорова С.С.\n'
+                                                                                 'Финансовому управляющему '
+                                                                                 'заблаговременно представить '
+                                                                                 'отчёт.',
+                                                                        'confidence': 0.99,
+                                                                        'source': 'resolutive_part',
+                                                                        'extraction_method': 'regex_jev',
+                                                                        'reasoning': 'Возвращена резолютивная '
+                                                                                     'часть после РЕШИЛ. Цитата '
+                                                                                     'из документа: «Признать '
+                                                                                     'Иванова Ивана Ивановича '
+                                                                                     'банкротом.».'}},
+                                         'technical_quality_score': 0.8,
+                                         'semantic_confidence_score': 0.8,
+                                         'overall_quality_score': 0.8,
+                                         'validation_status': 'ok',
+                                         'human_review_required': False}]}}
 
 
 def _rtk3_result_example(*, review: bool) -> dict:

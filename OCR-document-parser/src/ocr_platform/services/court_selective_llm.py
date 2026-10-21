@@ -13,6 +13,10 @@ from ocr_platform.observability.langfuse_prompts import get_field_instruction
 from ocr_platform.observability.logging import get_logger
 from ocr_platform.services.court_decision_additional import CourtField
 from ocr_platform.services.court_field_rules import FIELD_RULES
+from ocr_platform.services.court_case_number_format import normalize_court_case_number
+from ocr_platform.services.court_field_format import normalize_court_value
+from ocr_platform.services.court_decision_sections import MOTIVATING_HEADING, alternative_motivation_span
+from ocr_platform.services.court_regex_resolutive_part_date import extract_resolutive_part_date_candidates
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback
 
 logger = get_logger(__name__)
@@ -53,7 +57,7 @@ def field_result_model(name: str) -> type[BaseModel]:
     elif name == "procedure_duration_months":
         value_type = StrictInt
     elif name == "procedure_end_date_source":
-        value_type = Literal["explicit_date", "explicit_duration", "not_found"]
+        value_type = Literal["explicit_date", "explicit_duration", "not_specified"]
     elif name == "debtor_gender":
         value_type = Literal["Мужской", "Женский"]
     elif name == "document_basis":
@@ -62,23 +66,22 @@ def field_result_model(name: str) -> type[BaseModel]:
 
 
 def _validate_value(name: str, value: Any) -> Any:
+    if name == "debtor_full_name" and isinstance(value, DebtorName):
+        value = value.model_dump()
+    value = normalize_court_value(name, value)
     if value is None:
         return None
     if name.endswith("_date") or name == "early_report_deadline":
         if not re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", value):
             raise ValueError("Дата должна иметь формат DD.MM.YYYY")
         datetime.strptime(value, "%d.%m.%Y")
+    elif name == "case_number":
+        value = normalize_court_case_number(value)
     elif name == "next_session_time":
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
             raise ValueError("Время должно иметь формат HH:MM")
     elif name == "procedure_duration_months" and value <= 0:
         raise ValueError("Число месяцев должно быть положительным")
-    elif name == "procedure_type":
-        normalized = " ".join(value.casefold().split())
-        if re.fullmatch(r"(?:процедур[аыу]\s+)?реализаци[яи]\s+имущества(?:\s+(?:гражданина|должника))?", normalized):
-            value = "реализация имущества гражданина"
-        elif re.fullmatch(r"(?:процедур[аыу]\s+)?реструктуризаци[яи]\s+долгов(?:\s+гражданина)?", normalized):
-            value = "реструктуризация долгов"
     elif name == "debtor_inn":
         digits = re.sub(r"\s+", "", value)
         if not re.fullmatch(r"(?:\d{10}|\d{12})", digits):
@@ -89,13 +92,6 @@ def _validate_value(name: str, value: Any) -> Any:
         if not re.fullmatch(r"\d{11}", digits):
             raise ValueError("СНИЛС должен содержать 11 цифр")
         value = f"{digits[:3]}-{digits[3:6]}-{digits[6:9]} {digits[9:]}"
-    elif name == "debtor_full_name":
-        value = value.model_dump()
-        if not any(value.values()):
-            return None
-    elif name == "procedure_end_date_is_calculated":
-        # Retain the public representation of the legacy field.
-        value = str(value)
     return value
 
 
@@ -115,9 +111,16 @@ def _section_from_anchors(value: SectionBoundary, text: str) -> tuple[str, int, 
 
 
 def _validate_section_boundaries(name: str, start: int, end: int, text: str) -> None:
+    if name == "motivating_part":
+        alternative = alternative_motivation_span(text)
+        if alternative is not None:
+            if (start, end) != alternative:
+                raise ValueError("Мотивировка должна включать весь текст от альтернативного начала до РЕШИЛ/ОПРЕДЕЛИЛ без пропусков")
+            return
     opening = r"У\s*С\s*Т\s*А\s*Н\s*О\s*В\s*И\s*Л" if name == "motivating_part" else (
         r"Р\s*Е\s*Ш\s*И\s*Л|О\s*П\s*Р\s*Е\s*Д\s*Е\s*Л\s*И\s*Л")
-    headings = list(re.finditer(opening, text[:start], re.I))
+    headings = (list(MOTIVATING_HEADING.finditer(text[:start])) if name == "motivating_part"
+                else list(re.finditer(opening, text[:start], re.I)))
     if not headings or text[headings[-1].end():start].strip(" \r\n\t:,.–—-()*#_"):
         raise ValueError("Начало части должно идти сразу после УСТАНОВИЛ или РЕШИЛ/ОПРЕДЕЛИЛ без пропуска абзацев")
     if name == "motivating_part":
@@ -154,11 +157,21 @@ def _field_output(name: str, raw: Any, text: str) -> dict:
     if name == "next_session_date" and value is not None and item.selection_basis == "not_found":
         raise ValueError("Непустая дата требует selection_basis explicit_appointment или procedure_end_fallback")
     output["value"] = value
+    if name == "resolutive_part_date" and value is not None:
+        source = extract_resolutive_part_date_candidates(text)
+        if source.selected is None or source.selected.value != value:
+            raise ValueError("Отдельная дата резолютивной части не подтверждена; дату полного акта не подставлять")
+    if name == "early_report_deadline" and value is not None:
+        from ocr_platform.services.court_regex_report_deadline import extract_report_deadline_candidates
+
+        deadline = extract_report_deadline_candidates(text, None)
+        if deadline.explicit_dates and (deadline.selected is None or value != deadline.selected.value):
+            raise ValueError("Срок отчёта должен совпадать с однозначной явно указанной датой")
     if name == "early_report_required" and value is False:
         # The absence of an order has no positive quotation. The existing
         # early-report LLM contract also accepts a reasoned negative answer.
         return output
-    if value is not None and value != "not_found":
+    if value is not None and value != "not_specified":
         spans = _source_matches(item.evidence, text) if item.evidence else []
         if not spans:
             # A fabricated citation triggers a targeted retry, not acceptance.
@@ -223,7 +236,8 @@ async def extract_court_llm_fields(
         if reference_fields:
             instructions.append("Уже подтверждённые значения других полей (не меняй их; для подстановки "
                                 "используй подтверждённое окончание, если явной следующей даты нет; "
-                                "срок отчёта считай от подтверждённой next_session_date минус 10 календарных дней): "
+                                "при отсутствии явного срока отчёта считай его от подтверждённой next_session_date "
+                                "минус 10 календарных дней только при требовании заранее): "
                                 + json.dumps(reference_fields, ensure_ascii=False))
         system = (
             "Извлеки только перечисленные поля судебного акта по их правилам. "
@@ -254,12 +268,18 @@ async def extract_court_llm_fields(
         for name in list(pending):
             try:
                 output = _field_output(name, result.parsed.get(name), text)
-                if (name == "early_report_deadline" and output.get("value") is not None
-                        and reference_fields and "next_session_date" in reference_fields):
-                    base = reference_fields["next_session_date"]["value"]
-                    expected = (datetime.strptime(base, "%d.%m.%Y") - timedelta(days=10)).strftime("%d.%m.%Y")
-                    if output["value"] != expected:
-                        raise ValueError("Срок отчёта должен равняться подтверждённой next_session_date минус 10 календарных дней")
+                if name == "early_report_deadline" and output.get("value") is not None:
+                    from ocr_platform.services.court_regex_report_deadline import extract_report_deadline_candidates
+
+                    base = (reference_fields or {}).get("next_session_date", {}).get("value")
+                    deadline = extract_report_deadline_candidates(text, base)
+                    if deadline.explicit_dates:
+                        if deadline.selected is None or output["value"] != deadline.selected.value:
+                            raise ValueError("Срок отчёта должен совпадать с однозначной явно указанной датой")
+                    elif base is not None:
+                        expected = (datetime.strptime(base, "%d.%m.%Y") - timedelta(days=10)).strftime("%d.%m.%Y")
+                        if output["value"] != expected:
+                            raise ValueError("Срок отчёта должен равняться подтверждённой next_session_date минус 10 календарных дней")
             except (ValidationError, ValueError, TypeError) as exc:
                 errors[name] = str(exc)
                 logger.warning("court_selective_field_invalid", field=name, document_id=document_id,

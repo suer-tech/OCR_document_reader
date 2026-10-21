@@ -6,6 +6,7 @@ Offsets use Python Unicode positions in the original input, before normalization
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 from dataclasses import dataclass
 
@@ -21,6 +22,7 @@ class DebtorRegistrationAddressCandidate:
     start: int
     end: int
     requires_confirmation: bool = True
+    binding: str = "residence_label"
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,8 @@ _LABEL = re.compile(
     r"(?:\s+по\s+адресу)?"
     r"(?:\s+должника)?\s*(?:[:–—-]\s*|(?=(?:Россия\b|Российск\w*\s+Федерац|"
     r"\d{6}\b|г\.|гор\.|город\b|[А-ЯЁ][а-яё-]+\s+(?:обл\.|область|край))))|"
-    r"зарегистрирован\w*\s*(?::\s*|(?:и\s+прожива\w*\s+)?по\s+(?:месту\s+жительства\s+)?адресу\s*:?\s*|в\s+)|"
+    r"зарегистрирован\w*(?:\s*\(\s*(?:а|ая|ой|ого|ую|ы)\s*\))?\s*"
+    r"(?::\s*|(?:и\s+прожива\w*\s+)?по\s+(?:месту\s+жительства\s+)?адресу\s*:?\s*|в\s+)|"
     r"прожива(?:ет|ющ\w*)\s+(?:по\s+адресу\s*:?\s*|в\s+)|"
     r"адрес\s+(?:преимущественного\s+)?места\s+пребывания\s*:\s*|"
     r"адрес\s*:\s*)", re.I
@@ -83,6 +86,32 @@ _GEOGRAPHY = re.compile(
     r"\b(?:г\.|гор\.|город\b|ул\.?\b|улиц\w*|обл\.|област\w*|кра[йя]|"
     r"Респ\w*|с\.|пос\.|пгт\.?|дер\w*|станиц\w*|район\w*|р-н|х\.|"
     r"проспект\w*|пр\.|пр-кт|пер\.|переул\w*|ш\.|шоссе)", re.I
+)
+_AFTER_NAME_GEOGRAPHY = re.compile(
+    r"\s*[,;:]?\s*(?P<value>(?:\d{6}\b[,\s]*)?"
+    r"(?:(?:г\.|гор\.|с\.|д\.|дер\.|п\.|пос\.|ст\.|х\.|р\.п\.|с\.п\.|н\.п\.)"
+    r"\s*(?=[А-Яа-яЁё])|город\b|село\b|сел\.\s*|деревня\b|пос[её]лок\b|пгт\.?\b|"
+    r"станица\b|ст[-‐‑–]?ца\b|хутор\b|Российск\w*\s+Федерац\w*\b|Россия\b|"
+    r"Республик\w*\b|(?:[А-ЯЁ][а-яё-]+\s+){1,2}(?:обл\.|область\b|край\b)))", re.I,
+)
+_AFTER_NAME_STOP = re.compile(
+    r"(?<!\d)\d{1,2}[./]\d{1,2}[./]\d{4}\b|\b\d{4}\s+г(?:ода|\.)|"
+    r"\b(?:о\s+собственн\w*|г\.р\.|родил\w*|урожен\w*|м\.р\.|"
+    r"не\s+позднее|в\s+течение|представить|передать|сообщить|обязан\w*|должен|должна)", re.I,
+)
+_STREET = re.compile(
+    r"\b(?:ул\.|улиц\w*|пер\.|переул\w*|проспект\w*|пр\.|пр-кт|пр-т|"
+    r"б-р|бульвар\w*|ш\.|шоссе|пл\.|площад\w*|наб\.|набережн\w*|"
+    r"туп\.|тупик\w*|кв\.|квартир\w*|комн\w*|дом\b|корп\w*|строен\w*|стр\.|"
+    r"д\.\s*(?=\d)|вл\.|владени\w*)", re.I,
+)
+_LOCALITY_TYPES = {"город", "село", "деревня", "поселок", "станица", "хутор", "пгт"}
+_REGION_TYPES = {"район", "область", "край", "республика"}
+_REGION_CODES = {"кбр", "рб", "рт", "рф", "рсфср", "ссср", "хмао", "янао", "рсо-алания"}
+_LOCALITY_START = re.compile(
+    r"\b(?:гор\.|г\.|город\b|сел\.|с\.|село\b|дер\.|деревня\b|"
+    r"д\.\s*(?=[А-Яа-яЁё])|пос\.|п\.|пос[её]лок\b|станица\b|ст[-‐‑–]ца\b|"
+    r"х\.|хутор\b|пгт\b)", re.I,
 )
 
 
@@ -172,12 +201,94 @@ def _address_end(tail: str) -> int:
     return end if not depth else tail.rfind("(", 0, end)
 
 
+def _geography_tokens(value: str) -> list[str]:
+    """Comparison only; never change the returned source spelling or expand regions."""
+    # A locality can follow the street/house: "ул. Мира, д. 7, с. Лесное".
+    # Resume only at an explicit locality designator, never borrow a street name.
+    pieces, cursor = [], 0
+    while stop := _STREET.search(value, cursor):
+        pieces.append(value[cursor:stop.start()])
+        resume = _LOCALITY_START.search(value, stop.end())
+        if resume is None:
+            break
+        cursor = resume.start()
+    else:
+        pieces.append(value[cursor:])
+    geography = " ".join(pieces)
+    geography = geography.casefold().replace("ё", "е")
+    for pattern, replacement in (
+        (r"\b(?:гор\.|г\.|город\b)", "город "),
+        (r"\b(?:сел\.|с\.|село\b)", "село "),
+        (r"\b(?:дер\.|д\.|деревня\b)", "деревня "),
+        (r"\b(?:пос\.|п\.|поселок\b)", "поселок "),
+        (r"\b(?:ст\.|ст[-‐‑–]ца\b|станица\b)", "станица "),
+        (r"\b(?:х\.|хутор\b)", "хутор "),
+        (r"\b(?:р-на|р-н|района|район)\b", "район"),
+        (r"\b(?:обл\.|области\b|область\b)", "область "),
+        (r"\b(?:респ\.|республики\b|республика\b)", "республика "),
+        (r"\b(?:края|край)\b", "край"),
+    ):
+        geography = re.sub(pattern, replacement, geography)
+    # Administrative adjective cases are equivalent only immediately before a type.
+    geography = re.sub(
+        r"\b([а-я-]+?)(?:ого|ому|ыми|ий|ая|ой|ую|ое|ом|им)\s+"
+        r"(?=район\b|область\b|край\b)", r"\1 ", geography,
+    )
+    return re.findall(r"[а-я0-9]+(?:-[а-я0-9]+)*", geography)
+
+
+def _localities(tokens: list[str]) -> set[tuple[str, tuple[str, ...]]]:
+    places = set()
+    for i, token in enumerate(tokens):
+        if token not in _LOCALITY_TYPES:
+            continue
+        name = []
+        for j in range(i + 1, len(tokens)):
+            word = tokens[j]
+            if (word in _LOCALITY_TYPES | _REGION_TYPES | _REGION_CODES or word.isdigit()
+                    or (j + 1 < len(tokens) and tokens[j + 1] in _REGION_TYPES)):
+                break
+            name.append(word)
+        if name:
+            places.add((token, tuple(name)))
+    return places
+
+
+def _covers_address(stronger: DebtorRegistrationAddressCandidate,
+                    weaker: DebtorRegistrationAddressCandidate) -> bool:
+    if _address_key(stronger.value) == _address_key(weaker.value):
+        return True
+    # Never compare whole housing addresses by token inclusion or pick the longest.
+    if _STREET.search(weaker.value):
+        return False
+    strong_tokens, weak_tokens = _geography_tokens(stronger.value), _geography_tokens(weaker.value)
+    strong_places, weak_places = _localities(strong_tokens), _localities(weak_tokens)
+    missing_places = weak_places - strong_places
+    if missing_places:
+        if strong_places:
+            return False
+        # Some explicit addresses omit the city designator: "198303, Санкт-Петербург".
+        strong_line = " " + " ".join(strong_tokens) + " "
+        if any(" " + " ".join(name) + " " not in strong_line for _, name in missing_places):
+            return False
+        weak_tokens = [token for token in weak_tokens if token not in _LOCALITY_TYPES]
+    return bool(weak_tokens) and not (Counter(weak_tokens) - Counter(strong_tokens))
+
+
+def _select_address(candidates: list[DebtorRegistrationAddressCandidate]) -> DebtorRegistrationAddressCandidate | None:
+    covering = [candidate for candidate in candidates
+                if all(_covers_address(candidate, other) for other in candidates)]
+    # Equivalent existing labelled/metadata evidence keeps its previous spelling.
+    return min(covering, key=lambda c: (c.binding == "after_debtor_name", c.start)) if covering else None
+
+
 def extract_debtor_registration_address_candidates(text: str) -> DebtorRegistrationAddressResult:
     """Propose residence addresses bound to the debtor's identity.
 
     Bare ``адрес:`` requires debtor identity metadata. An address without a
     residence label is allowed directly in the debtor's postcode parenthesis,
-    or after the debtor's INN/SNILS in that same identity block. All different debtor
+    after the debtor's INN/SNILS, or immediately after the current debtor's FIO.
+    A fuller address may supersede compatible partial geography; contradictory
     addresses, including residence/registration pairs, cause abstention.
     No filesystem, network, historical fields or outside reference is consulted.
     """
@@ -248,13 +359,49 @@ def extract_debtor_registration_address_candidates(text: str) -> DebtorRegistrat
                      r"обязательств\w*|имуществен\w*)\b", value, re.I):
             continue
         end = label.end() + len(raw.rstrip())
-        candidates.append(DebtorRegistrationAddressCandidate(value, text[start:end], start, end))
+        candidates.append(DebtorRegistrationAddressCandidate(
+            value, text[start:end], start, end,
+            binding="identity_metadata" if label.re is _IMPLICIT_LABEL else "residence_label",
+        ))
         if owner:
             owners.add(owner)
-    values = {_address_key(c.value) for c in candidates}
+
+    for name in names:
+        owner = _name_key(name.group())
+        if (owner not in debtor_keys
+                or any(block.start <= name.start() < block.end for block in historical_blocks)
+                or _OTHER_NAME.search(text[max(0, name.start() - 150):name.start()])
+                or re.search(r"(?:место\s+рождения|родил\w*|урожен\w*)\s*[:–—-]?\s*$",
+                             text[max(0, name.start() - 100):name.start()], re.I)):
+            continue
+        # An applicant's location must not acquire the identity of another named target.
+        if len(explicitly_named_debtors) == 1 and owner not in explicitly_named_debtors:
+            continue
+        immediate = _AFTER_NAME_GEOGRAPHY.match(text, name.end())
+        if immediate is None:
+            continue
+        address_start = immediate.start("value")
+        tail = text[address_start:address_start + 450]
+        end_offset = _address_end(tail)
+        stop = _AFTER_NAME_STOP.search(tail[:end_offset])
+        if stop:
+            end_offset = stop.start()
+        raw = tail[:end_offset].rstrip(" ,;\r\n")
+        value = _normalize(raw)
+        if (not value or len(value) > 300
+                or re.search(r"\b(?:суд|управляющ\w*|заявлени\w*|банкрот\w*|несостоятельн\w*|"
+                             r"рублей|составля\w*|обязательств\w*|имуществен\w*)\b", value, re.I)):
+            continue
+        start, end = max(0, name.start() - 80), address_start + len(raw)
+        candidates.append(DebtorRegistrationAddressCandidate(
+            value, text[start:end], start, end, binding="after_debtor_name",
+        ))
+        owners.add(owner)
+
+    selected = _select_address(candidates)
     problem = ("conflicting_debtors" if len(owners) > 1 or len(explicitly_named_debtors) > 1 else
-               "conflicting_debtor_registration_addresses" if len(values) > 1 else
+               "conflicting_debtor_registration_addresses" if candidates and selected is None else
                None if candidates else "not_found")
     return DebtorRegistrationAddressResult(
-        candidates[0] if candidates and problem is None else None, candidates, problem
+        selected if problem is None else None, candidates, problem
     )

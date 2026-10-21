@@ -26,7 +26,7 @@ def result_data(**values):
         name: dict(value=None, confidence=0.95, reasoning="Не найдено", ambiguous=False, evidence=None)
         for name in ADDITIONAL_FIELDS
     }
-    items["procedure_end_date_source"]["value"] = "not_found"
+    items["procedure_end_date_source"]["value"] = "not_specified"
     for name, value in values.items():
         items[name].update(value=value, evidence=TEXT, reasoning="Указано в тексте")
     return CourtAdditionalResult.model_validate(items)
@@ -66,7 +66,7 @@ def test_duration_must_be_integer(value):
 
 def test_absent_fields_do_not_invent_defaults():
     fields = additional_fields_result(result_data(), TEXT)
-    assert fields["procedure_end_date_source"]["value"] == "not_found"
+    assert fields["procedure_end_date_source"]["value"] == "not_specified"
     assert all(fields[name]["value"] is None for name in ADDITIONAL_FIELDS[:-1])
     assert court_field_issues(fields) == []
 
@@ -100,7 +100,7 @@ def test_unsubstantiated_quote_is_not_accepted():
     assert court_field_issues(fields)
 
 
-@pytest.mark.parametrize("source,duration", [("explicit_duration", None), ("not_found", 6)])
+@pytest.mark.parametrize("source,duration", [("explicit_duration", None), ("not_specified", 6)])
 def test_inconsistent_source_requires_review(source, duration):
     fields = additional_fields_result(result_data(procedure_end_date_source=source, procedure_duration_months=duration), TEXT)
     assert fields["procedure_end_date_source"]["value"] is None

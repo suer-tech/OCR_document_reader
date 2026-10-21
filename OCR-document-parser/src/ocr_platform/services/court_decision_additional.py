@@ -24,7 +24,7 @@ class CourtAdditionalResult(BaseModel):
     next_session_time: CourtField[str]
     court_hearing_address: CourtField[str]
     procedure_duration_months: CourtField[StrictInt]
-    procedure_end_date_source: CourtField[Literal["explicit_date", "explicit_duration", "not_found"]]
+    procedure_end_date_source: CourtField[Literal["explicit_date", "explicit_duration", "not_specified"]]
 
 
 ADDITIONAL_FIELDS = tuple(CourtAdditionalResult.model_fields)
@@ -37,7 +37,7 @@ class CourtAdditionalLLMResult(BaseModel):
     next_session_date: CourtField[str]
     next_session_time: CourtField[str]
     court_hearing_address: CourtField[str]
-    procedure_end_date_source: CourtField[Literal["explicit_date", "explicit_duration", "not_found"]]
+    procedure_end_date_source: CourtField[Literal["explicit_date", "explicit_duration", "not_specified"]]
 
 
 COURT_ISSUE_CODE = "court_field_requires_review"
@@ -52,7 +52,7 @@ JOINT_INSTRUCTION = """
 Для каждого поля верни value, reasoning, confidence (0..1), ambiguous и evidence.
 evidence — дословная цитата из переданного текста, не пересказ; можно включить
 несколько предложений подряд. Для ненайденного значения верни null и ambiguous=false.
-Исключение: procedure_end_date_source=not_found, если нет ни даты, ни срока процедуры.
+Исключение: procedure_end_date_source=not_specified, если нет ни даты, ни срока процедуры.
 При противоречии или неоднозначности верни value=null, ambiguous=true и объяснение.
 Не подставляй текущую дату, 01.01.1970 или 00:00. Даты: DD.MM.YYYY, время: HH:MM.
 """
@@ -86,10 +86,8 @@ def additional_fields_result(
             reject(item.reasoning or "Неоднозначное значение в судебном акте")
             continue
         if item.value is None:
-            if name == "procedure_end_date_source":
-                result[name]["value"] = "not_found"
             continue
-        if item.value != "not_found" and (
+        if item.value != "not_specified" and (
             not item.evidence or _normalized(item.evidence) not in _normalized(text)
         ):
             reject("Значение не подтверждено дословным фрагментом документа")
@@ -123,7 +121,7 @@ def additional_fields_result(
     source = result["procedure_end_date_source"]
     duration = result["procedure_duration_months"]
     if (source["value"] == "explicit_duration" and duration["value"] is None) or (
-        source["value"] == "not_found" and duration["value"] is not None
+        source["value"] == "not_specified" and duration["value"] is not None
     ):
         reason = "Способ задания срока противоречит извлечённой продолжительности процедуры"
         source.update(value=None, confidence=0, reasoning=reason, validation_issue=reason)

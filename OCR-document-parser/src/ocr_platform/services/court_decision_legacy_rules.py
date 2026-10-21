@@ -10,7 +10,13 @@ def normalize_whitespace(text: str) -> str:
 
 
 _CASE_DASHES = "-‐‑‒–—−"
-_CASE_NUMBER = rf"[АA]\d{{1,3}}(?:\s*[{_CASE_DASHES}]\s*\d+|\d+)/\d{{2,4}}(?!\w)"
+_CASE_SUFFIX = (
+    rf"(?:[{_CASE_DASHES}]\d+[А-Яа-яЁёA-Za-z]*)*"
+    rf"(?:[^\S\r\n]*(?:«[^\S\r\n]*[А-ЯЁA-Z]{{1,3}}[^\S\r\n]*»|"
+    rf'"[^\S\r\n]*[А-ЯЁA-Z]{{1,3}}[^\S\r\n]*"|'
+    rf"\([^\S\r\n]*\d+(?:[{_CASE_DASHES}]\d+)*[^\S\r\n]*\)))?"
+)
+_CASE_NUMBER = rf"[АA]\d{{1,3}}(?:\s*[{_CASE_DASHES}]\s*\d+|\d+)(?:\s*[{_CASE_DASHES}]\s*\d+)*/\d{{2,4}}(?!\w){_CASE_SUFFIX}"
 CASE_NUMBER_RE = re.compile(
     rf"\b(?:Дело|Дела|Делу|Деле)\s*[№N]?\s*({_CASE_NUMBER})",
     re.IGNORECASE,
@@ -19,7 +25,7 @@ CASE_NUMBER_RE = re.compile(
 _HEADER_CASE_NUMBER_RE = re.compile(
     rf"^[ \t]*(?:(?:г\.|город)[ \t]+[А-Яа-яЁё‐-]+"
     rf"(?:[ \t]+(?-i:[А-ЯЁ])[А-Яа-яЁё‐-]+){{0,2}}[ \t]+)?[№N][ \t]*"
-    rf"([АA]\d{{1,3}}\s*[{_CASE_DASHES}]\s*\d+/\d{{2,4}}(?!\w))",
+    rf"([АA]\d{{1,3}}\s*[{_CASE_DASHES}]\s*\d+(?:\s*[{_CASE_DASHES}]\s*\d+)*/\d{{2,4}}(?!\w){_CASE_SUFFIX})",
     re.IGNORECASE | re.MULTILINE,
 )
 _CASE_HEADER_END_RE = re.compile(

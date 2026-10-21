@@ -572,6 +572,7 @@ def create_app() -> FastAPI:
                             reasoning=value.get("reasoning"),
                             confidence=value.get("confidence"),
                             source=value.get("source"),
+                            extraction_method=value.get("extraction_method"),
                         )
                     else:
                         fields[name] = schemas.FieldValue(name=name, value=value)

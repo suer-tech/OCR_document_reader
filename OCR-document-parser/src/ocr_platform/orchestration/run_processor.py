@@ -658,6 +658,9 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                             "source": val.get("source")
                             if isinstance(val, dict)
                             else None,
+                            "extraction_method": val.get("extraction_method")
+                            if isinstance(val, dict)
+                            else None,
                         }
                     )
                     for name, val in fields.items()

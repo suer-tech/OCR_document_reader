@@ -2422,7 +2422,7 @@ async def _run_agent_extraction_impl(
                     "source": "regex_legacy",
                 }
                 results["procedure_end_date_is_calculated"] = {
-                    "value": str(is_calc) if is_calc is not None else None,
+                    "value": is_calc,
                     "confidence": 1.0 if is_calc is not None else 0.0,
                     "reasoning": "Calculated alongside procedure_end_date via legacy regex",
                     "source": "regex_legacy",

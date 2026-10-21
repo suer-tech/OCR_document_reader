@@ -324,3 +324,130 @@ def test_historical_filter_never_hides_another_current_target(action):
     assert result.selected is None
     assert result.problem == "conflicting_debtors"
     assert any("Илимская" in item.value for item in result.candidates)
+
+
+@pytest.mark.parametrize("address", [
+    "с. Зеленое Зеленовского р-на Ставропольского края",
+    "г. Казань", "г. Нижний Новгород", "ст-ца Марьинская Кировского р-на Ставропольского края",
+    "ст-ца Северная", "п. Ясный", "д. Березовка",
+])
+def test_geography_immediately_after_current_debtor_name_is_a_proposal(address):
+    text = (f"Заявление Иванова Ивана Ивановича, {address} "
+            "(дата рождения: 01.01.1980, место рождения: г. Омск, ИНН 123456789012) "
+            "о признании его банкротом.")
+    selected = extract(text).selected
+    assert selected.value == address
+    assert selected.binding == "after_debtor_name"
+    assert selected.requires_confirmation
+    assert selected.quote == text[selected.start:selected.end]
+
+
+def test_same_birth_and_residence_locality_does_not_erase_after_name_proposal():
+    text = ("Заявление Иванова Ивана Ивановича, с. Лесное Северного р-на Пермского края "
+            "(дата рождения: 01.01.1980, место рождения: с. Лесное Северного р-на Пермского края) "
+            "о признании его банкротом.")
+    assert extract(text).selected.value == "с. Лесное Северного р-на Пермского края"
+
+
+def test_header_town_ends_before_bankruptcy_narrative():
+    text = "Заявление Иванова Ивана Ивановича, г. Казань о собственном банкротстве."
+    assert extract(text).selected.value == "г. Казань"
+
+
+def test_repeated_locality_in_order_ends_before_deadline_and_keeps_explicit_address():
+    text = _identity("Алтайский край, г. Рубцовск, ул. Новая, д. 8")
+    text += ("Обязать Иванова Ивана Ивановича, г. Рубцовск Алтайский край "
+             "не позднее одного рабочего дня, следующего за днем принятия решения, "
+             "передать документы управляющему.")
+    result = extract(text)
+    assert result.selected.value == "Алтайский край, г. Рубцовск, ул. Новая, д. 8"
+    assert all("позднее" not in item.value for item in result.candidates)
+
+
+def test_full_explicit_address_covers_reordered_partial_geography():
+    text = ("Заявление Иванова Ивана Ивановича, г. Рубцовск Алтайского края "
+            "(дата рождения: 01.01.1980, адрес регистрации: 658206, Алтайский край, "
+            "г. Рубцовск, ул. Новая, д. 8, кв. 9) о признании его банкротом.")
+    result = extract(text)
+    assert result.selected.value == "658206, Алтайский край, г. Рубцовск, ул. Новая, д. 8, кв. 9"
+    assert result.selected.binding == "residence_label"
+    assert len(result.candidates) == 2
+
+
+def test_full_address_without_city_designator_covers_header_city():
+    text = ("Заявление Иванова Ивана Ивановича, г. Санкт-Петербург "
+            "(ИНН 123456789012, адрес регистрации: 198303, Санкт-Петербург, "
+            "пр. Ветеранов, д. 7) о признании его банкротом.")
+    assert extract(text).selected.value == "198303, Санкт-Петербург, пр. Ветеранов, д. 7"
+
+
+def test_full_street_first_address_covers_header_village():
+    text = ("Заявление Иванова Ивана Ивановича, д. Лесная "
+            "(ИНН 123456789012, адрес регистрации: ул. Центральная, д. 37, кв. 2, "
+            "д. Лесная, Северный район, Республика Башкортостан) о банкротстве.")
+    assert extract(text).selected.value == (
+        "ул. Центральная, д. 37, кв. 2, д. Лесная, Северный район, Республика Башкортостан"
+    )
+
+
+def test_street_first_address_cannot_lend_its_street_name_to_another_city():
+    text = ("Заявление Иванова Ивана Ивановича, г. Москва "
+            "(ИНН 123456789012, адрес регистрации: ул. Москва, д. 1, г. Казань) о банкротстве.")
+    assert extract(text).problem == "conflicting_debtor_registration_addresses"
+
+
+def test_more_specific_partial_geography_is_selected_without_stitching():
+    text = ("Заявление Иванова Ивана Ивановича, с. Лесное (ИНН 123456789012) о банкротстве. "
+            "Признать Иванова Ивана Ивановича, с. Лесное Северного района Пермского края "
+            "(01.01.1980 года рождения) банкротом.")
+    assert extract(text).selected.value == "с. Лесное Северного района Пермского края"
+
+
+@pytest.mark.parametrize("header,explicit", [
+    ("г. Москва", "г. Казань, ул. Москва, д. 1"),
+    ("с. Бор", "г. Бор, ул. Мира, д. 1"),
+    ("г. Москва Московская область", "г. Москва, Тверская область, ул. Мира, д. 1"),
+])
+def test_different_geography_does_not_lose_to_a_longer_explicit_address(header, explicit):
+    text = (f"Заявление Иванова Ивана Ивановича, {header} "
+            f"(ИНН 123456789012, адрес регистрации: {explicit}) о банкротстве.")
+    assert extract(text).problem == "conflicting_debtor_registration_addresses"
+
+
+def test_two_unlabelled_housing_addresses_with_different_apartments_conflict():
+    text = ("Признать Иванова Ивана Ивановича, г. Казань, ул. Мира, д. 1, кв. 2 "
+            "(ИНН 123456789012) банкротом. "
+            "Заявление Иванова Ивана Ивановича, г. Казань, ул. Мира, д. 1, кв. 3 "
+            "(ИНН 123456789012) о банкротстве.")
+    assert extract(text).problem == "conflicting_debtor_registration_addresses"
+
+
+@pytest.mark.parametrize("role", ["Финансовый управляющий", "Кредитор", "Супруга должника"])
+def test_unlabelled_other_person_location_is_not_debtor_address(role):
+    text = ("Признать Иванова Ивана Ивановича банкротом. "
+            f"{role} Петров Петр Петрович, г. Казань (ИНН 123456789012).")
+    assert extract(text).selected is None
+
+
+def test_header_creditor_location_cannot_beat_explicit_other_bankruptcy_target():
+    text = ("Заявление Петрова Петра Петровича, г. Казань "
+            "о признании Иванова Ивана Ивановича банкротом. "
+            "Признать Иванова Ивана Ивановича банкротом.")
+    assert extract(text).selected is None
+
+
+def test_repeated_debtor_name_in_explicit_birth_context_is_excluded():
+    text = ("Признать Иванова Ивана Ивановича банкротом. "
+            "Место рождения Иванова Ивана Ивановича, г. Омск (дата рождения: 01.01.1980).")
+    assert extract(text).selected is None
+
+
+def test_unlabelled_historical_other_person_location_is_ignored():
+    text = _with_historical_other_person().replace(
+        "Петровой Елены Петровны (11.03.1978 г.р., ИНН 234567890123, "
+        "адрес регистрации: г. Москва, ул. Илимская, д. 2, кв. 447)",
+        "Петровой Елены Петровны, г. Казань (11.03.1978 г.р., ИНН 234567890123)",
+    )
+    result = extract(text)
+    assert result.selected.value == "г. Москва, ул. Саратовская, д. 5, кв. 137"
+    assert all("Казань" not in candidate.value for candidate in result.candidates)

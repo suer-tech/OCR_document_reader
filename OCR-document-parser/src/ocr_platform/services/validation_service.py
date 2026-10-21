@@ -15,7 +15,7 @@ def court_field_issues(fields: dict) -> list[ValidationIssue]:
                         field_name=name, severity="error")
         for name, info in fields.items()
         if isinstance(info, dict) and info.get("validation_issue") and (
-            name in ADDITIONAL_FIELDS or (name in COURT_FIELDS and info.get("source") in {
+            name in ADDITIONAL_FIELDS or (name in COURT_FIELDS and (info.get("extraction_method") or info.get("source")) in {
                 "regex_jev", "court_llm_fallback"}))
     ]
 

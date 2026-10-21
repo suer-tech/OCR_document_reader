@@ -51,12 +51,12 @@ _WORD = r"[А-ЯЁ][а-яё]+(?:[-‐‑][А-ЯЁа-яё][а-яё]+)?"
 _FULL_NAME = re.compile(
     rf"(?=(?<![А-Яа-яЁё])(?P<name>(?P<last>{_WORD})\s+"
     rf"(?:\({_WORD}(?:\s*,\s*{_WORD})*\)\s+)?(?P<first>{_WORD})\s+"
-    rf"(?P<patronymic>{_WORD}(?:\s+(?:[Оо]глы|[Кк]ызы))?))(?![А-Яа-яЁё]))"
+    rf"(?P<patronymic>{_WORD}(?:\s+(?:[Оо]глы|[Кк]ызы|[Гг]ызы|[Уу]улу))?))(?![А-Яа-яЁё]))"
 )
 _INITIAL_NAME = re.compile(rf"(?<![А-Яа-яЁё]){_WORD}\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.")
 _PATRONYMIC = re.compile(
     r"(?:вич(?:а|у|ем|ом|е)?|ьич(?:а|у|ем|ом|е)?|вн(?:а|ы|е|у|ой)|"
-    r"ичн(?:а|ы|е|у|ой)|оглы|кызы)$", re.I
+    r"ичн(?:а|ы|е|у|ой)|оглы|кызы|гызы|уулу)$", re.I
 )
 _OTHER_ROLE = re.compile(
     r"(?:судь[яиею]|управляющ\w*|кредитор\w*|представител\w*|секретар\w*|"
@@ -185,10 +185,10 @@ def _first_nominative(first: str, male: bool, instrumental: bool) -> str:
 def _nominative(last: str, first: str, patronymic: str) -> str:
     """Apply grammatical classes; preserve unresolvable surname stems."""
     patronymic = re.sub(r"\s+", " ", patronymic)
-    male = bool(re.search(r"(?:вич|ьич)(?:а|у|ем|ом|е)?$|оглы$", patronymic, re.I))
+    male = bool(re.search(r"(?:вич|ьич)(?:а|у|ем|ом|е)?$|оглы$|уулу$", patronymic, re.I))
     oblique = bool(re.search(r"(?:вич|ьич)(?:а|у|ем|ом|е)$|(?:в|ич)н(?:ы|е|у|ой)$", patronymic))
     instrumental = bool(re.search(r"(?:вич|ьич)(?:ем|ом)$|(?:в|ич)ной$", patronymic))
-    if patronymic.casefold().endswith(" оглы"):
+    if patronymic.casefold().endswith((" оглы", " уулу")):
         oblique = bool(re.search(r"(?:ов|ев|ёв|ин|ын)(?:а|у|ым)$", last))
         instrumental = last.endswith(("овым", "евым", "иным", "ыным"))
     if not oblique:
@@ -258,7 +258,7 @@ def _case_forms(word: str, *, male: bool, surname: bool = False) -> set[str]:
                    for index, part in enumerate(parts)]
         return {"".join(combination).casefold().replace("ё", "е") for combination in product(*choices)}
     forms = {word}
-    if word.endswith((" Оглы", " оглы", " Кызы", " кызы")):
+    if word.casefold().endswith((" оглы", " кызы", " гызы", " уулу")):
         father, suffix = word.rsplit(" ", 1)
         forms.update(f"{variant} {suffix}" for variant in _case_forms(father, male=True))
     elif male:
@@ -294,7 +294,7 @@ def _case_forms(word: str, *, male: bool, surname: bool = False) -> set[str]:
 
 def _nominal_source(candidate: DebtorNameCandidate) -> bool:
     last, first, patronymic = _source_parts(candidate)
-    if not re.search(r"(?:вич|ьич|вна|ична| оглы| кызы)$", patronymic, re.I):
+    if not re.search(r"(?:вич|ьич|вна|ична| оглы| кызы| гызы| уулу)$", patronymic, re.I):
         return False
     return candidate.value == f"{last} {first} {patronymic}"
 
@@ -302,7 +302,7 @@ def _nominal_source(candidate: DebtorNameCandidate) -> bool:
 def _same_source_person(nominal: DebtorNameCandidate, other: DebtorNameCandidate) -> bool:
     reference = _source_parts(nominal)
     observed = _source_parts(other)
-    male = bool(re.search(r"(?:вич|ьич| оглы)$", reference[2], re.I))
+    male = bool(re.search(r"(?:вич|ьич| оглы| уулу)$", reference[2], re.I))
     return all(
         word.casefold().replace("ё", "е") in _case_forms(base, male=male, surname=index == 0)
         for index, (base, word) in enumerate(zip(reference, observed))
@@ -363,7 +363,7 @@ def extract_debtor_full_name_candidates(text: str) -> DebtorNameCandidates:
         last, first, patronymic = match.group("last", "first", "patronymic")
         if not _PATRONYMIC.search(patronymic):
             continue
-        if patronymic.casefold() in {"оглы", "кызы"}:
+        if patronymic.casefold() in {"оглы", "кызы", "гызы", "уулу"}:
             continue
         name_start, name_end = match.span("name")
         score = _role_score(text, name_start, name_end)

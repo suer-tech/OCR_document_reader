@@ -135,7 +135,7 @@ def test_rejected_end_source_invalidates_high_scoring_fallback_date(monkeypatch)
     calls = mock_routes(monkeypatch, proposals, {"next_session_date": .99, "procedure_end_date": .2})
     result = run(["next_session_date"])
     assert calls["llm"] == [["next_session_date"]]
-    assert result["next_session_date"]["source"] == "court_llm_fallback"
+    assert result["next_session_date"]["extraction_method"] == "court_llm_fallback"
     assert len(calls["jev"]) == 1  # A successful or empty LLM result is never JEV-checked again.
 
 
@@ -145,7 +145,7 @@ def test_explicit_date_survives_rejected_end_source(monkeypatch):
     calls = mock_routes(monkeypatch, proposals, {"next_session_date": .99, "procedure_end_date": .2})
     result = run(["next_session_date", "procedure_end_date"])
     assert result["next_session_date"]["value"] == APPOINTMENT
-    assert result["next_session_date"]["source"] == "regex_jev"
+    assert result["next_session_date"]["extraction_method"] == "regex_jev"
     assert calls["llm"] == [["procedure_end_date"]]
 
 

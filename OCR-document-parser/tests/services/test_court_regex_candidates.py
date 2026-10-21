@@ -12,7 +12,7 @@ def test_source_spans_and_value_types():
     assert result.fields["case_number"].value == "А40-123/2026"
     assert result.fields["procedure_duration_months"].value == 6
     assert result.fields["procedure_end_date"].value == "01.04.2027"
-    assert result.fields["procedure_end_date_is_calculated"].value == "True"
+    assert result.fields["procedure_end_date_is_calculated"].value is True
     assert result.fields["early_report_required"].value is False
     for candidate in result.fields.values():
         assert text[candidate.start:candidate.end] == candidate.quote
@@ -21,7 +21,7 @@ def test_source_spans_and_value_types():
 def test_inline_reasoning_preserves_current_section_boundaries():
     text = "Суд, рассмотрев материалы, установил следующее.\nОбстоятельства.\nР Е Ш И Л:\nВвести процедуру."
     result = extract_court_candidates(text, ["motivating_part", "resolutive_part"])
-    assert result.fields["motivating_part"].value == "следующее.\nОбстоятельства."
+    assert result.fields["motivating_part"].value == "Обстоятельства."
     assert result.fields["resolutive_part"].value == "Ввести процедуру."
 
 

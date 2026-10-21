@@ -67,12 +67,13 @@ def test_advance_publication_and_later_report_do_not_merge():
     assert extract_report_deadline_candidates(text, '15.03.2027').selected is None
 
 
-def test_advance_notice_to_parties_does_not_become_court_report_deadline():
+def test_dated_court_filing_with_report_attachment_is_explicit_not_minus_ten():
     text = ('РЕШИЛ: Финансовому управляющему в срок до 15.04.2027 представить в суд '
             'и заблаговременно направить лицам, участвующим в деле, заявление '
             'о завершении с представлением отчета о результатах процедуры.')
     result = extract_report_deadline_candidates(text, '15.04.2027')
-    assert result.selected is None
+    assert result.selected.value == '15.04.2027'
+    assert result.selected.basis == 'explicit_report_date'
 
 
 def test_next_assignment_does_not_supply_missing_report_object():
@@ -82,12 +83,13 @@ def test_next_assignment_does_not_supply_missing_report_object():
 
 
 @pytest.mark.parametrize('value', ['22.03.2027', '«22» марта 2027', '“22” марта 2027'])
-def test_explicit_report_date_is_separate_pending_policy_candidate(value):
+def test_explicit_report_date_has_priority_without_a_next_date(value):
     text = f'РЕШИЛ: Финансовому управляющему в срок до {value} представить в суд отчет.'
     result = extract_report_deadline_candidates(text, None)
     assert [candidate.value for candidate in result.explicit_dates] == ['22.03.2027']
-    assert result.selected is None
-    assert result.problem == 'explicit_date_priority_pending'
+    assert result.selected.value == '22.03.2027'
+    assert result.selected.basis == 'explicit_report_date'
+    assert result.problem is None
     assert text[result.explicit_dates[0].start:result.explicit_dates[0].end] == result.explicit_dates[0].quote
 
 
@@ -108,16 +110,16 @@ def test_invalid_explicit_date_is_not_returned():
     assert not extract_report_deadline_candidates(text, None).explicit_dates
 
 
-@pytest.mark.parametrize('text', [
-    'РЕШИЛ: Финансовому управляющему заблаговременно представить в суд отчет.',
-    'РЕШИЛ: Финансовому управляющему до 22.03.2027 представить в суд отчет.',
-    'РЕШИЛ: Отчет представить в суд в срок до 22.03.2027.',
+@pytest.mark.parametrize('text,expected', [
+    ('РЕШИЛ: Финансовому управляющему заблаговременно представить в суд отчет.','05.03.2027'),
+    ('РЕШИЛ: Финансовому управляющему до 22.03.2027 представить в суд отчет.','22.03.2027'),
+    ('РЕШИЛ: Отчет представить в суд в срок до 22.03.2027.','22.03.2027'),
 ])
-def test_existing_nonempty_output_is_preserved(text):
+def test_explicit_priority_changes_only_the_literal_deadline_cases(text,expected):
     old, _ = extract_early_report_deadline(text, '15.03.2027')
     assert old is not None
     result = extract_report_deadline_candidates(text, '15.03.2027')
-    assert result.selected.value == old
+    assert result.selected.value == expected
     assert date(2027, 3, 5).strftime('%d.%m.%Y') == old
 
 

@@ -35,10 +35,15 @@ async def simple_extract_fields(
     from ocr_platform.services.extraction_agent import run_agent_extraction
 
     fields_config = profile_config.get("fields", {})
-    return await run_agent_extraction(
+    result = await run_agent_extraction(
         text,
         fields_config,
         profile_id=profile_id,
         profile_config=profile_config,
         storage_path=storage_path,
     )
+    if profile_id == "court_decision_ru":
+        from ocr_platform.services.court_field_provenance import finalize_court_fields
+
+        return finalize_court_fields(text, result)
+    return result

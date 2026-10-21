@@ -10,6 +10,8 @@ from ocr_platform.services import court_decision_legacy_rules as legacy
 from ocr_platform.services.court_decision_dates import extract_decision_date_candidates
 from ocr_platform.services.court_decision_sections import extract_motivating_part, extract_resolutive_part
 from ocr_platform.services.court_procedure_duration import extract_procedure_duration
+from ocr_platform.services.court_case_number_format import normalize_court_case_number
+from ocr_platform.services.court_field_format import normalize_court_value
 
 
 @dataclass(frozen=True)
@@ -136,14 +138,14 @@ def extract_court_candidates(text: str, field_names: list[str]) -> CourtCandidat
                     normalized = re.sub(r"\s+", "", match[1])
                     normalized = re.sub(rf"[{legacy._CASE_DASHES}]", "-", normalized)
                     if normalized == value:
-                        candidate = CourtCandidate(value, match[0], match.start(), match.end(), "court_case_number", {})
+                        candidate = CourtCandidate(normalize_court_case_number(value), match[0], match.start(), match.end(), "court_case_number", {})
                         break
         elif name == "decision_date":
             candidate = _candidate(date_result.selected, text, "court_act_date")
             problem = date_result.problem
         elif name in {"procedure_end_date", "procedure_end_date_is_calculated"}:
             if end_value is not None:
-                value = end_value if name == "procedure_end_date" else str(is_calculated)
+                value = end_value if name == "procedure_end_date" else is_calculated
                 candidate = CourtCandidate(value, text, 0, len(text), "court_procedure_end",
                                            {"is_calculated": is_calculated, "policy": "preserve_current_act_date_convention"},
                                            ("procedure_end_date",) if name.endswith("is_calculated") else ())
@@ -162,8 +164,11 @@ def extract_court_candidates(text: str, field_names: list[str]) -> CourtCandidat
         elif name == "early_report_deadline":
             from ocr_platform.services.court_regex_report_deadline import extract_report_deadline_candidates
             result = extract_report_deadline_candidates(text, next_candidate.value if next_candidate else None)
-            candidate = _candidate(result.selected, text, "court_report_minus_ten_days", ("next_session_date",))
-            if candidate is not None:
+            explicit = result.selected is not None and result.selected.basis == "explicit_report_date"
+            candidate = _candidate(result.selected, text,
+                                   "court_explicit_report_date" if explicit else "court_report_minus_ten_days",
+                                   () if explicit else ("next_session_date",))
+            if candidate is not None and not explicit:
                 candidate = replace(candidate, metadata={**candidate.metadata, "base_field": "next_session_date",
                                                          "base_value": next_candidate.value})
             problem = result.problem or ("not_found" if result.selected is None else "invalid_source_span")
@@ -186,9 +191,6 @@ def extract_court_candidates(text: str, field_names: list[str]) -> CourtCandidat
             problem = result.problem
             if candidate is not None and name in {"next_session_time", "court_hearing_address"}:
                 candidate = replace(candidate, dependencies=("next_session_date",))
-            if (name == "resolutive_part_date" and candidate is not None
-                    and candidate.metadata.get("basis") == "current_act_date_with_operative_section"):
-                candidate = replace(candidate, dependencies=("decision_date",))
             if name == "debtor_full_name" and candidate is not None:
                 parts = candidate.value.split(maxsplit=2)
                 if len(parts) != 3:
@@ -199,7 +201,7 @@ def extract_court_candidates(text: str, field_names: list[str]) -> CourtCandidat
         else:
             problem = "extractor_not_registered"
         if candidate is not None:
-            fields[name] = candidate
+            fields[name] = replace(candidate, value=normalize_court_value(name, candidate.value))
         else:
             problems[name] = problem or "invalid_or_missing_source_span"
     return CourtCandidates(fields, problems)

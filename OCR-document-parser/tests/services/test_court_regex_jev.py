@@ -18,6 +18,80 @@ def test_all_profile_fields_have_verification_rules():
     assert fields["judge_full_name"].get("regex_jev_mode", "regex_jev") == "regex_jev"
 
 
+@pytest.mark.parametrize("probability", [.98, .2])
+@pytest.mark.parametrize("marker, original, formatted", [
+    ("место рождения:", "Краснодарский край, Белоглинского района, станица Успенская",
+     "ст. Успенская Белоглинского района Краснодарского края"),
+    ("уроженца(ки", "с. Филимоново Чебаркульского района Челябинской области",
+     "с. Филимоново Чебаркульского района Челябинской области"),
+])
+def test_formatted_birthplace_enters_jev_with_source_quote(monkeypatch, probability, marker, original, formatted):
+    text = (f"Признать Иванова Ивана Ивановича ({marker} {original}, "
+            "ИНН 123456789012) банкротом.")
+    calls = {"jev": 0, "llm": 0}
+
+    def verify(**kwargs):
+        calls["jev"] += 1
+        proposal = kwargs["decisions_state"]["fields"]["debtor_birth_place"]
+        assert proposal["value"] == formatted
+        assert original in proposal["quote"]
+        assert marker in proposal["quote"]
+        assert proposal["quote"] == text[proposal["start"]:proposal["end"]]
+        assert proposal["metadata"]["requires_confirmation"] is True
+        return SimpleNamespace(parsed={"answers": {
+            "debtor_birth_place": {"type": "noul", "noul": probability}
+        }}, winner_model="test")
+
+    async def fallback(text, fields, config, **kwargs):
+        calls["llm"] += 1
+        assert list(fields) == ["debtor_birth_place"]
+        return {"debtor_birth_place": {"value": None, "confidence": .2, "source": "court_llm_fallback"}}
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", verify)
+    monkeypatch.setattr(service, "extract_court_llm_fields", fallback)
+    config = {"fields": {"debtor_birth_place": {"required": True}},
+              "models": {"verification": {"threshold": .6}}}
+    result = asyncio.run(service.extract_court_regex_jev(text, config, document_id="d", pipeline_run_id="r"))
+    assert calls == {"jev": 1, "llm": 0 if probability >= .6 else 1}
+    assert result["debtor_birth_place"]["value"] == (formatted if probability >= .6 else None)
+
+
+@pytest.mark.parametrize("probability", [.98, .2])
+def test_unlabelled_partial_address_after_debtor_name_is_verified_before_acceptance(monkeypatch, probability):
+    text = ("Заявление Иванова Ивана Ивановича, с. Лесное Северного района Пермского края "
+            "(дата рождения: 01.01.1980, место рождения: г. Омск) о признании его банкротом.")
+    value = "с. Лесное Северного района Пермского края"
+    calls = {"jev": 0, "llm": 0}
+
+    def verify(**kwargs):
+        calls["jev"] += 1
+        field = kwargs["decisions_state"]["fields"]["debtor_registration_address"]
+        assert field["value"] == value
+        assert field["metadata"]["binding"] == "after_debtor_name"
+        assert text[field["start"]:field["end"]] == field["quote"]
+        assert "debtor_registration_address" in kwargs["decisions_questions"]
+        return SimpleNamespace(parsed={"answers": {
+            "debtor_registration_address": {"type": "noul", "noul": probability}
+        }}, winner_model="typesafe/jev-1.14")
+
+    async def fallback(text, fields, config, **kwargs):
+        calls["llm"] += 1
+        return {"debtor_registration_address": {"value": None, "confidence": .3, "source": "court_llm_fallback"}}
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", verify)
+    monkeypatch.setattr(service, "extract_court_llm_fields", fallback)
+    config = {"fields": {"debtor_registration_address": {"required": True}},
+              "models": {"verification": {"threshold": .6}}}
+    result = asyncio.run(service.extract_court_regex_jev(text, config, document_id="d", pipeline_run_id="r"))
+    assert calls == {"jev": 1, "llm": 0 if probability >= .6 else 1}
+    if probability >= .6:
+        assert result["debtor_registration_address"]["value"] == value
+        assert result["debtor_registration_address"]["extraction_method"] == "regex_jev"
+    else:
+        assert result["debtor_registration_address"]["value"] is None
+        assert result["debtor_registration_address"]["validation_issue"]
+
+
 @pytest.mark.parametrize("probability", [.99, .2, None])
 def test_configured_debtor_name_is_verified_and_only_rejected_name_enters_llm(monkeypatch, probability):
     profile_path = Path(__file__).parents[2] / "src/ocr_platform/config/pipelines/profiles/court_decision_ru.yaml"
@@ -51,7 +125,7 @@ def test_configured_debtor_name_is_verified_and_only_rejected_name_enters_llm(mo
     result = asyncio.run(service.extract_court_regex_jev(text, profile, document_id="d", pipeline_run_id="r"))
     assert len(calls["jev"]) == 1  # LLM result is never verified a second time.
     assert calls["llm"] == ([] if probability == .99 else [["debtor_full_name"]])
-    assert result["debtor_full_name"]["source"] == ("regex_jev" if probability == .99 else "court_llm_fallback")
+    assert result["debtor_full_name"]["extraction_method"] == ("regex_jev" if probability == .99 else "court_llm_fallback")
     assert result["case_number"]["value"] == "А40-1/2026"
 
 
@@ -145,7 +219,7 @@ def test_approved_fields_need_no_llm_and_false_is_a_value(monkeypatch):
     result = run(["early_report_required"])
     assert result["early_report_required"]["value"] is False
     assert result["early_report_required"]["confidence"] == .98
-    assert result["early_report_required"]["source"] == "regex_jev"
+    assert result["early_report_required"]["extraction_method"] == "regex_jev"
     assert len(calls["jev"]) == 1
     assert calls["llm"] == []
     assert calls["jev"][0]["decisions_state"]["document"] == "source"
@@ -219,7 +293,7 @@ def test_current_profile_accepts_at_point_six_and_routes_lower_scores_to_llm(mon
     calls = setup(monkeypatch, {"case_number": candidate("А01-1/2026")}, {"case_number": probability})
     result = asyncio.run(service.extract_court_regex_jev("source", profile, document_id="d", pipeline_run_id="r"))
     assert profile["models"]["verification"]["threshold"] == .6
-    assert (result["case_number"]["source"] == "regex_jev") is accepted
+    assert (result["case_number"]["extraction_method"] == "regex_jev") is accepted
     assert calls["llm"] == ([] if accepted else [["case_number"]])
     assert len(calls["jev"]) == 1
 
@@ -234,6 +308,33 @@ def test_null_calculation_flag_does_not_ask_whether_date_is_explicit():
     question = service.verification_question("procedure_end_date_is_calculated", missing)
     assert "результат null" in question["instructions"]
     assert "не нужно рассчитывать" not in question["instructions"]
+
+
+@pytest.mark.parametrize("value", [True, False, None])
+def test_calculation_flag_keeps_type_through_mock_verification(monkeypatch, value):
+    name = "procedure_end_date_is_calculated"
+    end = "01.04.2027" if value is not None else None
+    calls = setup(monkeypatch, {
+        "procedure_end_date": candidate(end),
+        name: candidate(value, ("procedure_end_date",)),
+    }, {"procedure_end_date": .99, name: .99})
+    output = run(["procedure_end_date", name])
+    assert output[name]["value"] is value
+    assert calls["jev"][0]["decisions_state"]["fields"][name]["value"] is value
+    assert calls["llm"] == []
+
+
+def test_calculation_flag_cannot_survive_rejection_of_its_date(monkeypatch):
+    name = "procedure_end_date_is_calculated"
+    calls = setup(monkeypatch, {
+        "procedure_end_date": candidate("01.04.2027"), name: candidate(False, ("procedure_end_date",)),
+    }, {"procedure_end_date": .2, name: .99}, {
+        "procedure_end_date": {"value": None, "confidence": .1, "source": "court_llm_fallback"},
+        name: {"value": None, "confidence": .1, "source": "court_llm_fallback"},
+    })
+    output = run(["procedure_end_date", name])
+    assert calls["llm"] == [["procedure_end_date", name]]
+    assert output[name]["value"] is None
 
 
 def test_optional_absence_requires_its_own_confirmation(monkeypatch):

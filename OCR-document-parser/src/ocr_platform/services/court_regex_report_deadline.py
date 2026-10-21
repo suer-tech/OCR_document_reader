@@ -1,8 +1,7 @@
-"""Source-bound report deadline candidates; preserve the confirmed ten-day policy.
+"""Use a printed report deadline first; otherwise preserve the ten-day policy.
 
-Explicit report dates are exposed separately for review. They do not override
-the existing calculation until that field policy is agreed with the operator.
-No returned candidate represents classifier confirmation.
+Every candidate remains unconfirmed until downstream verification. A date
+after «за N дней до» is a calculation base, never a printed report deadline.
 """
 from __future__ import annotations
 
@@ -32,6 +31,11 @@ _DATE = re.compile(
     r")\s+(?P<wy>\d{4})(?!\d)", re.I,
 )
 _DUE_LABEL = re.compile(r"(?:\bдо|\bне\s+позднее(?:\s+чем)?)\s*$", re.I)
+_OTHER_OBJECT = re.compile(r"\b(?:заявлени\w*|позици\w*|публикаци\w*|анализ\w*|доказательств\w*|сведени\w*)\b", re.I)
+_ASSIGNMENT = re.compile(r"\b(?:финансовому|арбитражному)\s+управляющему\b|"
+                         r"\bобязать\s+(?:финансового|арбитражного)\s+управляющего\b", re.I)
+_REPORT_ATTACHMENT = re.compile(r"\b(?:заявлени\w*|ходатайств\w*)\s+о\s+завершении"
+                                r"[\s\S]{0,200}?\bс\s+(?:представлением|приложением)\s+отч[её]т", re.I)
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,19 @@ def _is_report_instruction(fragment: str) -> bool:
     return bool(_REPORT.search(fragment) and _SUBMIT.search(fragment))
 
 
+def _direct_report_submission(fragment: str, verb: re.Match) -> bool:
+    """The dated submission must concern the report, not a position about it."""
+    tail = fragment[verb.end():]
+    if _REPORT_ATTACHMENT.search(tail):
+        return True
+    after = _REPORT.search(tail)
+    if after and not _OTHER_OBJECT.search(tail[:after.start()]):
+        return True
+    before = list(_REPORT.finditer(fragment[:verb.start()]))
+    return bool(before and verb.start() - before[-1].end() < 150
+                and not _OTHER_OBJECT.search(tail[:after.start() if after else len(tail)]))
+
+
 def _report_after_submission(fragment: str) -> bool:
     submit = _SUBMIT.search(fragment)
     if not submit:
@@ -84,12 +101,10 @@ def _report_after_submission(fragment: str) -> bool:
 def extract_report_deadline_candidates(
     text: str, next_session_date: str | None,
 ) -> ReportDeadlineCandidates:
-    """Return candidates without changing explicit-date priority or day count.
+    """Prefer one unambiguous literal deadline; otherwise calculate minus ten.
 
-    Existing recognized requirements retain their original result. Additional
-    requirements need a report submission instruction and an advance marker in
-    the operative part. The base is the next consideration date, selected by
-    the shared appointment → procedure-end fallback policy.
+    Calculations need a source requirement and the shared next-consideration
+    date. An explicit report deadline does not depend on a hearing/end date.
     """
     heading = list(_OPERATIVE.finditer(text))
     legacy, _ = extract_early_report_deadline(text, next_session_date)
@@ -98,11 +113,18 @@ def extract_report_deadline_candidates(
         return ReportDeadlineCandidates(selected, (), None if selected else 'missing_operative_heading')
     offset = heading[-1].end() if heading else 0
     operative = text[offset:]
+    assignments = list(_ASSIGNMENT.finditer(operative))
     explicit: list[ReportDeadlineCandidate] = []
     for match in _DATE.finditer(operative):
         if not _DUE_LABEL.search(operative[max(0, match.start() - 40):match.start()]):
             continue
         start, end = max(0, match.start() - 250), min(len(operative), match.end() + 250)
+        previous = [a.start() for a in assignments if a.start() < match.start()]
+        following = [a.start() for a in assignments if a.start() > match.end()]
+        if previous:
+            start = max(start, previous[-1])
+        if following:
+            end = min(end, following[0])
         # A semicolon separates independent assignments (e.g. the report and
         # a financial analysis with a different due date).
         start = max(start, operative.rfind(';', start, match.start()) + 1)
@@ -115,7 +137,8 @@ def extract_report_deadline_candidates(
         # Bind the date to a nearby submission verb, rather than a hearing date.
         submit = list(_SUBMIT.finditer(fragment))
         if not _is_report_instruction(fragment) or not any(
-            abs((start + verb.start()) - match.start()) < 120 for verb in submit
+            abs((start + verb.start()) - match.start()) < 120
+            and _direct_report_submission(fragment, verb) for verb in submit
         ):
             continue
         try:
@@ -125,25 +148,35 @@ def extract_report_deadline_candidates(
         except ValueError:
             continue
         explicit.append(ReportDeadlineCandidate(
-            parsed.strftime('%d.%m.%Y'), 'explicit_report_date_pending_policy',
+            parsed.strftime('%d.%m.%Y'), 'explicit_report_date',
             fragment, offset + start, offset + end,
         ))
 
+    if len({item.value for item in explicit}) > 1:
+        return ReportDeadlineCandidates(None, tuple(explicit), 'conflicting_explicit_report_dates')
+    if explicit:
+        return ReportDeadlineCandidates(explicit[0], tuple(explicit), None)
     if legacy:
         selected = ReportDeadlineCandidate(legacy, 'next_session_minus_ten_calendar_days',
                                            operative, offset, len(text))
-        return ReportDeadlineCandidates(selected, tuple(explicit), 'explicit_date_priority_pending' if explicit else None)
+        return ReportDeadlineCandidates(selected, (), None)
     base = _parse_date(next_session_date)
     for marker in _ADVANCE.finditer(operative):
         start = max(0, marker.start() - 250)
         end = min(len(operative), marker.end() + 650)
         fragment = operative[start:end]
         # The report instruction must follow the marker in the same local context.
-        following = operative[marker.start():end]
-        first_submit = _SUBMIT.search(following)
+        before = list(_SUBMIT.finditer(operative, start, marker.start()))
+        # Both «за N дней представить отчёт» and «представить за N дней отчёт»
+        # are literal orders. Keep the verb so the same object checks apply.
+        instruction_starts = [marker.start()]
+        if before and marker.start() - before[-1].end() < 150:
+            instruction_starts.append(before[-1].start())
+        following = next((operative[a:end] for a in instruction_starts
+                          if _SUBMIT.search(operative[a:end]) and _report_after_submission(operative[a:end])), None)
         # A report mentioned as the subject of a hearing is not the object of
         # "представить позицию". Require the report after the submission verb.
-        if not first_submit or not _report_after_submission(following):
+        if following is None:
             continue
         if not (_SUBJECT.search(fragment) or re.search(r"\bв\s+(?:арбитражный\s+)?суд\b", following, re.I)):
             continue
@@ -153,5 +186,5 @@ def extract_report_deadline_candidates(
             (base - timedelta(days=10)).strftime('%d.%m.%Y'), 'next_session_minus_ten_calendar_days',
             fragment, offset + start, offset + end,
         )
-        return ReportDeadlineCandidates(selected, tuple(explicit), 'explicit_date_priority_pending' if explicit else None)
-    return ReportDeadlineCandidates(None, tuple(explicit), 'explicit_date_priority_pending' if explicit else None)
+        return ReportDeadlineCandidates(selected, (), None)
+    return ReportDeadlineCandidates(None, (), None)

@@ -14,6 +14,7 @@ from ocr_platform.services.court_field_rules import FIELD_RULES
 from ocr_platform.services.court_jev_questions import verification_question
 from ocr_platform.services.court_regex_candidates import CourtCandidate, extract_court_candidates
 from ocr_platform.services.court_selective_llm import extract_court_llm_fields
+from ocr_platform.services.court_field_provenance import finalize_court_fields
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback, decision_probabilities
 
 logger = get_logger(__name__)
@@ -29,6 +30,7 @@ _ABSENCE_REASONS = {
     "missing_procedure_end_date",
     "missing_next_session_date",
     "no_appointment_or_procedure_end",
+    "no_explicit_resolutive_date",
 }
 
 
@@ -40,6 +42,13 @@ def _threshold(config: dict, name: str) -> float:
 
 
 async def extract_court_regex_jev(
+    text: str, profile_config: dict, *, document_id: str, pipeline_run_id: str,
+) -> dict[str, dict]:
+    output = await _extract_court_fields(text, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id)
+    return finalize_court_fields(text, output)
+
+
+async def _extract_court_fields(
     text: str, profile_config: dict, *, document_id: str, pipeline_run_id: str,
 ) -> dict[str, dict]:
     """Run explicit direct-LLM fields in parallel with the verified regex path."""
@@ -198,7 +207,16 @@ async def _extract_verified_court_fields(
                                           "problem": proposals.problems.get(name) or "not_confirmed"}
             output[name] = item
             COURT_REGEX_JEV_FIELDS_COUNT.labels(field=name, status="llm_fallback").inc()
-    _validate_relationships(output)
+    # A model may return an ordinary optional null for a contradiction already
+    # established in the source. That must not erase the required review.
+    if ("financial_manager_full_name" in output
+            and proposals.problems.get("financial_manager_full_name") == "source_conflict_manager_is_debtor"):
+        reason = "В назначении управляющего повторено ФИО должника; противоречие в исходном акте требует ручной проверки"
+        output["financial_manager_full_name"].update(value=None, confidence=0, validation_issue=reason, reasoning=reason)
+        COURT_REGEX_JEV_FIELDS_COUNT.labels(field="financial_manager_full_name", status="source_conflict_review").inc()
+        logger.warning("court_manager_source_conflict", document_id=document_id, pipeline_run_id=pipeline_run_id,
+                       field="financial_manager_full_name", problem="source_conflict_manager_is_debtor")
+    _validate_relationships(output, text)
     for name, item in output.items():
         if fields_config[name].get("required", False) and item.get("value") in (None, "", []):
             item.setdefault("validation_issue", "Обязательное поле не найдено; требуется ручная проверка")
@@ -210,10 +228,32 @@ async def _extract_verified_court_fields(
     return output
 
 
-def _validate_relationships(output: dict[str, dict]) -> None:
+def _validate_relationships(output: dict[str, dict], text: str | None = None) -> None:
     def reject(name: str, reason: str):
         if name in output:
             output[name].update(value=None, confidence=0, validation_issue=reason, reasoning=reason)
+    # Contradictory dates can be printed in the source itself. Retain the
+    # extracted value and evidence; never silently infer a different year.
+    def date_value(name: str):
+        value = output.get(name, {}).get("value")
+        try:
+            return datetime.strptime(value, "%d.%m.%Y").date()
+        except (TypeError, ValueError):
+            return None
+    acceptance = date_value("application_acceptance_date")
+    for act_field in ("resolutive_part_date", "decision_date"):
+        act_date = date_value(act_field)
+        if acceptance is not None and act_date is not None and acceptance > act_date:
+            item = output["application_acceptance_date"]
+            reason = (f"Дата принятия заявления {item['value']} позже даты судебного акта "
+                      f"{output[act_field]['value']} ({act_field}); противоречие требует ручной проверки")
+            item["validation_issue"] = reason
+            item["reasoning"] = reason
+            break
+    if (output.get("early_report_required", {}).get("value") is True
+            and "early_report_deadline" in output
+            and output["early_report_deadline"].get("value") is None):
+        reject("early_report_deadline", "Обязанность представить отчёт подтверждена, срок не определён; требуется ручная проверка")
     if "next_session_date" in output and output["next_session_date"].get("value") is None:
         for name in ("next_session_time", "court_hearing_address"):
             if output.get(name, {}).get("value") is not None:
@@ -229,7 +269,17 @@ def _validate_relationships(output: dict[str, dict]) -> None:
         for name in ("procedure_end_date_is_calculated",):
             if output.get(name, {}).get("value") is not None:
                 reject(name, "Не определена дата окончания процедуры, необходимая для этого поля")
-    if "next_session_date" in output and output.get("early_report_deadline", {}).get("value") is not None:
+    if output.get("early_report_deadline", {}).get("value") is not None:
+        if text is not None:
+            from ocr_platform.services.court_regex_report_deadline import extract_report_deadline_candidates
+
+            deadline = extract_report_deadline_candidates(text, output.get("next_session_date", {}).get("value"))
+            if deadline.explicit_dates:
+                if deadline.selected is None or output["early_report_deadline"]["value"] != deadline.selected.value:
+                    reject("early_report_deadline", "Срок отчёта не совпадает с однозначной явно указанной датой; требуется ручная проверка")
+                return
+        if "next_session_date" not in output:
+            return
         try:
             expected = (datetime.strptime(output["next_session_date"]["value"], "%d.%m.%Y")
                         - timedelta(days=10)).strftime("%d.%m.%Y")

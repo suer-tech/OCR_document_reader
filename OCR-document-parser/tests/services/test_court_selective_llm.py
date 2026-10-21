@@ -160,4 +160,4 @@ def test_ambiguous_source_anchors_are_rejected():
 
 def test_procedure_type_format_matches_regex_path():
     result = service._field_output("procedure_type", field("процедура реализации имущества гражданина"), "source")
-    assert result["value"] == "реализация имущества гражданина"
+    assert result["value"] == "Реализация имущества"

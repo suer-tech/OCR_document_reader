@@ -174,15 +174,9 @@ def test_standalone_title_abstains_for_wrong_roles_and_ambiguous_dates(text):
     ("РЕЗОЛЮТИВНАЯ ЧАСТЬ РЕШЕНИЯ\n" + " " * 351 + "22.09.2026", "22.09.2026"),
 ])
 @pytest.mark.parametrize("heading", ["РЕШИЛ:", "Р Е Ш И Л:", "РЕШИЛ", "**Р Е Ш И Л:**"])
-def test_user_policy_date_of_current_act_when_operative_section_present(prefix, expected, heading):
+def test_full_act_header_does_not_fill_missing_resolutive_date(prefix, expected, heading):
     text = prefix + "\nСуд в составе судьи\nУСТАНОВИЛ:\nОбстоятельства дела\n" + heading + "\nПризнать банкротом."
-    candidate = extract(text).selected
-    assert candidate.value == expected
-    assert candidate.basis == "current_act_date_with_operative_section"
-    assert candidate.quote == text[candidate.start:candidate.end]
-    assert candidate.operative_heading_quote == text[
-        candidate.operative_heading_start:candidate.operative_heading_end]
-    assert candidate.requires_confirmation
+    assert extract(text).selected is None
 
 
 @pytest.mark.parametrize("body", [
@@ -222,11 +216,10 @@ def test_quoted_complete_foreign_act_is_not_current_decision():
     assert extract(text).selected is None
 
 
-def test_policy_registry_keeps_source_dependency_and_both_evidence_fragments():
+def test_registry_does_not_substitute_current_act_date():
     from ocr_platform.services.court_regex_candidates import extract_court_candidates
 
     text = "РЕШЕНИЕ\n24.09.2026\nСуд в составе судьи\nРЕШИЛ:\nПризнать банкротом."
-    candidate = extract_court_candidates(text, ["decision_date", "resolutive_part_date"]).fields["resolutive_part_date"]
-    assert candidate.dependencies == ("decision_date",)
-    assert candidate.metadata["basis"] == "current_act_date_with_operative_section"
-    assert candidate.metadata["operative_heading_quote"] == "РЕШИЛ:"
+    result = extract_court_candidates(text, ["decision_date", "resolutive_part_date"])
+    assert "resolutive_part_date" not in result.fields
+    assert result.problems["resolutive_part_date"] == "no_explicit_resolutive_date"

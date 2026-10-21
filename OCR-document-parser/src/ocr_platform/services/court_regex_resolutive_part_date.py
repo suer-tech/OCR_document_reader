@@ -1,4 +1,4 @@
-"""Extract resolutive dates, including the user's current-act-date convention.
+"""Extract explicit resolutive dates without substituting a full-act date.
 
 Pure text extraction. Candidates remain unconfirmed for the downstream verifier;
 the general decision/procedure date selection policy is not changed here.
@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ocr_platform.services import court_decision_dates as dates
+from ocr_platform.services.court_decision_sections import RESOLUTIVE_ONLY_TITLE
 
 _LABEL = re.compile(
     r"(?:^|(?<=[;.]))[^\S\r\n]*(?:"
@@ -28,11 +29,7 @@ _HISTORY = re.compile(
     r"\b(?:ранее|согласно\s+(?:решению|определению)|"
     r"(?:решением|определением|постановлением)\s+(?:суда\s+)?от)\b", re.I,
 )
-_STANDALONE_TITLE = re.compile(
-    r"^[^\S\r\n]*[*_(]*резолютивная\s+часть"
-    r"(?:\s+[*_]*(?:решения|определения)[*_]*)?[*_)]*[^\S\r\n]*\r?$",
-    re.I | re.M,
-)
+_STANDALONE_TITLE = RESOLUTIVE_ONLY_TITLE
 _ACT_LINE = re.compile(
     r"^[^\S\r\n]*[*_]*(?:р\s*е\s*ш\s*е\s*н\s*и\s*[ея]|"
     r"о\s*п\s*р\s*е\s*д\s*е\s*л\s*е\s*н\s*и\s*[ея])[*_]*"
@@ -48,17 +45,6 @@ _SIGNING_DATE = re.compile(r"\b(?:подписан\w*|сертификат\w*|"
 _MOTIVATION = re.compile(r"\bу\s*с\s*т\s*а\s*н\s*о\s*в\s*и\s*л\b", re.I)
 _OPERATIVE = re.compile(r"\b(?:р\s*е\s*ш\s*и\s*л|"
                         r"о\s*п\s*р\s*е\s*д\s*е\s*л\s*и\s*л)\b", re.I)
-_OPERATIVE_HEADING = re.compile(
-    r"^[^\S\r\n]*[#*_]*р[^\S\r\n]*е[^\S\r\n]*ш[^\S\r\n]*и[^\S\r\n]*л"
-    r"\b[*_]*[^\S\r\n]*(?::|\r?$)", re.I | re.M,
-)
-_OTHER_OPERATIVE_HEADING = re.compile(
-    r"^[^\S\r\n]*[#*_]*(?:о\s*п\s*р\s*е\s*д\s*е\s*л\s*и\s*л|"
-    r"п\s*о\s*с\s*т\s*а\s*н\s*о\s*в\s*и\s*л)\b[*_]*[^\S\r\n]*(?::|\r?$)",
-    re.I | re.M,
-)
-
-
 @dataclass(frozen=True)
 class ResolutivePartDateCandidate:
     value: str
@@ -73,52 +59,6 @@ class ResolutivePartDateResult:
     selected: ResolutivePartDateCandidate | None
     candidates: tuple[ResolutivePartDateCandidate, ...]
     problem: str = ""
-
-
-@dataclass(frozen=True)
-class ActDateByOperativeSectionCandidate(ResolutivePartDateCandidate):
-    """A convention-based value: date evidence plus a separate section anchor."""
-
-    basis: str = "current_act_date_with_operative_section"
-    operative_heading_start: int = 0
-    operative_heading_end: int = 0
-    operative_heading_quote: str = ""
-
-
-def _act_date_with_operative_section(
-    text: str, act: dates.DecisionDateCandidates,
-) -> ResolutivePartDateResult:
-    # Technical signature blocks cannot establish the presence of this section.
-    clean = dates._mask_technical(text)
-    title = _ACT_LINE.search(clean[:4000]) or _STANDALONE_TITLE.search(clean[:4000])
-    if title and _QUOTED_TITLE.search(clean[:title.start()]):
-        return ResolutivePartDateResult(None, (), "quoted_current_act_header")
-    headings = [match for match in _OPERATIVE_HEADING.finditer(clean)
-                if not _QUOTED_TITLE.search(
-                    clean[max(0, clean.rfind("\n", 0, max(0, match.start()-1))):match.start()]
-                )]
-    if not headings:
-        return ResolutivePartDateResult(None, (), "no_explicit_resolutive_date")
-    if len(headings) != 1 or _OTHER_OPERATIVE_HEADING.search(clean):
-        return ResolutivePartDateResult(None, (), "ambiguous_operative_sections")
-    heading = headings[0]
-    body = dates._BODY.search(clean)
-    if body and any(body.start() < title.start() < heading.start()
-                    for title in _STANDALONE_TITLE.finditer(clean)):
-        return ResolutivePartDateResult(None, (), "quoted_resolutive_act_in_body")
-    if act.selected is None:
-        return ResolutivePartDateResult(None, (), act.problem)
-    if _SIGNING_DATE.search(act.selected.quote):
-        return ResolutivePartDateResult(None, (), "technical_act_date")
-    if act.selected.end > heading.start():
-        return ResolutivePartDateResult(None, (), "no_current_act_date_before_operative_section")
-    item = act.selected
-    candidate = ActDateByOperativeSectionCandidate(
-        item.value, item.quote, item.start, item.end,
-        operative_heading_start=heading.start(), operative_heading_end=heading.end(),
-        operative_heading_quote=text[heading.start():heading.end()],
-    )
-    return ResolutivePartDateResult(candidate, (candidate,))
 
 
 def _standalone_title_date(text: str, header: str) -> ResolutivePartDateResult:
@@ -169,7 +109,7 @@ def _standalone_title_date(text: str, header: str) -> ResolutivePartDateResult:
 
 
 def extract_resolutive_part_date_candidates(text: str) -> ResolutivePartDateResult:
-    """Prefer an explicit date; otherwise apply the approved document convention.
+    """Use an explicit date or a standalone resolutive act's own header date.
 
     Reuse the existing date parser and its calendar validation. Limit additional
     label variants to the same current-act header, preserving original offsets.
@@ -217,7 +157,7 @@ def extract_resolutive_part_date_candidates(text: str) -> ResolutivePartDateResu
         standalone = _standalone_title_date(text, header)
         if standalone.selected is not None:
             return standalone
-        return _act_date_with_operative_section(text, base)
+        return standalone
     if base.problem in {"invalid_full_text_date", "conflicting_full_text_dates"}:
         return ResolutivePartDateResult(None, candidates, base.problem)
     full = [item for item in base.candidates if item.role == "full_text"]

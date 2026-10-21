@@ -7,7 +7,7 @@ infer geography, repair place names, or use other extracted fields.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,16 @@ _NAME = re.compile(
 _MARKER = re.compile(
     r"(?P<combined>дат[аы]\s+и\s+мест[оа]\s+рождени[яе])|"
     r"мест[оа]\s+(?:рождени[яе]|рожд\.?)(?:\s+должник[ауы]?)?|"
-    r"\bм\.\s*р\.|\bурож\.|\bрод\.|урожен(?:ец|ца|ка|ки|ку|цем|кой)|родил(?:ся|ась)",
+    r"\bм\.\s*р\.|\bурож\.|\bрод\.|"
+    # Court templates retain alternative gender endings, sometimes with a
+    # missing closing parenthesis. Consume only known paired endings and only
+    # at a token boundary; they are part of the label, never the place name.
+    r"\bурожен(?:"
+    r"ец(?:\s*\(\s*ка\s*\)?(?=\s|[,;:]|$))?|"
+    r"ца(?:\s*\(\s*ки\s*\)?(?=\s|[,;:]|$))?|"
+    r"цу(?:\s*\(\s*ке\s*\)?(?=\s|[,;:]|$))?|"
+    r"цем(?:\s*\(\s*кой\s*\)?(?=\s|[,;:]|$))?|"
+    r"ка|ки|ку|кой)(?![А-Яа-яЁё])|родил(?:ся|ась)",
     re.I,
 )
 # Positional identity syntax: DOB, literal settlement, next identity field.
@@ -175,6 +184,98 @@ def _normalize(raw: str) -> str:
     return re.sub(r"\s+([,;])", r"\1", value).strip()
 
 
+_SETTLEMENT = re.compile(
+    r"^(?:г\.|гор\.|город\b|города\b|с\.|сел\.|село\b|села\b|д\.|дер\.|"
+    r"деревня\b|деревни\b|п\.|пос\.|пос[её]лок\b|пос[её]лка\b|пгт\.?|"
+    r"ст\.|ст-ца\b|станица\b|станицы\b|х\.|хутор\b|хутора\b|"
+    r"р\.\s*п\.|р\.\s*пос\.|раб\.\s*пос\.)\s*", re.I,
+)
+_DISTRICT_PART = re.compile(r"[А-Яа-яЁё-]+(?:\s+[А-Яа-яЁё-]+){0,2}\s+(?:р-н[а]?|р-он[а]?|район[а]?)", re.I)
+_REGION_PART = re.compile(
+    r"(?:[А-Яа-яЁё-]+\s+){1,3}(?:край|края|обл\.|область|области|АССР|ССР|АО)|"
+    r"(?:Республик[аи]|Респ\.)\s+[А-Яа-яЁё() -]+|"
+    r"(?:[А-Яа-яЁё-]+\s+){1,3}(?:Республик[аи]|Респ\.)", re.I,
+)
+_COUNTRY_PART = re.compile(r"СССР|РСФСР|РФ|Россия|Российская\s+Федерация", re.I)
+
+
+def _place_parts(value: str) -> list[str]:
+    """Only explicit separators outside balanced geographic parentheses."""
+    parts, start, depth = [], 0, 0
+    for index, char in enumerate(value):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char in ",;" and depth == 0:
+            parts.append(value[start:index].strip())
+            start = index + 1
+    parts.append(value[start:].strip())
+    return [part for part in parts if part]
+
+
+def _place_part_kind(part: str) -> int | None:
+    if _SETTLEMENT.match(part):
+        return 0
+    if _DISTRICT_PART.fullmatch(part):
+        return 1
+    if _REGION_PART.fullmatch(part):
+        return 2
+    if _COUNTRY_PART.fullmatch(part):
+        return 3
+    return None
+
+
+def _dependent_region(part: str) -> str:
+    """Inflect only simple, explicitly labelled region adjectives when moved."""
+    part = re.sub(r"^Республика\b", "Республики", part, flags=re.I)
+    part = re.sub(r"\b([А-Яа-яЁё-]+)ий\s+край$", r"\1ого края", part, flags=re.I)
+    part = re.sub(
+        r"\b([А-Яа-яЁё-]+)ая\s+(область|обл\.|Республика)$",
+        lambda m: m[1] + "ой " + ("Республики" if m[2].casefold() == "республика" else
+                                  "области" if m[2].casefold() == "область" else m[2]),
+        part, flags=re.I,
+    )
+    return part
+
+
+def _operator_format(value: str) -> str:
+    """Format source geography; never complete or spell-correct a place name.
+
+    This runs after conflict/identity selection, not as an equivalence key.
+    An unknown or repeated component type prevents component reordering.
+    """
+    value = re.sub(r"\b([А-Яа-яЁё-]+(?:ского|цкого|ного))(?=р-(?:на|н)\b)", r"\1 ", value)
+    value = re.sub(r"\bр(на|н)\b", r"р-\1", value, flags=re.I)
+    value = re.sub(r"\b(р-на|р-н|р-она|р-он)\.(?=\s|[,;]|$)", r"\1", value, flags=re.I)
+    value = re.sub(r"\b(обл|респ)(?![А-Яа-яЁё.])", r"\1.", value, flags=re.I)
+    value = re.sub(
+        r"\b(г|гор|д|дер|с|сел|п|пос|пгт|ст|х|обл|респ)\.\s*(?=[А-Яа-яЁё])",
+        lambda m: m[1].lower() + ". ", value, flags=re.I,
+    )
+    parts = [re.sub(r"^([гсдпх])\s+(?=[А-ЯЁ])", lambda m: m[1].lower() + ". ", part)
+             for part in _place_parts(value)]
+    kinds = [_place_part_kind(part) for part in parts]
+    if (len(parts) > 1 and kinds.count(0) == 1 and None not in kinds
+            and len(set(kinds)) == len(kinds)):
+        locality_index = kinds.index(0)
+        parts = [(_dependent_region(part) if kind == 2 and i < locality_index else part)
+                 for i, (part, kind) in enumerate(zip(parts, kinds))]
+        parts = [part for _, part in sorted(zip(kinds, parts))]
+    abbreviations = {
+        "город": "гор.", "города": "гор.", "село": "с.", "села": "с.",
+        "деревня": "д.", "деревни": "д.", "поселок": "пос.", "поселка": "пос.",
+        "станица": "ст.", "станицы": "ст.", "хутор": "х.", "хутора": "х.",
+    }
+    parts = [re.sub(
+        r"^(город(?:а)?|сел[оа]|деревн[яи]|пос[её]л(?:ок|ка)|станиц[аы]|хутор(?:а)?)\b\s*",
+        lambda m: abbreviations[m[1].casefold().replace("ё", "е")] + " ", part, flags=re.I,
+    ) for part in parts]
+    # Commas within parentheses do not delimit sortable components either.
+    result = re.sub(r"\s+", " ", re.sub(r"[,;]", " ", " ".join(parts))).strip()
+    return re.sub(r"\s+\.+$", "", result)
+
+
 def _value_end(text: str, start: int) -> int:
     limit = min(len(text), start + 350)
     stop = _STOP.search(text, start, limit)
@@ -230,6 +331,19 @@ def _equivalent(value: str) -> str:
     value = re.sub(r"\bгород\b|\bгор\.", "г.", value)
     value = re.sub(r"\bобласт[ьи]\b|\bобл\.?(?!\w)", "обл", value)
     return re.sub(r"[\s,.;]", "", value)
+
+
+def _balanced_place_parentheses(value: str) -> bool:
+    """Reject damaged candidates instead of guessing away unknown fragments."""
+    depth = 0
+    for char in value:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
 
 
 def _same_identity_prefix_candidate(
@@ -322,6 +436,8 @@ def extract_debtor_birth_place_candidates(text: str) -> DebtorBirthPlaceResult:
                 continue
         if not raw or len(raw) >= 340 or not re.search(r"[А-Яа-яЁё]", raw):
             continue
+        if not _balanced_place_parentheses(raw):
+            continue
         if re.search(
             r"\b(?:рождения|ФИО|фамилия|имя|отчество)\b|\d{6,}|\b[АA]\d{2,3}\s*[-–]",
             raw,
@@ -353,4 +469,6 @@ def extract_debtor_birth_place_candidates(text: str) -> DebtorBirthPlaceResult:
         if candidates
         else "not_found"
     )
-    return DebtorBirthPlaceResult(selected, candidates, problem)
+    formatted = [replace(candidate, value=_operator_format(candidate.value)) for candidate in candidates]
+    selected = formatted[candidates.index(selected)] if selected is not None else None
+    return DebtorBirthPlaceResult(selected, formatted, problem)

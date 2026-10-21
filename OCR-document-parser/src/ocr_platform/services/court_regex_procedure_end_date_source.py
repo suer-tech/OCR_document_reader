@@ -13,7 +13,7 @@ from ocr_platform.services.court_decision_legacy_rules import (
 )
 from ocr_platform.services.court_procedure_duration import _TERM, _number
 
-SourceValue = Literal["explicit_date", "explicit_duration", "not_found"]
+SourceValue = Literal["explicit_date", "explicit_duration", "not_specified"]
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ def extract_procedure_end_date_source_candidates(text: str) -> ProcedureEndDateS
     """Classify explicit current orders; every result still needs confirmation.
 
     The full document is evidence for absence. Missing or conflicting terms are
-    deliberately different states; conflict never becomes a not_found value.
+    deliberately different states; conflict never becomes a not_specified value.
     """
     heading = _HEADING.search(text)
     if heading:
@@ -128,5 +128,5 @@ def extract_procedure_end_date_source_candidates(text: str) -> ProcedureEndDateS
         return ProcedureEndDateSourceResult(dates[0][1], candidates)
     if durations:
         return ProcedureEndDateSourceResult(durations[0][1], candidates)
-    candidate = ProcedureEndDateSourceCandidate("not_found", text, 0, len(text), absence=True)
+    candidate = ProcedureEndDateSourceCandidate("not_specified", text, 0, len(text), absence=True)
     return ProcedureEndDateSourceResult(candidate, (candidate,), "no_explicit_current_procedure_term")

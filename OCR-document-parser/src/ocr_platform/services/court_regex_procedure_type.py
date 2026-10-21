@@ -71,8 +71,8 @@ def extract_procedure_type_candidates(text: str) -> ProcedureTypeResult:
     cancelled = set()
     previous_end = 0
     for mention in mentions:
-        value = ("реализация имущества гражданина" if mention["realization"]
-                 else "реструктуризация долгов")
+        value = ("Реализация имущества" if mention["realization"]
+                 else "Реструктуризация долгов")
         # A directive cannot inherit an action belonging to another procedure.
         left = max(previous_end, mention.start() - 1800)
         previous_end = mention.end()

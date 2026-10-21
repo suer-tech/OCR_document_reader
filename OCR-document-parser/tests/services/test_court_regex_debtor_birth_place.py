@@ -3,6 +3,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from ocr_platform.services.court_regex_debtor_birth_place import (
+    _operator_format,
     extract_debtor_birth_place_candidates,
 )
 
@@ -29,12 +30,53 @@ def test_explicit_markers(marker):
     text = identity("г. Омск, Омская обл.", marker)
     result = extract_debtor_birth_place_candidates(text)
     assert result.problem is None
-    assert result.selected.value == "г. Омск, Омская обл."
+    assert result.selected.value == "г. Омск Омская обл."
     assert result.selected.requires_confirmation is True
     for candidate in result.candidates:
         assert text[candidate.start : candidate.end] == candidate.quote
         assert "Иванова Ивана Ивановича" in candidate.quote
         assert marker in candidate.quote
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "уроженец(ка)", "уроженца(ки)", "уроженцу(ке)", "уроженцем(кой)",
+        "уроженец(ка", "уроженца(ки", "уроженцу(ке", "уроженцем(кой",
+        "УРОЖЕНЦА(КИ", "уроженца ( ки ):", "уроженца(\nки\n",
+    ],
+)
+def test_gender_template_ending_is_label_not_birthplace(marker):
+    place = "с. Филимоново Чебаркульского района Челябинской области"
+    text = identity(place, marker)
+    candidate = extract_debtor_birth_place_candidates(text).selected
+    assert candidate.value == place
+    assert marker in candidate.quote
+    assert candidate.quote == text[candidate.start:candidate.end]
+    assert candidate.requires_confirmation is True
+
+
+def test_gender_template_preserves_real_geographic_parentheses():
+    text = identity("Республика Саха (Якутия), с. Чурапча", "уроженца(ки")
+    candidate = extract_debtor_birth_place_candidates(text).selected
+    assert candidate.value == "с. Чурапча Республики Саха (Якутия)"
+    assert candidate.quote == text[candidate.start:candidate.end]
+
+
+@pytest.mark.parametrize("marker", ["уроженца(неизвестно", "уроженец(другой", "уроженцами"])
+def test_unknown_template_damage_is_not_proposed(marker):
+    result = extract_debtor_birth_place_candidates(identity("г. Омск", marker))
+    assert result.selected is None
+    assert result.problem == "not_found"
+
+
+def test_repaired_template_does_not_hide_conflicting_birthplaces():
+    result = extract_debtor_birth_place_candidates(
+        identity("г. Омск", "уроженца(ки") + identity("г. Томск")
+    )
+    assert result.selected is None
+    assert result.problem == "conflicting_debtor_birth_places"
+    assert {c.value for c in result.candidates} == {"г. Омск", "г. Томск"}
 
 
 @pytest.mark.parametrize(
@@ -73,7 +115,7 @@ def test_preserves_balanced_geography_parentheses():
     result = extract_debtor_birth_place_candidates(
         identity("Республика Саха (Якутия), с. Чурапча")
     )
-    assert result.selected.value == "Республика Саха (Якутия), с. Чурапча"
+    assert result.selected.value == "с. Чурапча Республики Саха (Якутия)"
 
 
 def test_removes_metadata_open_parenthesis():
@@ -87,7 +129,7 @@ def test_semicolons_inside_literal_place():
     result = extract_debtor_birth_place_candidates(
         identity("Курская обл.; Конышевский; Захарково")
     )
-    assert result.selected.value == "Курская обл.; Конышевский; Захарково"
+    assert result.selected.value == "Курская обл. Конышевский Захарково"
 
 
 @pytest.mark.parametrize(
@@ -216,7 +258,7 @@ def test_abbreviated_born_with_date():
 )
 def test_positional_debtor_identity_block(text):
     candidate = extract_debtor_birth_place_candidates(text).selected
-    assert candidate.value in {"г. Омск", "г. Омск, Омской области"}
+    assert candidate.value in {"г. Омск", "г. Омск Омской области"}
     assert candidate.quote == text[candidate.start : candidate.end]
     assert candidate.requires_confirmation
 
@@ -275,7 +317,7 @@ def test_full_literal_place_beats_abbreviated_repeat_for_same_person_and_inn():
         "Заявление Рамазановой Ларисы Гасановны (место рождения: РД, ИНН 123456789012) о признании банкротом."
     )
     result = extract_debtor_birth_place_candidates(text)
-    assert result.selected.value == "РД, г. Избербаш"
+    assert result.selected.value == "РД г. Избербаш"
     assert len(result.candidates) == 2
     assert result.selected.quote == text[result.selected.start : result.selected.end]
 
@@ -307,3 +349,93 @@ def test_distinct_explicit_bankruptcy_persons_remain_conflicting():
     result = extract_debtor_birth_place_candidates(text)
     assert result.selected is None
     assert len(result.candidates) == 2
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("Краснодарский край, Белоглинского района, станица Успенская",
+         "ст. Успенская Белоглинского района Краснодарского края"),
+        ("Московская область, Северный район, город Лесной",
+         "гор. Лесной Северный район Московской области"),
+        ("СССР, Омская обл., г.Омск", "г. Омск Омской обл. СССР"),
+        ("Омского района; с.Лесное; Омской области",
+         "с. Лесное Омского района Омской области"),
+        ("гор. Касли, Челябинской обл.", "гор. Касли Челябинской обл."),
+        ("гор.Горбатов, Павловского р-на., Горьковской обл.",
+         "гор. Горбатов Павловского р-на Горьковской обл."),
+        ("с.Кукиево Рыбно-Слободского р-на Республики Татарстан",
+         "с. Кукиево Рыбно-Слободского р-на Республики Татарстан"),
+        ("дер. Ерофеево Вязниковскогор-на Владимирской области",
+         "дер. Ерофеево Вязниковского р-на Владимирской области"),
+        ("с. Долинское Ананьевский р-он Одесская обл",
+         "с. Долинское Ананьевский р-он Одесская обл."),
+        ("поселок Лесной, Омская обл.", "пос. Лесной Омская обл."),
+        ("посёлка Лесного, Омская обл.", "пос. Лесного Омская обл."),
+        ("села Чурапча Чурапчинского района Республики Саха (Якутия)",
+         "с. Чурапча Чурапчинского района Республики Саха (Якутия)"),
+        ("деревня Лесная", "д. Лесная"),
+        ("хутора Лесного", "х. Лесного"),
+        ("Удмуртская Республика, г. Ижевск", "г. Ижевск Удмуртской Республики"),
+        ("г Нальчик, КБАССР", "г. Нальчик КБАССР"),
+        ("с Баксаненок, Баксанского района КБР", "с. Баксаненок Баксанского района КБР"),
+        ("с. Майртуп, Шалинского рна, Чеченской Республики",
+         "с. Майртуп Шалинского р-на Чеченской Республики"),
+        ("гор. Лобня, .", "гор. Лобня"),
+    ],
+)
+def test_operator_format_keeps_original_evidence_and_is_idempotent(source, expected):
+    text = identity(source)
+    candidate = extract_debtor_birth_place_candidates(text).selected
+    assert candidate.value == expected
+    assert candidate.quote == text[candidate.start:candidate.end]
+    assert source in candidate.quote
+    assert candidate.requires_confirmation is True
+    assert _operator_format(candidate.value) == candidate.value
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("Курская обл.; Конышевский; Захарково", "Курская обл. Конышевский Захарково"),
+        ("РД, г. Избербаш", "РД г. Избербаш"),
+        ("Омская обл., г. Омск, г. Лесной", "Омская обл. г. Омск г. Лесной"),
+        ("Омская обл., Северный район, Южный район, с. Лесное",
+         "Омская обл. Северный район Южный район с. Лесное"),
+        ("Республика Саха (Якутия, Россия), с. Чурапча",
+         "Республика Саха (Якутия Россия) с. Чурапча"),
+    ],
+)
+def test_unknown_or_repeated_components_are_not_guessed(source, expected):
+    assert extract_debtor_birth_place_candidates(identity(source)).selected.value == expected
+
+
+@pytest.mark.parametrize(
+    "place",
+    [
+        "с. Желябовка Нижнегорского р-на Авт. Респ. Крым",
+        "с. Дагбаш Шамильского р-на Дагестанской АССР",
+        "гор. Чистополь ТАССР",
+        "г. Елизово Камчатской области",
+        "пос. Пугачево Мулопургинского р-на Удмуртской Республики",
+        "д. Наратасы Шаранский район Башкирская АССР",
+        "с. Степное Степновского р-на Ставропольского края",
+        "СССР ГОР МОСКВА",
+    ],
+)
+def test_format_does_not_follow_unsupported_operator_content_changes(place):
+    candidate = extract_debtor_birth_place_candidates(identity(place)).selected
+    assert candidate is not None
+    assert "Украина" not in candidate.value
+    if "СССР" in place:
+        assert "СССР" in candidate.value
+    else:
+        assert candidate.value.casefold() == place.casefold()
+
+
+def test_presentation_cannot_mask_a_preexisting_conflict():
+    text = identity("станица Лесная") + identity("ст. Лесная")
+    result = extract_debtor_birth_place_candidates(text)
+    assert {c.value for c in result.candidates} == {"ст. Лесная"}
+    assert result.problem == "conflicting_debtor_birth_places"
+    assert result.selected is None

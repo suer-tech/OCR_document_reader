@@ -13,7 +13,7 @@ from ocr_platform.services.court_regex_procedure_end_date_source import (
     ("Ввести процедуру сроком на шесть месяцев.", "explicit_duration"),
     ("Открыть процедуру на 6 (шесть) месяцев.", "explicit_duration"),
     ("Ввести процедуру на шесть месяцев до 20.03.2027.", "explicit_date"),
-    ("Ввести процедуру.", "not_found"),
+    ("Ввести процедуру.", "not_specified"),
 ])
 @pytest.mark.parametrize("heading", ["РЕШИЛ: ", "О П Р Е Д Е Л И Л:\n", "Р Е Ш И Л\n"])
 def test_current_terms(order, expected, heading):
@@ -40,7 +40,7 @@ def test_current_terms(order, expected, heading):
 def test_absence_uses_the_complete_document(unrelated):
     text = "РЕШИЛ: Ввести процедуру. " + unrelated
     result = extract(text)
-    assert result.selected.value == "not_found"
+    assert result.selected.value == "not_specified"
     assert result.selected.absence is True
     assert result.selected.quote == text
     assert (result.selected.start, result.selected.end) == (0, len(text))
@@ -56,7 +56,7 @@ def test_conflict_never_becomes_not_found(orders):
     result = extract("РЕШИЛ: " + orders)
     assert result.selected is None
     assert result.problem == "conflicting_procedure_terms"
-    assert all(c.value != "not_found" for c in result.candidates)
+    assert all(c.value != "not_specified" for c in result.candidates)
 
 
 def test_current_reasoning_and_history():
@@ -77,6 +77,6 @@ def test_no_header_standalone_command():
 
 def test_empty_document_is_unconfirmed_absence():
     result = extract("")
-    assert result.selected.value == "not_found"
+    assert result.selected.value == "not_specified"
     assert result.selected.quote == ""
     assert result.selected.requires_confirmation

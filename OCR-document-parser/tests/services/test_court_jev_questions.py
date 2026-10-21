@@ -53,11 +53,11 @@ def test_date_basis_survives_both_question_styles(concrete):
     date = "16.12.2026"
     fallback = verification_question("next_session_date", proposal(date, selection_basis="procedure_end_fallback"), concrete=concrete)["instructions"]
     appointment = verification_question("next_session_date", proposal(date, selection_basis="explicit_appointment"), concrete=concrete)["instructions"]
-    substitute = verification_question("resolutive_part_date", proposal(date, basis="current_act_date_with_operative_section"), concrete=concrete)["instructions"]
+    resolutive = verification_question("resolutive_part_date", proposal(date), concrete=concrete)["instructions"]
     assert "окончания" in fallback and "отсутствии явно назначенной" in fallback
     assert appointment.startswith("Назначено ли")
-    assert "отсутствии отдельной даты" in substitute and "РЕШИЛ" in substitute
-    for text in (fallback, appointment, substitute):
+    assert "дате резолютивной части" in resolutive and "отсутствии отдельной даты" not in resolutive
+    for text in (fallback, appointment, resolutive):
         assert ('"16.12.2026"' in text) is concrete
         assert ("fields['" in text) is not concrete
 
@@ -91,6 +91,16 @@ def test_section_question_references_full_candidate_without_copying_its_edges(na
     assert "LONG_SECTION_" not in text
     if name == "resolutive_part":
         assert "Подпись судьи может входить" in text
+    else:
+        assert "Изучив материалы дела" in text
+        assert "судом установлены следующие обстоятельства" in text
+        assert "внутри текста не сокращает" in text
+
+
+def test_case_number_question_checks_complete_tail():
+    text = verification_question("case_number", proposal('А40-123/2026-18-819«Ф»'))["instructions"]
+    assert "полный номер" in text and "хвосты" in text
+    assert "«Ф»" in text
 
 
 def test_concrete_candidate_is_data_even_when_it_contains_quotes_and_braces():
