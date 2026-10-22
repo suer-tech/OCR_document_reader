@@ -49,6 +49,37 @@ class LlmJsonResult:
     avg_total_tokens: float | None
 
 
+class LlmResponseFailure(ValueError):
+    """A provider reply is not a field extraction or a finding of absence."""
+
+    def __init__(self, code: str, *, terminal: bool = False):
+        super().__init__(code)
+        self.code = code
+        self.terminal = terminal
+
+
+def _chat_response_text(data: Any) -> str:
+    if not isinstance(data, dict):
+        raise LlmResponseFailure("invalid_response")
+    if data.get("error"):
+        raise LlmResponseFailure("provider_error")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise LlmResponseFailure("empty_choices")
+    choice = choices[0]
+    message = choice.get("message") or {}
+    if not isinstance(message, dict):
+        raise LlmResponseFailure("invalid_message")
+    if message.get("refusal") or choice.get("finish_reason") == "content_filter" or choice.get("native_finish_reason") == "refusal":
+        raise LlmResponseFailure("provider_refusal", terminal=True)
+    if choice.get("finish_reason") == "length":
+        raise LlmResponseFailure("truncated_response")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise LlmResponseFailure("empty_content")
+    return content
+
+
 def _truncate_text(value: str, limit: int = 50000) -> str:
     if len(value) <= limit:
         return value
@@ -156,7 +187,10 @@ def call_llm_json_with_fallback(
     max_tokens: int | None = None,
     decisions_questions: dict[str, dict[str, Any]] | None = None,
     decisions_state: str | dict[str, Any] | None = None,
+    failure_details: dict[str, Any] | None = None,
 ) -> LlmJsonResult | None:
+    if failure_details is not None:
+        failure_details.clear()
     resolved_api_key, resolved_base_url = _resolve_provider_credentials(
         provider, api_key, base_url
     )
@@ -248,9 +282,7 @@ def call_llm_json_with_fallback(
                     parsed = data
                     response_text = json.dumps(data, ensure_ascii=False)
                 else:
-                    response_text = (
-                        data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    )
+                    response_text = _chat_response_text(data)
                     parsed = json.loads(response_text)
                 usage = _extract_token_usage(data)
 
@@ -347,6 +379,10 @@ def call_llm_json_with_fallback(
                     avg_total_tokens=avg_total_tokens,
                 )
             except Exception as exc:
+                if failure_details is not None:
+                    failure_details.update(code=exc.code if isinstance(exc, LlmResponseFailure) else type(exc).__name__,
+                                           terminal=isinstance(exc, LlmResponseFailure) and exc.terminal,
+                                           model=model_name)
                 attempt_latency_ms = round((perf_counter() - attempt_started) * 1000, 2)
                 attempts.append(
                     {
@@ -367,6 +403,8 @@ def call_llm_json_with_fallback(
                     attempt_latency_ms=attempt_latency_ms,
                     error=str(exc),
                 )
+                if isinstance(exc, LlmResponseFailure) and exc.terminal:
+                    break
 
     total_latency_ms = round((perf_counter() - call_started) * 1000, 2)
     inc_llm_call(task_name=task_name, provider=provider, status="failed")

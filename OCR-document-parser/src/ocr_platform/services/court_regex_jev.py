@@ -128,7 +128,8 @@ async def _extract_verified_court_fields(
             if (name not in proposals.fields and not fields_config[name].get("required", False)
                     and proposals.problems.get(name) in _ABSENCE_REASONS):
                 proposals.fields[name] = CourtCandidate(None, text, 0, len(text), "court_confirm_absence",
-                                                        {"absence": True, "reason": proposals.problems[name]})
+                                                        {"absence": True, "reason": proposals.problems[name]},
+                                                        ("procedure_end_date",) if name == "procedure_end_date_is_calculated" else ())
     COURT_REGEX_JEV_DURATION_SECONDS.labels(stage="regex").observe(perf_counter() - extraction_started)
     logger.info("court_regex_candidates_ready", document_id=document_id, pipeline_run_id=pipeline_run_id,
                 requested_fields=requested, candidate_fields=list(proposals.fields), problems=proposals.problems)
@@ -269,6 +270,17 @@ def _validate_relationships(output: dict[str, dict], text: str | None = None) ->
         for name in ("procedure_end_date_is_calculated",):
             if output.get(name, {}).get("value") is not None:
                 reject(name, "Не определена дата окончания процедуры, необходимая для этого поля")
+    elif output.get("procedure_end_date", {}).get("value") and "procedure_end_date_is_calculated" in output:
+        flag = output["procedure_end_date_is_calculated"]
+        if text is not None:
+            from ocr_platform.services.court_decision_legacy_rules import extract_procedure_end_date_with_meta
+
+            source_end, calculated = extract_procedure_end_date_with_meta(text)
+            if source_end == output["procedure_end_date"]["value"] and calculated is not None:
+                if flag.get("value") is not calculated:
+                    reject("procedure_end_date_is_calculated", "Признак расчёта не согласован с основанием даты окончания; требуется ручная проверка")
+            elif flag.get("value") is None:
+                reject("procedure_end_date_is_calculated", "Для установленной даты окончания не определён признак расчёта; требуется ручная проверка")
     if output.get("early_report_deadline", {}).get("value") is not None:
         if text is not None:
             from ocr_platform.services.court_regex_report_deadline import extract_report_deadline_candidates

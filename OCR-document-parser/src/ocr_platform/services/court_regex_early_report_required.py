@@ -30,7 +30,7 @@ _DATE = r"(?:\d{1,2}\s*[./]\s*\d{1,2}\s*[./]\s*\d{2,4}|[«\"“”]?\s*\d{1,2}[�
 _ADVANCE = re.compile(
     r"\bзаблаговременн\w*|\bдо\s+окончания\s+(?:срока\s+)?процедур\w*|"
     r"\bдо\s+истечения\s+[а-яё-]*месячного\s+срока|"
-    r"\b(?:к|до)\s+(?:дате\s+судебного\s+заседания|указанной\s+(?:выше\s+)?даты)|"
+    r"\b(?:к|до)\s+(?:дате\s+судебного\s+заседания|указанной\s+(?:выше\s+)?дат[еы])|"
     r"\bне\s+позднее\s+[а-яё\d]+\s+(?:рабочих\s+)?(?:дней|месяцев)\s+с\s+даты|"
     r"\b(?:не\s+позднее|не\s+менее)\b.{0,100}?\bдо\b|"
     r"\bза\s+(?:\d+|[а-яё]+)(?:\s+\([^)]{1,25}\))?\s+(?:(?:рабоч\w*|календарн\w*)\s+)?"
@@ -50,6 +50,7 @@ _OTHER_ACTOR = re.compile(r"^(?:\d+[.)]?\s*)?(?:лицам,|должнику\b|�
 _UNSUPPORTED_TIME = re.compile(r"\bк\s+(?:судебному\s+заседанию|заседанию)|\bв\s+порядке\s+подготовки\s+к\s+судебному", re.I)
 _BOUNDARY = re.compile(
     r"[.!?](?=\s+[А-ЯЁ])|;(?=\s*(?:Финансов|Арбитраж|Конкурс|Обязать|Назначить|Признать))|"
+    r"\n[ \t]*[-–—][ \t]+|"
     r"(?=\b(?:Финансовому|Арбитражному|Конкурсному)\s+управляющему\b)"
 )
 
@@ -71,6 +72,8 @@ def extract_early_report_required(text: str) -> EarlyReportCandidate:
         if right - left > 6000:
             continue
         clause = operative[left:right]
+        if re.search(r"\bв\s+случае\s+назначения\b", clause, re.I):
+            continue
         if _UNSUPPORTED_TIME.search(clause) and _SUBMIT.search(clause):
             unsupported = True
         if _NEGATION.search(clause) and _ADVANCE.search(clause) and _ACTOR.search(clause):
