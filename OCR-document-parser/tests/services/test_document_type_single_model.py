@@ -72,11 +72,14 @@ def test_missing_primary_model_does_not_use_legacy_fallbacks(monkeypatch, model)
     assert calls == []
 
 
-def test_current_court_and_router_configs_have_one_claude_on_router_ai():
+def test_current_court_and_router_configs_use_one_router_ai_model_per_stage():
     root = Path(__file__).parents[2] / "src/ocr_platform/config/pipelines"
     court = yaml.safe_load((root / "profiles/court_decision_ru.yaml").read_text(encoding="utf-8"))
     router = yaml.safe_load((root / "system/router.yaml").read_text(encoding="utf-8"))
-    for config in (court["models"]["llm_extraction"], router["detection"]["llm"]):
+    for config, expected_model in (
+        (court["models"]["llm_extraction"], "google/gemini-4-argon"),
+        (router["detection"]["llm"], MODEL),
+    ):
         assert config["provider"] == "router_ai"
-        assert config["model"] == MODEL
+        assert config["model"] == expected_model
         assert not config.get("fallback_models")
