@@ -157,6 +157,8 @@ def finalize_court_fields(text: str, fields: dict[str, dict[str, Any]]) -> dict[
             if name == "early_report_deadline" and item.get("regex_rule") == "court_report_minus_ten_days":
                 base = fields.get("next_session_date", {}).get("value")
                 reason = f"Срок отчёта рассчитан по действующему правилу: следующая дата {base} минус 10 календарных дней; это расчёт, а не цитата готовой даты."
+            elif name == 'early_report_deadline' and item.get('deadline_basis') == 'date_reference':
+                reason = 'Срок отчёта соответствует однозначной ссылке на дату текущего распоряжения; вычитание дней не применяется.'
             elif name == "early_report_deadline" and item.get("regex_rule") == "court_explicit_report_date":
                 reason = "Выбран явно напечатанный срок представления отчёта; он приоритетен перед расчётом минус 10 дней."
             item["source"] = context.section(*span[1:]) if span else None

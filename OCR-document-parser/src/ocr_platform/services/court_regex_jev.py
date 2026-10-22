@@ -160,6 +160,15 @@ async def _extract_verified_court_fields(
         logger.info("court_regex_verification_scored", document_id=document_id, pipeline_run_id=pipeline_run_id,
                     probabilities=probabilities, thresholds=thresholds, response_received=result is not None)
     accepted = {name for name in proposals.fields if probabilities.get(name, -1) >= thresholds[name]}
+    report_pair = {'early_report_required', 'early_report_deadline'}
+    flag = proposals.fields.get('early_report_required')
+    due = proposals.fields.get('early_report_deadline')
+    if (report_pair <= set(requested) and 'early_report_required' in accepted and flag.value is False
+            and (due is not None and due.value is not None
+                 or proposals.problems.get('early_report_deadline') == 'unresolved_report_date_reference')):
+        # Deterministically contradictory proposals are unconfirmed as a pair.
+        # Keep individual field prompts; let one selective request review both.
+        accepted.difference_update(report_pair)
     # Calculated fields cannot survive rejection of their own source value.
     changed = True
     while changed:
@@ -179,6 +188,8 @@ async def _extract_verified_court_fields(
                             "regex_rule": candidate.rule}
             if name == "next_session_date" and not candidate.metadata.get("absence"):
                 output[name]["selection_basis"] = candidate.metadata.get("selection_basis", "explicit_appointment")
+            if name == 'early_report_deadline':
+                output[name]['deadline_basis'] = candidate.metadata.get('deadline_basis', 'not_found' if candidate.value is None else None)
             if candidate.metadata.get("absence"):
                 for key in ("evidence", "evidence_start", "evidence_end"):
                     output[name].pop(key)
@@ -195,7 +206,7 @@ async def _extract_verified_court_fields(
                                                  reference_fields={name: {
                                                      "value": proposals.fields[name].value,
                                                      "source": "regex_jev",
-                                                 } for name in ("procedure_end_date", "next_session_date")
+                                                 } for name in ("procedure_end_date", "next_session_date", "early_report_required")
                                                      if name in accepted} or None)
         COURT_REGEX_JEV_DURATION_SECONDS.labels(stage="llm").observe(perf_counter() - fallback_started)
         # Merge only requested fallback names; a provider cannot overwrite approval.
@@ -281,15 +292,32 @@ def _validate_relationships(output: dict[str, dict], text: str | None = None) ->
                     reject("procedure_end_date_is_calculated", "Признак расчёта не согласован с основанием даты окончания; требуется ручная проверка")
             elif flag.get("value") is None:
                 reject("procedure_end_date_is_calculated", "Для установленной даты окончания не определён признак расчёта; требуется ручная проверка")
-    if output.get("early_report_deadline", {}).get("value") is not None:
-        if text is not None:
-            from ocr_platform.services.court_regex_report_deadline import extract_report_deadline_candidates
+    report = output.get('early_report_deadline', {})
+    if (output.get('early_report_required', {}).get('value') is False and report.get('value') is not None):
+        reason = 'Отрицательный флаг обязанности несовместим с непустым сроком отчёта; требуется совместная ручная проверка'
+        for name in ('early_report_required', 'early_report_deadline'):
+            reject(name, reason)
+        return
+    if text is not None and report:
+        from ocr_platform.services.court_regex_report_deadline import extract_report_deadline_candidates
 
-            deadline = extract_report_deadline_candidates(text, output.get("next_session_date", {}).get("value"))
-            if deadline.explicit_dates:
-                if deadline.selected is None or output["early_report_deadline"]["value"] != deadline.selected.value:
-                    reject("early_report_deadline", "Срок отчёта не совпадает с однозначной явно указанной датой; требуется ручная проверка")
-                return
+        source = extract_report_deadline_candidates(text, output.get('next_session_date', {}).get('value'))
+        if source.problem in {'unresolved_report_date_reference', 'conflicting_explicit_report_dates'}:
+            reason = 'Неоднозначная ссылка или противоречие в сроке отчёта; требуется ручная проверка'
+            reject('early_report_deadline', reason)
+            reject('early_report_required', reason)
+            return
+    if report.get('value') is not None:
+        if text is not None:
+            from ocr_platform.services.court_report_validation import validate_report_deadline
+
+            basis = report.get('deadline_basis') or (source.selected.deadline_basis if source.selected else None)
+            try:
+                validate_report_deadline(text, report['value'], basis, report.get('evidence') or (source.selected.quote if source.selected else None),
+                                         output.get('next_session_date', {}).get('value'))
+            except ValueError as exc:
+                reject('early_report_deadline', str(exc) + '; требуется ручная проверка')
+            return
         if "next_session_date" not in output:
             return
         try:

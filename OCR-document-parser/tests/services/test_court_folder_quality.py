@@ -139,7 +139,7 @@ def test_literal_report_deadline_survives_jev_dependencies_and_relationships(dea
 def test_llm_cannot_replace_a_literal_report_date_with_minus_ten():
     text='РЕШИЛ:\nФинансовому управляющему в срок до 25.08.2026 представить в суд отчет.'
     item={'value':'31.08.2026','confidence':.98,'ambiguous':False,'reasoning':'Вычтено 10 дней.',
-          'evidence':'в срок до 25.08.2026 представить в суд отчет'}
+          'evidence':'в срок до 25.08.2026 представить в суд отчет', 'deadline_basis':'explicit_date'}
     with pytest.raises(ValueError,match='явно указанной'):
         _field_output('early_report_deadline',item,text)
     item['value']='25.08.2026'

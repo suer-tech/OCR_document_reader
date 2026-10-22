@@ -103,17 +103,19 @@ def test_shared_jev_llm_rule_uses_next_date_and_fixed_ten_days():
 
 def test_llm_retries_wrong_report_calculation_from_verified_next_date(monkeypatch):
     calls = []
+    text = 'РЕШИЛ: Финансовому управляющему заблаговременно представить в суд отчет.'
 
     def provider(**kwargs):
         calls.append(kwargs)
         return SimpleNamespace(parsed={"early_report_deadline": {
             "value": "12.03.2027" if len(calls) == 1 else "05.03.2027", "confidence": .9,
-            "reasoning": "Расчет", "evidence": "source", "ambiguous": False}}, winner_model="test")
+            "reasoning": "Расчет", "evidence": text, "ambiguous": False,
+            "deadline_basis": "relative_advance"}}, winner_model="test")
 
     monkeypatch.setattr(selective, "call_llm_json_with_fallback", provider)
     monkeypatch.setattr(selective, "get_field_instruction", lambda *args, **kwargs: kwargs.get("default", ""))
     result = asyncio.run(selective.extract_court_llm_fields(
-        "source", {"early_report_deadline": {}}, {"models": {"llm_extraction": {"model": "test"}}},
+        text, {"early_report_deadline": {}}, {"models": {"llm_extraction": {"model": "test"}}},
         reference_fields={"next_session_date": {"value": "15.03.2027", "source": "regex_jev"}}))
     assert len(calls) == 2
     assert result["early_report_deadline"]["value"] == "05.03.2027"

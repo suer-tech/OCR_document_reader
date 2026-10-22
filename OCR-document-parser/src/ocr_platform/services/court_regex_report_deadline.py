@@ -20,8 +20,9 @@ _ADVANCE = re.compile(
     r"\bзаблаговременно\b|\bза\s+(?:\d{1,2}|один|одного|два|двух|три|тр[её]х|"
     r"четыре|четыр[её]х|пять|пяти|шесть|шести|семь|семи|восемь|восьми|"
     r"девять|девяти|десять|десяти)\s+(?:рабочих\s+|календарных\s+)?"
-    r"(?:дней|дня|день)\s+до\b", re.I,
+    r"(?:дней|дня|день)\s+до\b|\bдо\s+(?:даты\s+)?(?:окончания|истечения)\s+(?:срока\s+)?процедур\w*", re.I,
 )
+_DAYS_BEFORE = re.compile(r"\bза\s+(?:\d+|[а-яё]+)\s+(?:рабочих\s+|календарных\s+)?(?:дней|дня|день)\s+до\b", re.I)
 _SUBMIT = re.compile(r"\b(?:представить|предоставить|представление|направить|направление)\b", re.I)
 _REPORT = re.compile(r"\bотч[её]т(?:а|у|ом|ы|ов|ности)?\b", re.I)
 _SUBJECT = re.compile(r"\b(?:финансов\w+\s+управляющ\w+|арбитражн\w+\s+управляющ\w+)\b", re.I)
@@ -36,13 +37,14 @@ _ASSIGNMENT = re.compile(r"\b(?:финансовому|арбитражному)
                          r"\bобязать\s+(?:финансового|арбитражного)\s+управляющего\b", re.I)
 _REPORT_ATTACHMENT = re.compile(r"\b(?:заявлени\w*|ходатайств\w*)\s+о\s+завершении"
                                 r"[\s\S]{0,200}?\bс\s+(?:представлением|приложением)\s+отч[её]т", re.I)
-_DATE_REFERENCE = re.compile(r"\bк\s+указанной\s+(?:выше\s+)?дате\b", re.I)
+_DATE_REFERENCE = re.compile(r"\bк\s+(?P<kind>указанной|назначенной)\s+(?:выше\s+)?дате\b", re.I)
 _BULLET = re.compile(r"\n[ \t]*[-–—][ \t]+")
 
 
 def _instruction_end(operative: str, start: int, limit: int) -> int:
-    boundary = re.search(r";|(?<=[а-яё])\.\s+(?=[А-ЯЁ])|\n[ \t]*[-–—][ \t]+", operative[start:limit])
-    return start + boundary.start() if boundary else limit
+    from .court_regex_early_report_required import _BOUNDARY
+
+    return next((m.start() for m in _BOUNDARY.finditer(operative, start, limit) if m.start() != m.end()), limit)
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class ReportDeadlineCandidate:
     quote: str
     start: int
     end: int
+    deadline_basis: str = 'explicit_date'
 
 
 @dataclass(frozen=True)
@@ -83,8 +86,12 @@ def _direct_report_submission(fragment: str, verb: re.Match) -> bool:
     if _REPORT_ATTACHMENT.search(tail):
         return True
     after = _REPORT.search(tail)
-    if after and not _OTHER_OBJECT.search(tail[:after.start()]):
-        return True
+    if after:
+        prefix = tail[:after.start()]
+        coordinated = (re.search(r"(?:;|,|\bи)\s*$", prefix, re.I)
+                       and re.fullmatch(r"отч[её]т(?:ы)?", after[0], re.I))
+        if not _OTHER_OBJECT.search(prefix) or coordinated:
+            return True
     before = list(_REPORT.finditer(fragment[:verb.start()]))
     return bool(before and verb.start() - before[-1].end() < 150
                 and not _OTHER_OBJECT.search(tail[:after.start() if after else len(tail)]))
@@ -105,6 +112,19 @@ def _report_after_submission(fragment: str) -> bool:
     return _direct_report_submission(fragment[:submit.end()] + tail, submit)
 
 
+def resolve_report_date_reference(text: str, *, appointed: bool = False) -> str | None:
+    """A named appointment requires an actual current operative appointment."""
+    from .court_decision_legacy_rules import extract_procedure_end_date_with_meta
+    from .court_regex_next_session_date import extract_next_session_date_candidates
+
+    appointment = extract_next_session_date_candidates(text).selected
+    if appointed:
+        return appointment.value if appointment else None
+    end_date, _ = extract_procedure_end_date_with_meta(text)
+    dates = {v for v in (end_date, appointment.value if appointment else None) if v}
+    return dates.pop() if len(dates) == 1 else None
+
+
 def extract_report_deadline_candidates(
     text: str, next_session_date: str | None,
 ) -> ReportDeadlineCandidates:
@@ -116,7 +136,7 @@ def extract_report_deadline_candidates(
     heading = list(_OPERATIVE.finditer(text))
     legacy, _ = extract_early_report_deadline(text, next_session_date)
     if not heading:
-        selected = ReportDeadlineCandidate(legacy, 'next_session_minus_ten_calendar_days', text, 0, len(text)) if legacy else None
+        selected = ReportDeadlineCandidate(legacy, 'next_session_minus_ten_calendar_days', text, 0, len(text), 'relative_advance') if legacy else None
         return ReportDeadlineCandidates(selected, (), None if selected else 'missing_operative_heading')
     offset = heading[-1].end() if heading else 0
     operative = text[offset:]
@@ -127,7 +147,7 @@ def extract_report_deadline_candidates(
     for match in _DATE.finditer(operative):
         if not _DUE_LABEL.search(operative[max(0, match.start() - 40):match.start()]):
             continue
-        start, end = max(0, match.start() - 250), min(len(operative), match.end() + 250)
+        start, end = max(0, match.start() - 350), min(len(operative), match.end() + 600)
         end = _instruction_end(operative, match.end(), end)
         bullets = list(_BULLET.finditer(operative, start, match.start()))
         if bullets:
@@ -136,21 +156,22 @@ def extract_report_deadline_candidates(
         following = [a.start() for a in assignments if a.start() > match.end()]
         if previous:
             start = max(start, previous[-1])
-        if following:
-            end = min(end, following[0])
+        # A date can introduce its addressee: «До DATE финансовому
+        # управляющему представить ...». That actor belongs to this order.
+        for actor_start in following:
+            if _SUBMIT.search(operative[start:actor_start]):
+                end = min(end, actor_start)
+                break
         # A semicolon separates independent assignments (e.g. the report and
         # a financial analysis with a different due date).
         start = max(start, operative.rfind(';', start, match.start()) + 1)
-        semicolon = operative.find(';', match.end(), end)
-        if semicolon >= 0:
-            end = semicolon
         fragment = operative[start:end]
-        if _ADVANCE.search(operative[max(start, match.start() - 60):match.start()]):
+        if _DAYS_BEFORE.search(operative[max(start, match.start() - 100):match.start()]):
             continue  # "за пять дней до DATE" names a base, not the exact due date.
         # Bind the date to a nearby submission verb, rather than a hearing date.
         submit = list(_SUBMIT.finditer(fragment))
         if not _is_report_instruction(fragment) or not any(
-            abs((start + verb.start()) - match.start()) < 120
+            abs((start + verb.start()) - match.start()) < 350
             and _direct_report_submission(fragment, verb) for verb in submit
         ):
             continue
@@ -169,7 +190,8 @@ def extract_report_deadline_candidates(
         return ReportDeadlineCandidates(None, tuple(explicit), 'conflicting_explicit_report_dates')
     if explicit:
         return ReportDeadlineCandidates(explicit[0], tuple(explicit), None)
-    if extract_early_report_required(text).value is False:
+    requirement = extract_early_report_required(text)
+    if requirement.value is False:
         return ReportDeadlineCandidates(None, (), None)
     # A reference is an explicit due date only if its date is unambiguous in
     # the current order. Statutory and historical dates are not antecedents.
@@ -178,16 +200,13 @@ def extract_report_deadline_candidates(
         fragment = operative[max(0, marker.start() - 120):end]
         if not _is_report_instruction(fragment) or not _report_after_submission(operative[marker.start():end]):
             continue
-        from .court_decision_legacy_rules import extract_procedure_end_date_with_meta
-        from .court_regex_next_session_date import extract_next_session_date_candidates
-
-        end_date, _ = extract_procedure_end_date_with_meta(text)
-        appointment = extract_next_session_date_candidates(text).selected
-        dates = {v for v in (end_date, appointment.value if appointment else None) if v}
-        if len(dates) != 1 or (next_session_date and next_session_date not in dates):
+        referenced = resolve_report_date_reference(text, appointed=marker['kind'].casefold() == 'назначенной')
+        if referenced is None:
             return ReportDeadlineCandidates(None, (), 'unresolved_report_date_reference')
-        selected = ReportDeadlineCandidate(dates.pop(), 'explicit_report_date', text[:offset + end], 0, offset + end)
+        selected = ReportDeadlineCandidate(referenced, 'explicit_report_date', text[:offset + end], 0, offset + end, 'date_reference')
         return ReportDeadlineCandidates(selected, (selected,), None)
+    if requirement.reason == 'unresolved_report_date_reference':
+        return ReportDeadlineCandidates(None, (), requirement.reason)
     base = _parse_date(next_session_date)
     for marker in _ADVANCE.finditer(operative):
         start = max(0, marker.start() - 250)
@@ -218,7 +237,7 @@ def extract_report_deadline_candidates(
             return ReportDeadlineCandidates(None, tuple(explicit), 'missing_next_session_date')
         selected = ReportDeadlineCandidate(
             (base - timedelta(days=10)).strftime('%d.%m.%Y'), 'next_session_minus_ten_calendar_days',
-            fragment, offset + start, offset + end,
+            fragment, offset + start, offset + end, 'relative_advance',
         )
         return ReportDeadlineCandidates(selected, (), None)
     return ReportDeadlineCandidates(None, (), None)

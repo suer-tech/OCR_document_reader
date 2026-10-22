@@ -28,9 +28,9 @@ _ACTOR = re.compile(r"(?:финансов\w*|арбитражн\w*|конкур�
 _SUBMIT = re.compile(r"\b(?:представить|предоставить|направить|подать|представлением|представление|поступление|представлению)\b", re.I)
 _DATE = r"(?:\d{1,2}\s*[./]\s*\d{1,2}\s*[./]\s*\d{2,4}|[«\"“”]?\s*\d{1,2}[»\"“”]?\s+[а-яё]+\s+\d{4})"
 _ADVANCE = re.compile(
-    r"\bзаблаговременн\w*|\bдо\s+окончания\s+(?:срока\s+)?процедур\w*|"
+    r"\bзаблаговременн\w*|\bдо\s+(?:даты\s+)?окончания\s+(?:срока\s+)?процедур\w*|"
     r"\bдо\s+истечения\s+[а-яё-]*месячного\s+срока|"
-    r"\b(?:к|до)\s+(?:дате\s+судебного\s+заседания|указанной\s+(?:выше\s+)?дат[еы])|"
+    r"\b(?:к|до)\s+(?:дате\s+судебного\s+заседания|(?:указанной|назначенной)\s+(?:выше\s+)?дат[еы])|"
     r"\bне\s+позднее\s+[а-яё\d]+\s+(?:рабочих\s+)?(?:дней|месяцев)\s+с\s+даты|"
     r"\b(?:не\s+позднее|не\s+менее)\b.{0,100}?\bдо\b|"
     r"\bза\s+(?:\d+|[а-яё]+)(?:\s+\([^)]{1,25}\))?\s+(?:(?:рабоч\w*|календарн\w*)\s+)?"
@@ -51,6 +51,10 @@ _UNSUPPORTED_TIME = re.compile(r"\bк\s+(?:судебному\s+заседани
 _BOUNDARY = re.compile(
     r"[.!?](?=\s+[А-ЯЁ])|;(?=\s*(?:Финансов|Арбитраж|Конкурс|Обязать|Назначить|Признать))|"
     r"\n[ \t]*[-–—][ \t]+|"
+    # A semicolon can also be a list of objects sharing one verb/deadline.
+    # Split only when a new addressee or temporal instruction starts.
+    r";(?=\s*(?:после\s+(?:завершения|окончания)|не\s+позднее|в\s+срок|"
+    r"заблаговременно|за\s+(?:\d+|[а-яё]+)\s+(?:дн|рабоч)|до\s+\d))|"
     r"(?=\b(?:Финансовому|Арбитражному|Конкурсному)\s+управляющему\b)"
 )
 
@@ -66,12 +70,19 @@ def extract_early_report_required(text: str) -> EarlyReportCandidate:
     positives = []
     negatives = []
     unsupported = False
+    unresolved_reference = False
     for report in _REPORT.finditer(operative):
         left = max(b for b in boundaries if b <= report.start())
         right = min(b for b in boundaries if b >= report.end())
         if right - left > 6000:
             continue
         clause = operative[left:right]
+        if re.search(r"\bк\s+назначенной\s+(?:выше\s+)?дате\b", clause, re.I) and _SUBMIT.search(clause):
+            from .court_regex_report_deadline import resolve_report_date_reference
+
+            if resolve_report_date_reference(text, appointed=True) is None:
+                unresolved_reference = True
+                continue
         if re.search(r"\bв\s+случае\s+назначения\b", clause, re.I):
             continue
         if _UNSUPPORTED_TIME.search(clause) and _SUBMIT.search(clause):
@@ -107,6 +118,8 @@ def extract_early_report_required(text: str) -> EarlyReportCandidate:
     if negatives:
         item = negatives[0]
         return EarlyReportCandidate(False, "explicit_negative_order", item.evidence, item.start, item.end)
+    if unresolved_reference:
+        return EarlyReportCandidate(None, "unresolved_report_date_reference", None, None, None)
     if unsupported:
         return EarlyReportCandidate(None, "unsupported_report_time_relation", None, None, None)
     return EarlyReportCandidate(False, "no_advance_report_order", None, None, None)

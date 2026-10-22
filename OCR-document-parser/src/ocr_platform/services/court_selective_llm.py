@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import re
 from typing import Any, Generic, Literal, TypeVar
@@ -31,6 +31,10 @@ class NextSessionDateField(SelectiveCourtField[str]):
     selection_basis: Literal["explicit_appointment", "procedure_end_fallback", "not_found"]
 
 
+class ReportDeadlineField(SelectiveCourtField[str]):
+    deadline_basis: Literal['explicit_date', 'date_reference', 'relative_advance', 'not_found', 'ambiguous']
+
+
 class DebtorName(BaseModel):
     model_config = ConfigDict(extra="forbid")
     debtor_last_name: str | None
@@ -47,6 +51,8 @@ class SectionBoundary(BaseModel):
 def field_result_model(name: str) -> type[BaseModel]:
     if name == "next_session_date":
         return NextSessionDateField
+    if name == "early_report_deadline":
+        return ReportDeadlineField
     value_type = str
     if name == "debtor_full_name":
         value_type = DebtorName
@@ -147,6 +153,13 @@ def _field_output(name: str, raw: Any, text: str) -> dict:
               "source": "court_llm_fallback"}
     if name == "next_session_date":
         output["selection_basis"] = item.selection_basis
+    if name == "early_report_deadline":
+        output['deadline_basis'] = item.deadline_basis
+        if item.deadline_basis == 'ambiguous':
+            output.update(confidence=0, validation_issue=item.reasoning or 'Неоднозначный срок отчёта')
+            return output
+        if (item.value is None) != (item.deadline_basis == 'not_found') and not item.ambiguous:
+            raise ValueError('deadline_basis=not_found требует null; непустая дата требует основания срока')
     if item.ambiguous:
         output.update(value=None, confidence=0, validation_issue=item.reasoning or "Неоднозначное значение")
         return output
@@ -224,6 +237,17 @@ async def extract_court_llm_fields(
                     "в том числе расчётному, и evidence подтверждает окончание/назначенный срок. "
                     "Время или адрес заседания из даты окончания не выводить. Если время не указано — null."
                 )
+            if name == 'early_report_deadline':
+                instructions.append(
+                    'Для early_report_deadline обязательно верни deadline_basis: explicit_date — готовый срок '
+                    'подачи отчёта напечатан, в том числе «до даты окончания (до DD.MM.YYYY)»; '
+                    'date_reference — ссылка на однозначную дату другого распоряжения; relative_advance — '
+                    'требование заранее без готового срока; not_found — требования нет; ambiguous — связь '
+                    'не установлена. Только relative_advance разрешает вычитание 10 дней. '
+                    'Дата может стоять до слов «финансовому управляющему». '
+                    'Для ambiguous верни value=null и ambiguous=true. evidence должна подтверждать '
+                    'подачу именно отчёта и её срок в одном поручении; срок анализа не переносить на отчёт.'
+                )
             if name in {"motivating_part", "resolutive_part"}:
                 instructions.append(
                     f"Для {name} не переписывай длинную часть документа: в value верни объект "
@@ -276,17 +300,10 @@ async def extract_court_llm_fields(
             try:
                 output = _field_output(name, result.parsed.get(name), text)
                 if name == "early_report_deadline" and output.get("value") is not None:
-                    from ocr_platform.services.court_regex_report_deadline import extract_report_deadline_candidates
+                    from ocr_platform.services.court_report_validation import validate_report_deadline
 
-                    base = (reference_fields or {}).get("next_session_date", {}).get("value")
-                    deadline = extract_report_deadline_candidates(text, base)
-                    if deadline.explicit_dates:
-                        if deadline.selected is None or output["value"] != deadline.selected.value:
-                            raise ValueError("Срок отчёта должен совпадать с однозначной явно указанной датой")
-                    elif base is not None:
-                        expected = (datetime.strptime(base, "%d.%m.%Y") - timedelta(days=10)).strftime("%d.%m.%Y")
-                        if output["value"] != expected:
-                            raise ValueError("Срок отчёта должен равняться подтверждённой next_session_date минус 10 календарных дней")
+                    validate_report_deadline(text, output['value'], output['deadline_basis'], output.get('evidence'),
+                                             (reference_fields or {}).get('next_session_date', {}).get('value'))
             except (ValidationError, ValueError, TypeError) as exc:
                 errors[name] = str(exc)
                 logger.warning("court_selective_field_invalid", field=name, document_id=document_id,
