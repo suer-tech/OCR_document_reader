@@ -129,7 +129,10 @@ async def _extract_verified_court_fields(
                     and proposals.problems.get(name) in _ABSENCE_REASONS):
                 proposals.fields[name] = CourtCandidate(None, text, 0, len(text), "court_confirm_absence",
                                                         {"absence": True, "reason": proposals.problems[name]},
-                                                        ("procedure_end_date",) if name == "procedure_end_date_is_calculated" else ())
+                                                        ("procedure_end_date",) if (
+                                                            name == "procedure_end_date_is_calculated"
+                                                            or name == "next_session_date" and "procedure_end_date" in requested
+                                                        ) else ())
     COURT_REGEX_JEV_DURATION_SECONDS.labels(stage="regex").observe(perf_counter() - extraction_started)
     logger.info("court_regex_candidates_ready", document_id=document_id, pipeline_run_id=pipeline_run_id,
                 requested_fields=requested, candidate_fields=list(proposals.fields), problems=proposals.problems)

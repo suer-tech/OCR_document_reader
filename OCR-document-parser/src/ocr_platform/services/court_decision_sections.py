@@ -8,8 +8,14 @@ MOTIVATING_HEADING = re.compile(
 _ALTERNATIVE_MOTIVATION = re.compile(
     r"^[ \t]*(?:(?:При\s+рассмотрении\s+(?:материалов\s+дела|заявления),?\s+)?"
     r"(?:арбитражным\s+)?судом\s+установлены\s+следующие\s+обстоятельства|"
-    r"Изучив\s+материалы\s+дела,?\s+(?:арбитражный\s+)?суд\s+приходит\s+к\s+следующему)"
+    r"Изучив\s+материалы\s+дела,?\s+(?:исследовав\s+представленные\s+документы,?\s+)?"
+    r"(?:арбитражный\s+)?суд\s+приходит\s+к\s+следующ(?:ему(?:\s+выводу)?|им\s+выводам))"
     r"\s*[.:]", re.I | re.M,
+)
+_NARRATIVE_MOTIVATION = re.compile(
+    r"^[ \t]*(?:На\s+рассмотрение\s+(?:арбитражного\s+суда|суда)\b"
+    r"[^.!?;:]{0,200}\b(?:поступило|передано)\s+заявление\b|"
+    r"Должник\s+обратил(?:ся|ась)\b[^.!?;:]{0,200}\bс\s+заявлением\b)", re.I | re.M,
 )
 _OPERATIVE_LINE = re.compile(
     r"^[ \t]*(?:р[ \t]*е[ \t]*ш[ \t]*и[ \t]*л|"
@@ -36,6 +42,13 @@ def alternative_motivation_span(text: str) -> tuple[int, int] | None:
     if len(openings) != 1:
         return None
     start = openings[0].start()
+    # These full acts introduce facts before their legal-reasoning transition.
+    # Retain the earlier, literal narrative opening rather than dropping facts.
+    narrative = list(_NARRATIVE_MOTIVATION.finditer(text, 0, start))
+    if len(narrative) > 1:
+        return None
+    if narrative:
+        start = narrative[0].start()
     # A later prose transition inside a section cannot replace its earlier
     # standard opening, including when the selective LLM supplies boundaries.
     if MOTIVATING_HEADING.search(text[:start]):

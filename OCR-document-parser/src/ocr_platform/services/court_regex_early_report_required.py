@@ -57,6 +57,51 @@ _BOUNDARY = re.compile(
     r"заблаговременно|за\s+(?:\d+|[а-яё]+)\s+(?:дн|рабоч)|до\s+\d))|"
     r"(?=\b(?:Финансовому|Арбитражному|Конкурсному)\s+управляющему\b)"
 )
+_OBJECT_BULLET = re.compile(r"\n[ \t]*[-–—][ \t]+")
+_OBJECT_START = re.compile(r"(?:ходатайств\w*|отч[её]т\w*|актуальн\w*\s+отч[её]т\w*|"
+                           r"анализ\w*|сведени\w*|доказательств\w*|реестр\w*|выписк\w*|документ\w*)\b", re.I)
+_REPORT_OBJECT_START = re.compile(r"(?:актуальн\w*\s+)?отч[её]т\w*\b", re.I)
+_LIST_END = re.compile(r"\n[ \t]*\n|^[ \t]*(?:Разъяснить|Обязать|Назначить|Признать|"
+                       r"Финансовому|Арбитражному|Конкурсному|Решение|Определение)\b", re.I | re.M)
+
+
+def report_object_list_spans(text: str) -> list[tuple[int, int]]:
+    """Literal report objects sharing one colon-introduced submission order.
+
+    A bullet with a new temporal instruction does not inherit the header's due
+    date. Mentioning a report inside proof/analysis is not a report object.
+    """
+    spans = []
+    for submit in _SUBMIT.finditer(text):
+        intro = re.match(r"[^.;!?:]{0,100}:\s*(?=\n[ \t]*[-–—][ \t]+)", text[submit.end():])
+        if not intro:
+            continue
+        actors = list(_ACTOR.finditer(text, max(0, submit.start()-500), submit.start()))
+        if not actors:
+            continue
+        start = actors[-1].start()
+        if _OBJECT_BULLET.search(text[start:submit.start()]):
+            continue
+        first = submit.end()+intro.end()
+        limit = min(len(text), first+2500)
+        bullets = list(_OBJECT_BULLET.finditer(text, first, limit))
+        end = first
+        report = False
+        for i, bullet in enumerate(bullets):
+            stop = bullets[i+1].start() if i+1 < len(bullets) else limit
+            if boundary := _LIST_END.search(text, bullet.end(), stop):
+                stop = boundary.start()
+            content = text[bullet.end():stop].strip()
+            if (not _OBJECT_START.match(content) or _ADVANCE.search(content)
+                    or re.search(r"\b(?:в\s+срок|после\s+завершения)\b", content, re.I)):
+                break
+            report |= bool(_REPORT_OBJECT_START.match(content))
+            end = stop
+            if stop < (bullets[i+1].start() if i+1 < len(bullets) else limit):
+                break
+        if report:
+            spans.append((start, end))
+    return spans
 
 
 def extract_early_report_required(text: str) -> EarlyReportCandidate:
@@ -67,6 +112,7 @@ def extract_early_report_required(text: str) -> EarlyReportCandidate:
     operative_start = headings[-1].end()
     operative = text[operative_start:]
     boundaries = [0] + [m.end() for m in _BOUNDARY.finditer(operative)] + [len(operative)]
+    object_lists = report_object_list_spans(operative)
     positives = []
     negatives = []
     unsupported = False
@@ -74,6 +120,8 @@ def extract_early_report_required(text: str) -> EarlyReportCandidate:
     for report in _REPORT.finditer(operative):
         left = max(b for b in boundaries if b <= report.start())
         right = min(b for b in boundaries if b >= report.end())
+        if shared := next((span for span in object_lists if span[0] <= report.start() < span[1]), None):
+            left, right = shared
         if right - left > 6000:
             continue
         clause = operative[left:right]

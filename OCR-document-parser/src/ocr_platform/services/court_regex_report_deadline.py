@@ -42,8 +42,10 @@ _BULLET = re.compile(r"\n[ \t]*[-–—][ \t]+")
 
 
 def _instruction_end(operative: str, start: int, limit: int) -> int:
-    from .court_regex_early_report_required import _BOUNDARY
+    from .court_regex_early_report_required import _BOUNDARY, report_object_list_spans
 
+    if shared := next((span for span in report_object_list_spans(operative) if span[0] <= start < span[1]), None):
+        return shared[1]
     return next((m.start() for m in _BOUNDARY.finditer(operative, start, limit) if m.start() != m.end()), limit)
 
 
@@ -82,6 +84,10 @@ def _is_report_instruction(fragment: str) -> bool:
 
 def _direct_report_submission(fragment: str, verb: re.Match) -> bool:
     """The dated submission must concern the report, not a position about it."""
+    from .court_regex_early_report_required import report_object_list_spans
+
+    if any(start <= verb.start() < end for start, end in report_object_list_spans(fragment)):
+        return True
     tail = fragment[verb.end():]
     if _REPORT_ATTACHMENT.search(tail):
         return True
