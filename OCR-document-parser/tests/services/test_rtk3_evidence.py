@@ -7,7 +7,11 @@ import pytest
 
 from ocr_platform.orchestration.router import load_profile
 from ocr_platform.services import rtk3_evidence as service
-from ocr_platform.services.validation_service import profile_field_issues, review_requirement, validate_fields
+from ocr_platform.services.validation_service import (
+    profile_field_issues,
+    review_requirement,
+    validate_fields,
+)
 
 
 def fact(value, quote):
@@ -179,8 +183,11 @@ def test_name_quote_accepts_immediately_adjacent_debtor_role_and_ignores_snils()
     assert build(payload, text)["debtor_inn"]["value"] == "012345678901"
 
 
-def test_standalone_verified_duty_is_attached_only_to_single_related_claim():
+@pytest.mark.parametrize("unknown_pledge", [False, True])
+def test_standalone_verified_duty_is_attached_only_to_single_related_claim(unknown_pledge):
     payload, text = fixture(duty="")
+    if unknown_pledge:
+        payload["claims"][0].update(pledge_resolution="unknown", pledge_quote="")
     decision = "Учесть 8 177 руб. государственной пошлины отдельно."
     duty = copy.deepcopy(payload["claims"][0])
     duty.update(priority_queue=fact("Иное", "отдельно"), decision_quote=decision,
@@ -192,6 +199,9 @@ def test_standalone_verified_duty_is_attached_only_to_single_related_claim():
     assert fields["claims"]["value"][0]["pau_only_amount"] == "8177.00"
     assert fields["claims"]["value"][0]["total_amount"] == "235242.76"
     assert fields["total_claimed_amount"]["value"] == "227065.76"
+    if unknown_pledge:
+        assert fields["pledge_resolution"]["value"] is None
+        assert review_requirement(1.0, profile_field_issues(fields, "rtk3"))[0]
 
 
 def test_standalone_fee_does_not_cancel_secured_principal_status():
@@ -359,6 +369,82 @@ def test_final_pledge_status_not_just_word_pledge(resolution, wording, valid):
         assert review_requirement(0.99, profile_field_issues(result, "rtk3"))[0]
 
 
+@pytest.mark.parametrize("resolution,wording", [
+    ("unknown", ""),
+    ("yes", "как не обеспеченные залогом"),
+    ("separated", "как обеспеченные залогом"),
+    ("no", "как обеспеченные залогом"),
+    ("yes", "Цитата о залоге отсутствует в документе"),
+])
+def test_uncertain_pledge_preserves_independently_verified_money(resolution, wording):
+    payload, text = fixture()
+    claim = payload["claims"][0]
+    if not wording.startswith("Цитата"):
+        suffix = "; " + wording
+        text += suffix
+        claim["decision_quote"] += suffix
+        claim["included_total"]["quote"] += suffix
+    claim.update(pledge_resolution=resolution, pledge_quote=wording)
+    fields = build(payload, text)
+    assert fields["total_claimed_amount"]["value"] == "227065.76"
+    assert fields["claims"]["value"][0] == {
+        "priority_queue": "3 очередь", "principal_debt": "213845.18", "financial_sanctions": "13220.58",
+        "pau_only_amount": "8177.00", "claimed_amount": "227065.76", "total_amount": "235242.76",
+        "is_salary_or_severance": False,
+    }
+    assert fields["pledge_resolution"]["value"] is None
+    assert fields["secured_by_pledge"]["value"] is None
+    issues = profile_field_issues(fields, "rtk3")
+    assert review_requirement(1.0, issues) == (True, "rtk3_requires_review")
+    assert not any(i.field_name == "total_claimed_amount" for i in issues)
+
+
+@pytest.mark.parametrize("bad_kind", ["components_incomplete", "claims_incomplete", "wrong_total",
+                                      "fabricated_component", "duplicate", "invalid_quote", "queue"])
+def test_unknown_pledge_does_not_relax_money_or_completeness_guards(bad_kind):
+    payload, text = fixture()
+    claim = payload["claims"][0]
+    claim.update(pledge_resolution="unknown", pledge_quote="")
+    if bad_kind == "components_incomplete":
+        claim["components_complete"] = False
+    elif bad_kind == "claims_incomplete":
+        payload["claims_complete"] = False
+    elif bad_kind == "wrong_total":
+        claim["included_total"]["value"] = "1.00"
+    elif bad_kind == "fabricated_component":
+        claim["components"][0]["amount"] = "1.00"
+    elif bad_kind == "duplicate":
+        claim["components"].append(copy.deepcopy(claim["components"][0]))
+    elif bad_kind == "invalid_quote":
+        claim["decision_quote"] = "Включить несуществующее требование."
+    else:
+        claim["priority_queue"] = fact("Иное", "Несуществующая очередь")
+    fields = build(payload, text)
+    assert fields["total_claimed_amount"]["value"] is None
+    if bad_kind != "claims_incomplete":
+        assert fields["claims"]["value"][0]["principal_debt"] is None
+    assert review_requirement(1.0, profile_field_issues(fields, "rtk3"))[0]
+
+
+@pytest.mark.parametrize("invalid_second", [False, True])
+def test_unknown_pledge_keeps_each_proven_row_but_not_an_incomplete_global_total(invalid_second):
+    payload, text = fixture()
+    payload["claims"][0].update(pledge_resolution="unknown", pledge_quote="")
+    decision = "Включить во вторую очередь требование 200 руб. основного долга."
+    second = copy.deepcopy(payload["claims"][0])
+    second.update(priority_queue=fact("2 очередь", "вторую очередь"), decision_quote=decision,
+                  components=[{"kind": "principal", "amount": "200", "quote": "200 руб. основного долга"}],
+                  included_total=fact("200", decision), components_complete=not invalid_second,
+                  pledge_resolution="no", pledge_quote="")
+    payload["claims"].append(second)
+    fields = build(payload, text + "\n" + decision)
+    assert fields["claims"]["value"][0]["claimed_amount"] == "227065.76"
+    assert fields["total_claimed_amount"]["value"] == (None if invalid_second else "227265.76")
+    assert fields["claims"]["value"][1]["claimed_amount"] == (None if invalid_second else "200.00")
+    assert fields["secured_by_pledge"]["value"] is None
+    assert review_requirement(1.0, profile_field_issues(fields, "rtk3"))[0]
+
+
 def test_kad_is_not_ruling_or_signature_date_and_forces_review():
     payload, text = fixture()
     payload["kad_publication_date"] = payload["inclusion_date"].copy()
@@ -431,16 +517,21 @@ async def test_schema_failure_is_reviewable_not_individual_guessing(monkeypatch)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("missing_kad", [False, True])
-async def test_v2_worker_storage_webhook_and_get_share_validation(monkeypatch, tmp_path, missing_kad):
+@pytest.mark.parametrize("unknown_pledge", [False, True])
+async def test_v2_worker_storage_webhook_and_get_share_validation(monkeypatch, tmp_path, missing_kad, unknown_pledge):
+    from unittest.mock import AsyncMock
+
     from fastapi.testclient import TestClient
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
-    from unittest.mock import AsyncMock
-    from ocr_platform.storage import models, repository
+
     from ocr_platform.orchestration import run_processor as worker
+    from ocr_platform.storage import models, repository
 
     payload, text = fixture()
+    if unknown_pledge:
+        payload["claims"][0].update(pledge_resolution="unknown", pledge_quote="")
     if missing_kad:
         payload["kad_publication_date"] = fact(None, "")
         text = text.replace("Дата публикации в КАД: 05.10.2026", "")
@@ -476,8 +567,11 @@ async def test_v2_worker_storage_webhook_and_get_share_validation(monkeypatch, t
         returned = response.json()
         for key in ["validation_status", "validation_issues", "human_review_required", "human_review_reason"]:
             assert sent[key] == returned[key]
-        assert returned["human_review_required"] is missing_kad
-        assert returned["validation_status"] == ("errors" if missing_kad else "ok")
+        assert returned["human_review_required"] is (missing_kad or unknown_pledge)
+        assert returned["validation_status"] == ("errors" if missing_kad or unknown_pledge else "ok")
+        if unknown_pledge:
+            assert returned["fields"]["secured_by_pledge"]["value"] is None
+            assert returned["fields"]["total_claimed_amount"]["value"] == "227065.76"
         assert returned["fields"]["claims"]["value"][0]["total_amount"] == "235242.76"
         assert returned["fields"]["debtor_inn"]["value"] == "012345678901"
         with sessions() as session:

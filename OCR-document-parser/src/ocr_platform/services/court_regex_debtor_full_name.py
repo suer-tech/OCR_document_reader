@@ -11,6 +11,8 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from itertools import product
 
+from ocr_platform.services.court_surname_morphology import known_surname_nominative
+
 
 @dataclass(frozen=True)
 class DebtorNameCandidate:
@@ -193,7 +195,12 @@ def _nominative(last: str, first: str, patronymic: str) -> str:
         instrumental = last.endswith(("овым", "евым", "иным", "ыным"))
     if not oblique:
         return f"{last} {first} {patronymic}"
+    original_last = last
     last = _surname_nominative(last, male)
+    if last == original_last and not re.search(r"[-‐‑]", last):
+        # A known complete surname paradigm can resolve e.g. a consonant stem.
+        # Unknown words and dictionary predictions never supply a new surname.
+        last = known_surname_nominative(last, male=male) or last
     first = _first_nominative(first, male, instrumental)
     if male:
         patronymic = re.sub(r"((?:вич|ьич))(?:а|у|ем|ом|е)$", r"\1", patronymic)
@@ -488,6 +495,36 @@ def extract_debtor_full_name_candidates(text: str) -> DebtorNameCandidates:
         problem=("conflicting_debtor_names" if conflict else
                  "ambiguous_nominative" if unresolved else None),
     )
+
+
+def normalize_source_bound_surname(text: str, value: str | dict) -> tuple[str | dict, DebtorNameCandidate | None]:
+    """Correct only a case variant of an independently selected source identity.
+
+    Names/patronymics and letters are not repaired. Another person, incomplete
+    names, conflicting source identities and unresolved surnames stay unchanged.
+    """
+    keys = ("debtor_last_name", "debtor_first_name", "debtor_patronymic")
+    parts = [value.get(k) for k in keys] if isinstance(value, dict) else value.split()
+    if len(parts) != 3 or not all(isinstance(p, str) and p for p in parts):
+        return value, None
+    result = extract_debtor_full_name_candidates(text)
+    selected = result.selected
+    if selected is None or result.problem is not None:
+        return value, None
+    nominal = selected.value.split(maxsplit=2)
+    if len(nominal) != 3 or [p.casefold() for p in parts[1:]] != [p.casefold() for p in nominal[1:]]:
+        return value, None
+    if parts[0].casefold() == nominal[0].casefold():
+        return value, None
+    compatible = [c for c in result.candidates if c.value == selected.value
+                  and _FULL_NAME.match(c.source_value)
+                  and _source_parts(c)[0].casefold() == parts[0].casefold()]
+    if not compatible:
+        return value, None
+    source = compatible[0]
+    if isinstance(value, dict):
+        return {**value, keys[0]: nominal[0]}, source
+    return " ".join([nominal[0], *parts[1:]]), source
 
 
 def ignored_historical_debtor_identity_blocks(text: str) -> list[HistoricalDebtorIdentityBlock]:

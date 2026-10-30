@@ -7,8 +7,18 @@ from typing import Any
 from ocr_platform.services import court_decision_legacy_rules as legacy
 from ocr_platform.services.court_decision_dates import extract_decision_date_candidates
 from ocr_platform.services.court_field_format import normalize_court_value
+from ocr_platform.services.court_identifier_evidence import identifier_source_issue
 from ocr_platform.services.court_regex_candidates import _section
-from ocr_platform.services.court_regex_procedure_end_date_source import extract_procedure_end_date_source_candidates
+from ocr_platform.services.court_regex_debtor_birth_place import (
+    complete_explicit_republic_type,
+    normalize_explicit_district_boundary,
+)
+from ocr_platform.services.court_regex_debtor_full_name import (
+    normalize_source_bound_surname,
+)
+from ocr_platform.services.court_regex_procedure_end_date_source import (
+    extract_procedure_end_date_source_candidates,
+)
 
 _SECTIONS = {"header", "motivating_part", "resolutive_part", "signature_block", "document"}
 _REASONS = {
@@ -102,7 +112,34 @@ def finalize_court_fields(text: str, fields: dict[str, dict[str, Any]]) -> dict[
         item["extraction_method"] = method
         before = item.get("value")
         try:
-            item["value"] = normalize_court_value(name, before)
+            format_input = before
+            if name in {"debtor_inn", "debtor_snils"} and type(before) is int and before >= 0:
+                literal = str(before)
+                lengths = {10, 12} if name == "debtor_inn" else {11}
+                if len(literal) in lengths and identifier_source_issue(name, literal, text) is None:
+                    # Legacy JSON numbers can be formatted only when every
+                    # digit is present verbatim. Never pad or reconstruct zeros.
+                    format_input = literal
+            item["value"] = normalize_court_value(name, format_input)
+            if name == "debtor_full_name" and item["value"] is not None:
+                item["value"], name_evidence = normalize_source_bound_surname(text, item["value"])
+                if name_evidence is not None:
+                    item.update(evidence=name_evidence.quote, evidence_start=name_evidence.start,
+                                evidence_end=name_evidence.end)
+                    item["reasoning"] = "Фамилия приведена к именительному падежу по однозначному ФИО текущего должника в акте."
+            if name in {"debtor_inn", "debtor_snils"} and item["value"] is not None:
+                issue = identifier_source_issue(name, item["value"], text)
+                if issue is not None:
+                    item.update(validation_issue=issue.message, reasoning=issue.message)
+                    if issue.reject_value:
+                        item.update(value=None, confidence=0)
+            if name == "debtor_birth_place" and item["value"] is not None:
+                item["value"] = normalize_explicit_district_boundary(item["value"])
+                place_evidence = complete_explicit_republic_type(text, item["value"])
+                if place_evidence is not None:
+                    item.update(value=place_evidence.value, evidence=place_evidence.quote,
+                                evidence_start=place_evidence.start, evidence_end=place_evidence.end)
+                    item["reasoning"] = "Сохранено полное место рождения с прямо напечатанным историческим типом республики."
         except (ValueError, TypeError) as exc:
             item.update(value=None, confidence=0, validation_issue=str(exc), reasoning=str(exc))
         reason = item.get("reasoning") or _REASONS.get(name) or "Значение выбрано по контексту текущего должника в судебном акте."

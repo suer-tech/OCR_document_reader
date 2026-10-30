@@ -10,8 +10,10 @@ from PIL import Image
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from ocr_platform.observability.langfuse_tracing import PipelineTracer
 from ocr_platform.orchestration import router, run_processor
-from ocr_platform.services import document_intel_service, passport_vision_service as vision
+from ocr_platform.services import document_intel_service
+from ocr_platform.services import passport_vision_service as vision
 from ocr_platform.storage import models
 
 
@@ -229,7 +231,7 @@ async def test_registration_verifies_index_without_another_model_request(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("page_type,profile_id", [(None,"passport_main"),("registration","passport_registration")])
-@pytest.mark.parametrize("response_kind", ["success", "invalid", "empty"])
+@pytest.mark.parametrize("response_kind", ["success", "invalid", "empty", "http_error", "render_error"])
 async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
     picture, transport, monkeypatch, page_type, profile_id, response_kind
 ):
@@ -249,7 +251,13 @@ async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
         session.add(models.TextVersion(document_id="doc", pipeline_run_id="run", text="STALE OCR MUST NOT BE USED"))
         session.commit()
     monkeypatch.setattr(run_processor.repository, "get_session", get_session)
-    monkeypatch.setattr(run_processor, "get_pipeline_tracer", MagicMock(return_value=MagicMock()))
+    # The real context manager used to swallow extraction exceptions; a plain
+    # MagicMock here hid the production failure from this integration test.
+    tracer = object.__new__(PipelineTracer)
+    tracer._enabled = True
+    tracer._trace = None
+    tracer._client = MagicMock()
+    monkeypatch.setattr(run_processor, "get_pipeline_tracer", lambda: tracer)
     webhook = AsyncMock()
     monkeypatch.setattr(run_processor, "_trigger_webhook_safely", webhook)
     monkeypatch.setattr(run_processor, "get_settings", lambda: SimpleNamespace(ocr_engine="router_ai"))
@@ -263,14 +271,23 @@ async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
     client, respond = transport
     expected_text = "" if response_kind == "empty" else "ТЕСТОВ 03 06 001234"
     respond("broken JSON" if response_kind == "invalid" else answer(profile, raw_text=expected_text))
-    if response_kind == "invalid":
-        with pytest.raises(ValueError, match="invalid JSON"):
+    if response_kind == "http_error":
+        respond({}, status=503)
+    if response_kind == "render_error":
+        monkeypatch.setattr(vision, "_document_images", MagicMock(side_effect=Image.DecompressionBombError("Oversized passport image")))
+    if response_kind in {"invalid", "http_error", "render_error"}:
+        error_type = {"invalid": ValueError, "http_error": httpx.HTTPStatusError,
+                      "render_error": Image.DecompressionBombError}[response_kind]
+        with pytest.raises(error_type) as caught:
             await run_processor._process_pipeline_run_impl("run")
         ocr.assert_not_called()
-        client.post.assert_awaited_once()
+        assert client.post.await_count == (0 if response_kind == "render_error" else 1)
+        webhook.assert_awaited_once()
         assert webhook.await_args.args[1]["status"] == "failed"
         with get_session() as session:
-            assert session.get(models.PipelineRun, "run").status == "failed"
+            run = session.get(models.PipelineRun, "run")
+            assert run.status == "failed"
+            assert run.last_error == f"{error_type.__name__}: {caught.value}"
             assert session.scalar(select(models.StructuredVersion)) is None
         engine.dispose()
         return
@@ -280,6 +297,8 @@ async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
     webhook.assert_awaited_once()
     assert webhook.await_args.args[1]["raw_text"] == expected_text
     assert webhook.await_args.args[1]["status"] == "done"
+    assert webhook.await_args.args[1]["validation_status"] == "errors"
+    assert webhook.await_args.args[1]["human_review_required"] is True
     assert "_raw_text" not in webhook.await_args.args[1]["fields"]
     with get_session() as session:
         run = session.get(models.PipelineRun, "run")

@@ -245,6 +245,7 @@ def _operator_format(value: str) -> str:
     This runs after conflict/identity selection, not as an equivalence key.
     An unknown or repeated component type prevents component reordering.
     """
+    value = normalize_explicit_district_boundary(value)
     value = re.sub(r"\b([А-Яа-яЁё-]+(?:ского|цкого|ного))(?=р-(?:на|н)\b)", r"\1 ", value)
     value = re.sub(r"\bр(на|н)\b", r"р-\1", value, flags=re.I)
     value = re.sub(r"\b(р-на|р-н|р-она|р-он)\.(?=\s|[,;]|$)", r"\1", value, flags=re.I)
@@ -276,6 +277,25 @@ def _operator_format(value: str) -> str:
     return re.sub(r"\s+\.+$", "", result)
 
 
+def normalize_explicit_district_boundary(value: str) -> str:
+    """Separate a capitalized district adjective only before its printed label."""
+    return re.sub(
+        r"(?<=[а-яё])(?=[А-ЯЁ][а-яё-]*(?:ский|цкий|ской|ского|цкого|ного)\s+(?:р-н|р-на|район)\b)",
+        " ", value,
+    )
+
+
+def complete_explicit_republic_type(text: str, value: str) -> DebtorBirthPlaceCandidate | None:
+    """Restore only a literal republic type cut off after an abbreviation."""
+    result = extract_debtor_birth_place_candidates(text)
+    selected = result.selected
+    if selected is not None and re.fullmatch(
+        re.escape(value.rstrip(".")) + r"\.\s+(?:АССР|ССР|АО)", selected.value, re.I,
+    ):
+        return selected
+    return None
+
+
 def _value_end(text: str, start: int) -> int:
     limit = min(len(text), start + 350)
     stop = _STOP.search(text, start, limit)
@@ -292,6 +312,11 @@ def _value_end(text: str, start: int) -> int:
             depth -= 1
         elif char == "." and depth == 0:
             preceding = re.search(r"[А-Яа-яЁё-]+$", text[start:index])
+            # An abbreviated historical region adjective before an explicitly
+            # printed republic type is not a sentence boundary (e.g. Баш. АССР).
+            if (preceding and re.match(r"\s+(?:АССР|ССР|АО)\b", text[index + 1:])
+                    and len(preceding[0]) >= 3):
+                continue
             if (
                 preceding
                 and preceding[0].casefold()

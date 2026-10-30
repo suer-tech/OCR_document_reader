@@ -15,10 +15,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ocr_platform.config.settings import get_settings
-from ocr_platform.services.llm_gateway import call_llm_json_with_fallback
 from ocr_platform.services import rtk3_requisites as requisites
+from ocr_platform.services.llm_gateway import call_llm_json_with_fallback
 from ocr_platform.services.rtk3_requisites import date_value as date_value
-
 
 VERSION = "rtk3_evidence_v2"
 GROUNDS = {"Кредитный договор", "Договор займа", "Налоговая задолженность", "Оплата коммунальных услуг"}
@@ -79,6 +78,10 @@ when there is no unresolved problem; do not put a narrative summary or a clear
 disposition into uncertainty. An explicitly excluded amount is resolved scope,
 not a reason to set claims_complete=false. Missing INN/publication date does not
 make the monetary claims incomplete; leave only those individual facts null.
+Unknown, unsupported or mixed collateral status also does not by itself make
+components_complete or claims_complete false. Report collateral uncertainty in
+pledge_resolution/pledge_quote and uncertainty; assess monetary completeness
+independently from collateral. Do not guess a yes/no pledge label to obtain sums.
 Quotes must NOT contain ellipses, rewritten company abbreviations, reordered
 names or corrected wording. Include the entire operative paragraph (including
 related component and duty sentences) in decision_quote; not just its summary.
@@ -446,19 +449,26 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
             problems.append("Нет независимого явно указанного итога требования; нужна проверка полноты сумм.")
         duty_only = amounts["duty"] > 0 and net == 0
         pledge = claim.pledge_resolution
+        pledge_problems = []
         if pledge in {"yes", "separated"} and not quoted(claim.pledge_quote, claim.decision_quote):
-            errors.append("Залоговый статус не подтверждён окончательным решением.")
+            pledge_problems.append("Залоговый статус не подтверждён окончательным решением.")
         if pledge == "yes" and (not re.search(r"залог", claim.pledge_quote, re.IGNORECASE)
                                 or re.search(r"не\s*обеспеч|отлож|отдельн|выдел|прекрат|отказ", claim.pledge_quote, re.IGNORECASE)):
-            errors.append("Цитата не подтверждает включение именно залогового требования.")
+            pledge_problems.append("Цитата не подтверждает включение именно залогового требования.")
         if pledge == "separated" and not re.search(r"отлож|отдельн|выдел", claim.pledge_quote, re.IGNORECASE):
-            errors.append("Не подтверждено отдельное рассмотрение залога.")
+            pledge_problems.append("Не подтверждено отдельное рассмотрение залога.")
         if pledge == "no" and re.search(r"залог", claim.decision_quote, re.IGNORECASE):
             if not (quoted(claim.pledge_quote, claim.decision_quote)
                     and re.search(r"не\s*обеспеч|не являет|отказ", claim.pledge_quote, re.IGNORECASE)):
-                errors.append("Упоминание залога требует проверки связи с включённым требованием.")
+                pledge_problems.append("Упоминание залога требует проверки связи с включённым требованием.")
         if pledge == "unknown":
-            errors.append("Неоднозначный залоговый статус.")
+            pledge_problems.append("Неоднозначный залоговый статус.")
+        if pledge_problems:
+            # Collateral uncertainty cannot invalidate independently checked
+            # arithmetic. It still requires review and must never publish an
+            # unsupported yes/no/separated result as if it were established.
+            problems.extend(pledge_problems)
+            pledge = "unknown"
         if not duty_only:
             # Fee recovery has no separate collateral status. Its model label
             # must not turn a secured principal claim into mixed collateral.

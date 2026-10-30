@@ -1,12 +1,28 @@
 from __future__ import annotations
 
+# ruff: noqa: BLE001
+# Optional telemetry SDK failures must not change pipeline outcomes.
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 from ocr_platform.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class _SafeSpan:
+    """Keep optional SDK updates outside the pipeline's failure semantics."""
+
+    def __init__(self, observation: Any) -> None:
+        self._observation = observation
+
+    def update(self, **kwargs: Any) -> None:
+        try:
+            self._observation.update(**kwargs)
+        except Exception as exc:
+            logger.warning("langfuse_span_update_failed", error=str(exc))
 
 
 class PipelineTracer:
@@ -47,23 +63,29 @@ class PipelineTracer:
             self._trace = None
 
     @contextmanager
-    def span(self, name: str, **kwargs: Any) -> Iterator[Any]:
+    def span(self, name: str, **kwargs: Any) -> Iterator[_SafeSpan | None]:
         if not self._enabled or not self._trace:
             yield None
             return
         span = None
         try:
             span = self._trace.start_observation(name=name, **kwargs)
-            yield span
         except Exception as exc:
+            logger.warning("langfuse_span_start_failed", error=str(exc))
+        safe_span = _SafeSpan(span) if span is not None else None
+        try:
+            yield safe_span
+        except BaseException as exc:
+            if safe_span is not None:
+                safe_span.update(level="ERROR", status_message=str(exc))
+            # Preserve the original exception, including task cancellation.
+            raise
+        finally:
             if span is not None:
-                span.update(level="ERROR", status_message=str(exc))
-                span.end()
-            else:
-                raise
-        else:
-            if span is not None:
-                span.end()
+                try:
+                    span.end()
+                except Exception as exc:
+                    logger.warning("langfuse_span_end_failed", error=str(exc))
 
     def update_trace(self, **kwargs: Any) -> None:
         if not self._enabled or not self._trace:
