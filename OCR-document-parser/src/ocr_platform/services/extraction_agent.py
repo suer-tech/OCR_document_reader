@@ -153,6 +153,16 @@ class Rtk2Result(BaseModel):
     decision_date_confidence: float = Field(ge=0.0, le=1.0)
     decision_date_reasoning: str
 
+    creditor_name: str | None = Field(description="Полное наименование кредитора текущего требования, именительный падеж; иначе null")
+    creditor_name_confidence: float = Field(ge=0.0, le=1.0)
+    creditor_name_reasoning: str
+    creditor_name_quote: str = Field(description="Дословная цитата с наименованием кредитора текущего требования; пустая строка при отсутствии")
+
+    creditor_application_date: str | None = Field(description="Дата подачи заявления именно этим кредитором, ДД.ММ.ГГГГ; иначе null")
+    creditor_application_date_confidence: float = Field(ge=0.0, le=1.0)
+    creditor_application_date_reasoning: str
+    creditor_application_date_quote: str = Field(description="Дословная цитата: дата, наименование кредитора и факт подачи заявления; пустая строка при отсутствии")
+
     debtor_full_name: str | None = Field(
         description="ФИО должника в именительном падеже (например, 'Кузнецов Александр Александрович'), либо null"
     )
@@ -173,22 +183,23 @@ class Rtk2Result(BaseModel):
 
     hearing_date: str | None = Field(
         description=(
-            "Дата назначенного судебного заседания (СЗ) в формате ДД.ММ.ГГГГ. "
-            "Если заседание предполагается, но дата не указана — дата определения + 1 месяц. "
-            "Если документ прямо предусматривает рассмотрение без судебного заседания — null."
+            "Только явно назначенная дата заседания по текущему требованию, ДД.ММ.ГГГГ. "
+            "Без заседания, без явной даты или при наличии только сроков отзыва/рассмотрения — null. Не вычислять дату."
         )
     )
     hearing_date_confidence: float = Field(ge=0.0, le=1.0)
     hearing_date_reasoning: str
 
-    review_required: bool = Field(
+    review_required: bool | None = Field(
         description=(
-            "True, если суд обязал управляющего предоставить отзыв (есть триггерные слова: "
-            "'отзыв', 'предоставить отзыв', 'управляющему предоставить'). False иначе."
+            "True — прямая обязанность должника/управляющего подать отзыв, возражения по требованию "
+            "или заменяющие отзыв пояснения. False — обязанности нет; общие права и служебные фразы не учитываются. "
+            "Null — смысл неоднозначен, требуется ручная проверка."
         )
     )
     review_required_confidence: float = Field(ge=0.0, le=1.0)
     review_required_reasoning: str
+    review_required_quote: str = Field(description="Дословная фраза из текущей резолютивной части, обосновывающая решение")
 
     has_text_distortions: bool = Field(
         description="True, если текст документа содержит искажения/ошибки OCR. False, если текст чёткий."
@@ -1943,6 +1954,8 @@ async def _run_agent_extraction_impl(
     if profile_id == "rtk2":
         rtk2_llm_fields = [
             "decision_date",
+            "creditor_name",
+            "creditor_application_date",
             "debtor_full_name",
             "procedure_type",
             "financial_manager_full_name",
@@ -1970,6 +1983,10 @@ async def _run_agent_extraction_impl(
                 f"{combined_instructions}\n\n"
                 f"Document Text:\n{text}"
             )
+
+            from ocr_platform.services.rtk2_contract import CONTRACT_INSTRUCTION
+
+            combined_prompt += "\n\n" + CONTRACT_INSTRUCTION
 
             max_attempts = 3
             combined_rtk2_data = None
@@ -2000,6 +2017,12 @@ async def _run_agent_extraction_impl(
                     "decision_date": (
                         "decision_date", "decision_date_confidence", "decision_date_reasoning"
                     ),
+                    "creditor_name": (
+                        "creditor_name", "creditor_name_confidence", "creditor_name_reasoning"
+                    ),
+                    "creditor_application_date": (
+                        "creditor_application_date", "creditor_application_date_confidence", "creditor_application_date_reasoning"
+                    ),
                     "debtor_full_name": (
                         "debtor_full_name", "debtor_full_name_confidence", "debtor_full_name_reasoning"
                     ),
@@ -2028,6 +2051,7 @@ async def _run_agent_extraction_impl(
                         "confidence": conf,
                         "reasoning": reason,
                         "source": "rtk2_combined",
+                        "evidence_quote": getattr(combined_rtk2_data, f"{field_name}_quote", ""),
                     }
 
                 if not _vision_fallback_used and combined_rtk2_data.has_text_distortions and storage_path:
@@ -2388,6 +2412,12 @@ async def _run_agent_extraction_impl(
         field_def = fields_config[field_name]
         extraction_method = field_def.get("extraction_method", "llm")
         logger.info(f"Extracting field {field_name} using method {extraction_method}")
+
+        if profile_id == "rtk2" and field_name == "case_number":
+            from ocr_platform.services.rtk2_contract import case_field
+
+            results[field_name] = case_field(text)
+            continue
 
         if profile_id == "court_decision_ru" and field_name in [
             "case_number",

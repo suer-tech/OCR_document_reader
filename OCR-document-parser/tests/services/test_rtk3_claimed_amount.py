@@ -73,7 +73,9 @@ def test_review_rules_never_recalculate_values(total, claims, reason):
     assert review_requirement(0.99, issues) == (reason is not None, reason)
     assert [issue.code for issue in issues] == ([reason] if reason else [])
     assert data == original
-    assert profile_field_issues(data, "rtk2") == []
+    # RTK2 now checks its own required fields, but must never apply RTK3
+    # claimed-amount rules to this deliberately incomplete RTK2 payload.
+    assert {issue.code for issue in profile_field_issues(data, "rtk2")} == {"rtk2_requires_review"}
     assert profile_field_issues(data, "rtk") == []
 
 

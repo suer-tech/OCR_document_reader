@@ -72,6 +72,7 @@ Thumbs.db
 
 # Text files
 *.txt
+!docs/RTK2_REVIEW_CONTRACT.txt
 
 # Local startup scripts
 start_local.ps1

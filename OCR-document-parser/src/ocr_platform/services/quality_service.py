@@ -22,7 +22,7 @@ def compute_quality_scores(
         for name, f in fields.items()
         if isinstance(f, dict) and (
             f.get("value")
-            or (name == "early_report_required" and f.get("value") is False)
+            or (name in {"early_report_required", "review_required"} and f.get("value") is False)
         )
     )
     semantic = (filled_fields / total_fields) if total_fields > 0 else 0.0

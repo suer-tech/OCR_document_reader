@@ -48,6 +48,8 @@ def test_rtk2_validation_requires_debtor_but_allows_no_hearing() -> None:
         "procedure_type": {"value": "реализация имущества"},
         "hearing_date": {"value": None},
         "review_required": {"value": True},
+        "creditor_name": {"value": "АО Кредитор"},
+        "creditor_application_date": {"value": "01.09.2026"},
     }
     status, issues = validate_fields(fields, "rtk2", profile)
     assert status == "errors"

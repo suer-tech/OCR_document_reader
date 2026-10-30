@@ -22,6 +22,10 @@ def court_field_issues(fields: dict) -> list[ValidationIssue]:
 
 def profile_field_issues(fields: dict, profile_id: str | None = None) -> list[ValidationIssue]:
     issues = court_field_issues(fields)
+    if profile_id == "rtk2":
+        from ocr_platform.services.rtk2_contract import rtk2_issues
+
+        issues.extend(rtk2_issues(fields))
     if profile_id == "rtk3":
         if not is_v2(fields):
             issues.extend(claimed_amount_issues(fields))
@@ -33,6 +37,8 @@ def review_requirement(overall: float | None, issues: list[ValidationIssue]) -> 
     if any(issue.code == COURT_ISSUE_CODE for issue in issues):
         return True, "court_field_requires_review"
     for issue in issues:
+        if issue.code == "rtk2_requires_review":
+            return True, issue.code
         if issue.code == "rtk3_requires_review":
             return True, issue.code
         if issue.code in CLAIMED_AMOUNT_REVIEW_CODES:
@@ -78,7 +84,10 @@ def validate_fields(
 
     issues: List[ValidationIssue] = profile_field_issues(fields, profile_id)
 
-    if profile_id == "rtk3" and is_v2(fields):
+    if profile_id == "rtk2":
+        # Centralized checks also run when reading an already stored result.
+        required_fields = []
+    elif profile_id == "rtk3" and is_v2(fields):
         # RTK3 v2 checks completeness centrally, including in GET results.
         required_fields = []
     elif profile_id == "rtk3":

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from ocr_platform.services.rtk2_contract import guard_contract
+
 _NO_HEARING = re.compile(r"без\s+проведения\s+судебного\s+заседания", re.IGNORECASE)
 _SCHEDULED_HEARING = re.compile(
     r"(?:назначить.{0,80}судебное\s+заседание|"
@@ -46,4 +48,4 @@ def guard_rtk2_results(text: str, fields: dict[str, dict]) -> dict[str, dict]:
                 ),
                 source="rtk2_partial_name_guard",
             )
-    return fields
+    return guard_contract(text, fields)
