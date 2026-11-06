@@ -1,0 +1,88 @@
+profile_id: bankruptcy_application
+document_type: bankruptcy_application
+name: "Заявление на банкротство"
+description: "Паспортные данные должника и адрес регистрации из шапки заявления"
+extraction_mode: llm_header
+version: "2.2"
+applicable_sources: [crm, email, portal, external, other]
+
+models:
+  ocr:
+    pdf_text_engine: pymupdf
+    direct_vision_fallback: true
+  llm_extraction:
+    provider: router_ai
+    model: google/gemini-4-argon
+    temperature: 0.0
+    timeout_seconds: 180.0
+    reasoning_effort: low
+    max_tokens: 8192
+
+thresholds:
+  technical_quality_min: 0.6
+  semantic_confidence_min: 0.7
+  overall_quality_min_auto_accept: 0.75
+  warnings_require_review: false
+
+fields:
+  passport_series:
+    required: true
+    label_ru: "Серия паспорта"
+    description_ru: "4 цифры для паспорта РФ; null для иностранного паспорта"
+  passport_number:
+    required: true
+    label_ru: "Номер паспорта"
+    description_ru: "6 цифр для паспорта РФ; полный номер иностранного паспорта"
+  last_name:
+    required: true
+    label_ru: "Фамилия"
+  first_name:
+    required: true
+    label_ru: "Имя"
+  patronymic:
+    required: false
+    label_ru: "Отчество"
+  gender:
+    required: true
+    label_ru: "Пол"
+    description_ru: "Мужской/Женский по ФИО; null при неоднозначности"
+  birth_date:
+    required: true
+    label_ru: "Дата рождения"
+  birth_place:
+    required: true
+    label_ru: "Место рождения"
+  issue_date:
+    required: true
+    label_ru: "Дата выдачи"
+  department_code:
+    required: true
+    label_ru: "Код подразделения"
+    description_ru: "XXX-XXX для паспорта РФ; необязателен для иностранного"
+  issued_by:
+    required: true
+    label_ru: "Кем выдан"
+  registration_address:
+    required: true
+    label_ru: "Адрес регистрации"
+  post_index:
+    required: false
+    label_ru: "Почтовый индекс"
+    description_ru: "Только индекс из адреса регистрации; без внешнего поиска"
+  region:
+    required: false
+    label_ru: "Регион"
+  city:
+    required: false
+    label_ru: "Город / населённый пункт"
+  street:
+    required: false
+    label_ru: "Улица"
+
+pipeline:
+  - {name: store_original, type: storage}
+  - {name: detect_document_type, type: classifier}
+  - {name: extract_entities, type: extraction}
+  - {name: validate_entities, type: validation}
+  - {name: compute_quality, type: quality}
+  - {name: route_to_human_review, type: routing}

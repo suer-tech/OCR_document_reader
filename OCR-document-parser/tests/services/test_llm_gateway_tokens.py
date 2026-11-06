@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from ocr_platform.services import llm_gateway
 
 
@@ -38,7 +40,9 @@ def test_extract_token_usage_from_input_output_usage() -> None:
     assert usage.total_tokens == 100
 
 
-def test_call_llm_json_with_fallback_reports_token_usage(monkeypatch: Any) -> None:
+@pytest.mark.parametrize("with_images", [False, True])
+def test_call_llm_json_with_fallback_reports_token_usage(monkeypatch: Any, with_images: bool) -> None:
+    images = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,test"}}] if with_images else None
     class DummyResponse:
         def raise_for_status(self) -> None:
             return None
@@ -67,6 +71,7 @@ def test_call_llm_json_with_fallback_reports_token_usage(monkeypatch: Any) -> No
             assert url.endswith("/chat/completions")
             assert json["model"] == "test-model"
             assert "Authorization" in headers
+            assert json["messages"][1]["content"] == ([{"type": "text", "text": "content"}, *images] if images else "content")
             return DummyResponse()
 
     monkeypatch.setattr(llm_gateway, "_resolve_provider_credentials", lambda *_: ("key", "https://api.example.com/v1"))
@@ -96,6 +101,7 @@ def test_call_llm_json_with_fallback_reports_token_usage(monkeypatch: Any) -> No
         system_prompt="prompt",
         user_content="content",
         response_schema={"type": "json_object"},
+        image_parts=images,
     )
 
     assert result is not None

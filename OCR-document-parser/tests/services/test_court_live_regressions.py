@@ -111,7 +111,8 @@ def test_empty_unexplained_null_retries_only_invalid_field(monkeypatch):
     monkeypatch.setattr(selective, 'call_llm_json_with_fallback', provider)
     monkeypatch.setattr(selective, 'get_field_instruction', lambda *a, **kw: kw.get('default', ''))
     config = {'models': {'llm_extraction': {'model': 'google/gemini-4-argon'}}}
-    result = asyncio.run(selective.extract_court_llm_fields('source', {'debtor_inn': {}, 'case_number': {}}, config))
+    result = asyncio.run(selective.extract_court_llm_fields('source', {
+        'debtor_inn': {'required': True}, 'case_number': {'required': True}}, config))
     assert len(calls) == 2
     assert set(calls[1]['response_schema']['json_schema']['schema']['properties']) == {'debtor_inn'}
     assert result['debtor_inn']['value'] == '123456789012'

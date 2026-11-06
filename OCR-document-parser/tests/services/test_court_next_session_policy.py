@@ -227,7 +227,7 @@ def test_llm_missing_basis_retries_only_date_and_prompt_describes_fallback(monke
     monkeypatch.setattr(selective, "call_llm_json_with_fallback", provider)
     monkeypatch.setattr(selective, "get_field_instruction", lambda *args, **kwargs: kwargs.get("default", ""))
     result = asyncio.run(selective.extract_court_llm_fields(
-        "source", {"next_session_date": {}, "case_number": {}},
+        "source", {"next_session_date": {"required": True}, "case_number": {"required": True}},
         {"models": {"llm_extraction": {"model": "test", "provider": "router_ai"}}}))
     assert len(calls) == 2
     retried = calls[1]["response_schema"]["json_schema"]["schema"]["properties"]

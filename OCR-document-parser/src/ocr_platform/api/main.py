@@ -42,6 +42,8 @@ def _parse_content_length(value: str | None) -> int | None:
 def _infer_content_type(filename: str, content_type: str) -> str:
     """Определяет content_type по имени файла или MIME."""
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext == "docx" or content_type.lower() == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return "docx"
     if ext in ("pdf",) or "pdf" in content_type.lower():
         return "pdf"
     if ext in (
@@ -326,10 +328,19 @@ def create_app() -> FastAPI:
         status_code=202,
         tags=["1. Загрузка документов"],
         summary="Шаг 1. Загрузка документа (Файл)",
-        description="Загрузка документа файлом (`multipart/form-data`). Байты передаются напрямую, без base64 — подходит для больших PDF (>1MB). Возвращает `pipeline_run_id` для проверки статуса на Шаге 2.",
+        description=(
+            "Загрузка документа файлом (`multipart/form-data`), без base64. Возвращает `pipeline_run_id` для проверки статуса на Шаге 2.\n\n"
+            "**Заявление на банкротство:** укажите `document_type=bankruptcy_application`, "
+            "`source_type=external`, выберите PDF или DOCX и задайте новый `idempotency_key` для каждой загрузки. "
+            "Из шапки должника извлекаются 16 полей паспорта и регистрации; адрес для корреспонденции не подставляется. "
+            "PDF с текстовым слоем и DOCX читаются напрямую; поля извлекает Gemini Argon "
+            "(`google/gemini-4-argon`) через RouterAI, без локального парсера полей. "
+            "PDF без текста, смешанные PDF и фото передаются Argon изображениями страниц, без промежуточного OCR."
+            " Для каждого поля модель возвращает confidence от 0 до 1 — самооценку извлечения."
+        ),
     )
     async def upload_document(
-        file: UploadFile = File(..., description="PDF, изображение или текстовый файл"),
+        file: UploadFile = File(..., description="PDF, изображение, текстовый файл или DOCX"),
         source_type: str = Form(
             "external", description="Источник: crm, email, portal, external, other"
         ),
@@ -337,7 +348,7 @@ def create_app() -> FastAPI:
             ...,
             description=schemas.DOCUMENT_TYPE_DESCRIPTION,
         ),
-        idempotency_key: str = Form(..., description="Ключ идемпотентности"),
+        idempotency_key: str = Form(..., description="Уникальный ключ для каждой новой загрузки. Повтор того же ключа возвращает прежний документ и запуск."),
         external_id: str | None = Form(None, description="Внешний идентификатор"),
         webhook_url: str | None = Form(
             None, description="URL для отправки вебхука по готовности"
@@ -350,10 +361,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="file is empty")
 
         content_type = _infer_content_type(file.filename or "", file.content_type or "")
-        if content_type not in ("pdf", "image", "text"):
+        if content_type not in ("pdf", "image", "text", "docx"):
             raise HTTPException(
                 status_code=400,
-                detail=f"unsupported file type: {file.filename or file.content_type}. Use pdf, image (png/jpg), or text.",
+                detail=f"unsupported file type: {file.filename or file.content_type}. Use pdf, image (png/jpg), text, or docx.",
             )
         try:
             validate_document_content(content_bytes, content_type)

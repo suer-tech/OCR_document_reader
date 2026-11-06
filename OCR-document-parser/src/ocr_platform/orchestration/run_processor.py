@@ -143,8 +143,8 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
             content_type = file_rec.file_type
             storage_path = file_rec.storage_path
             page_type = run.page_type
-        # Passport profiles use the original image/PDF in a single extraction
-        # request. Resolve explicit types before OCR, including the legacy alias.
+        # Passport profiles read original pages directly, with bounded retries
+        # for missing required fields. Resolve explicit types before separate OCR.
         initial_resolution = None
         direct_vision = False
         if requested_document_type:
@@ -179,7 +179,8 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     .order_by(models.TextVersion.id.desc())
                     .first()
                 )
-                if not direct_vision and existing_txt and existing_txt.text.strip():
+                if (not direct_vision and existing_txt and existing_txt.text.strip()
+                        and not (initial_resolution and initial_resolution.profile_id == "bankruptcy_application")):
                     extracted_text = existing_txt.text
                     logger.info(
                         "restored_text_from_db",
@@ -219,6 +220,10 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     document_id=document_id,
                     pipeline_run_id=pipeline_run_id,
                 )
+
+                if (initial_resolution and initial_resolution.profile_id == "bankruptcy_application"
+                        and text_source == "direct_vision"):
+                    direct_vision = True
 
             if extraction_span is not None:
                 extraction_span.update(
@@ -415,13 +420,17 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 document_id=document_id,
                 storage_path=storage_path,
             )
+            if profile_id == "bankruptcy_application" and (ocr_was_used or text_source == "direct_vision"):
+                fields["passport_number"]["validation_issue"] = (
+                    "Шапка прочитана моделью по изображению; требуется сверка с изображением."
+                )
             corrected_text = fields.pop("_raw_text", None)
             if direct_vision:
                 corrected_text = corrected_text or ""
                 text = corrected_text
             if corrected_text or direct_vision:
                 logger.info(
-                    "passport_vision_text_saved" if direct_vision else "vision_fallback_text_saved",
+                    "direct_vision_text_saved" if direct_vision else "vision_fallback_text_saved",
                     pipeline_run_id=pipeline_run_id,
                     text_length=len(corrected_text),
                 )

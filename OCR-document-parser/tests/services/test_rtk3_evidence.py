@@ -14,6 +14,12 @@ from ocr_platform.services.validation_service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def synthetic_rtk3_credentials(monkeypatch):
+    monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(
+        router_ai_api_key="offline-test-key", router_ai_base_url="https://router.invalid/v1"))
+
+
 def fact(value, quote):
     return {"value": value, "quote": quote}
 
@@ -58,6 +64,179 @@ def fixture(components=None, total="227 065,76", duty="8 177"):
 
 def build(payload, text):
     return service.build_fields(service.DocumentEvidence.model_validate(payload), text, load_profile("rtk3"))
+
+
+def schema_properties(call):
+    return set(call["response_schema"]["json_schema"]["schema"]["properties"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, {"bad": "schema"}])
+async def test_rtk3_failed_response_has_three_retries_without_optional_fields(monkeypatch, failure):
+    calls = []
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return None if failure is None else SimpleNamespace(parsed=failure)
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
+    fields = await service.extract_rtk3("synthetic", load_profile("rtk3"))
+    assert len(calls) == 4
+    assert all(call["models"] == ["anthropic/claude-sonnet-5.5"] for call in calls)
+    assert all("grounds" not in schema_properties(call) for call in calls[1:])
+    assert all(info["value"] is None for info in fields.values())
+    assert fields["creditor"]["empty_field_retries"] == 3
+    assert "empty_field_retries" not in fields["grounds"]
+
+
+@pytest.mark.asyncio
+async def test_rtk3_optional_null_does_not_trigger_retries(monkeypatch):
+    payload, text = fixture()
+    payload["grounds"] = fact(None, "")
+    gateway = MagicMock(return_value=SimpleNamespace(parsed=payload))
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    fields = await service.extract_rtk3(text, load_profile("rtk3"))
+    gateway.assert_called_once()
+    assert fields["grounds"]["value"] is None
+    assert fields["grounds_ocr"]["value"] is None
+    assert fields["secured_by_pledge"]["value"] is False
+
+
+@pytest.mark.asyncio
+async def test_rtk3_retries_only_missing_creditor_and_preserves_money(monkeypatch):
+    payload, text = fixture()
+    first = copy.deepcopy(payload)
+    first["creditor"] = fact(None, "")
+    calls = []
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(parsed=first if len(calls) == 1 else {
+            "creditor": payload["creditor"], "creditor_inn": payload["creditor_inn"]})
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
+    fields = await service.extract_rtk3(text, load_profile("rtk3"))
+    assert len(calls) == 2
+    assert schema_properties(calls[1]) == {"creditor", "creditor_inn"}
+    expected = build(payload, text)
+    assert fields["creditor"]["value"] == expected["creditor"]["value"]
+    assert fields["claims"] == expected["claims"]
+    assert fields["total_claimed_amount"] == expected["total_claimed_amount"]
+
+
+@pytest.mark.asyncio
+async def test_rtk3_missing_publication_stays_null_and_retries_only_date(monkeypatch):
+    payload, text = fixture()
+    text = text.replace("Дата публикации в КАД: 05.10.2026", "")
+    payload["kad_publication_date"] = fact(None, "")
+    initial = build(payload, text)
+    calls = []
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(parsed=payload if len(calls) == 1 else {
+            "kad_publication_date": fact("05.10.2026", "Дата публикации в КАД: 05.10.2026")})
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
+    fields = await service.extract_rtk3(text, load_profile("rtk3"))
+    assert len(calls) == 4
+    assert all(schema_properties(call) == {"kad_publication_date"} for call in calls[1:])
+    assert fields["kad_publication_date"]["value"] is None
+    assert fields["claims"] == initial["claims"]
+    assert fields["secured_by_pledge"] == initial["secured_by_pledge"]
+    assert review_requirement(1.0, profile_field_issues(fields, "rtk3"))[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_rtk3_recovers_missing_claims_without_changing_known_cells(monkeypatch, partial):
+    payload, text = fixture()
+    initial = copy.deepcopy(payload)
+    if partial:
+        initial["claims"][0]["components_complete"] = False
+    else:
+        initial.update(claims=[], claims_complete=False, uncertainty="Требования не прочитаны.")
+    patch = {name: payload[name] for name in ["claims", "claims_complete", "uncertainty"]}
+    calls = []
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(parsed=initial if len(calls) == 1 else patch)
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
+    fields = await service.extract_rtk3(text, load_profile("rtk3"))
+    assert len(calls) == 2
+    assert schema_properties(calls[1]) == {"claims", "claims_complete", "uncertainty"}
+    assert fields["claims"]["value"] == build(payload, text)["claims"]["value"]
+    assert fields["claims"]["value"][0]["is_salary_or_severance"] is False
+    assert fields["total_claimed_amount"]["value"] == "227065.76"
+    assert profile_field_issues(fields, "rtk3") == []
+
+
+@pytest.mark.asyncio
+async def test_rtk3_conflicting_retry_cannot_replace_existing_money(monkeypatch):
+    payload, text = fixture()
+    initial = copy.deepcopy(payload)
+    initial["claims"][0]["pledge_resolution"] = "unknown"
+    initial["claims"][0]["uncertainty"] = "Не установлен залог."
+    patch = {name: copy.deepcopy(payload[name]) for name in ["claims", "claims_complete", "uncertainty"]}
+    patch["claims"][0]["components"][0]["amount"] = "1.00"  # Does not match the evidence.
+    calls = []
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(parsed=initial if len(calls) == 1 else patch)
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
+    fields = await service.extract_rtk3(text, load_profile("rtk3"))
+    assert len(calls) == 4
+    original = build(initial, text)
+    assert fields["claims"]["value"] == original["claims"]["value"]
+    assert fields["total_claimed_amount"] == original["total_claimed_amount"]
+    assert fields["pledge_resolution"]["value"] is None
+
+
+@pytest.mark.asyncio
+async def test_rtk3_exhausted_field_retries_save_one_reviewable_result(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from ocr_platform.orchestration import run_processor as worker
+    from ocr_platform.storage import models, repository
+    payload, text = fixture()
+    text = text.replace("Дата публикации в КАД: 05.10.2026", "")
+    payload["kad_publication_date"] = fact(None, "")
+    calls = []
+    def gateway(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(parsed=payload if len(calls) == 1 else {"kad_publication_date": fact(None, "")})
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    models.Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(repository, "get_session", sessions)
+    monkeypatch.setattr(repository, "init_db", lambda: None)
+    monkeypatch.setattr(worker, "get_pipeline_tracer", MagicMock())
+    monkeypatch.setattr(worker, "mlflow_run", lambda *a, **k: nullcontext())
+    for name in ["mlflow_set_tag", "mlflow_log_metric", "mlflow_log_param", "mlflow_log_text"]:
+        monkeypatch.setattr(worker, name, MagicMock())
+    webhook = AsyncMock()
+    monkeypatch.setattr(worker, "_trigger_webhook_safely", webhook)
+    path = tmp_path / "ruling.txt"
+    path.write_text(text, encoding="utf-8")
+    with sessions() as session:
+        session.add(models.Document(id="retry-doc", source_type="external", document_type="rtk3"))
+        session.add(models.DocumentFile(document_id="retry-doc", file_type="text", storage_path=str(path)))
+        session.add(models.PipelineRun(id="retry-run", document_id="retry-doc", profile_id="rtk3", status="queued",
+                                       webhook_url="https://callback.invalid"))
+        session.commit()
+    try:
+        await worker._process_pipeline_run_impl("retry-run")
+        assert len(calls) == 4
+        webhook.assert_awaited_once()
+        sent = webhook.await_args.args[1]
+        assert sent["status"] == "done" and sent["human_review_reason"] == "rtk3_requires_review"
+        with sessions() as session:
+            assert session.get(models.PipelineRun, "retry-run").status == "done"
+            assert session.query(models.StructuredVersion).count() == 1
+            stored = session.query(models.StructuredVersion).one().data
+            assert stored["kad_publication_date"]["value"] is None
+            assert stored["kad_publication_date"]["empty_field_retries"] == 3
+            assert stored["total_claimed_amount"]["value"] == "227065.76"
+            assert stored["secured_by_pledge"]["value"] is False
+    finally:
+        engine.dispose()
 
 
 def test_1843_interest_and_duty_follow_confirmed_emu_semantics():

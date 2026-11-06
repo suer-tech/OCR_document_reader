@@ -115,7 +115,7 @@ def test_llm_retries_wrong_report_calculation_from_verified_next_date(monkeypatc
     monkeypatch.setattr(selective, "call_llm_json_with_fallback", provider)
     monkeypatch.setattr(selective, "get_field_instruction", lambda *args, **kwargs: kwargs.get("default", ""))
     result = asyncio.run(selective.extract_court_llm_fields(
-        text, {"early_report_deadline": {}}, {"models": {"llm_extraction": {"model": "test"}}},
+        text, {"early_report_deadline": {"required": True}}, {"models": {"llm_extraction": {"model": "test"}}},
         reference_fields={"next_session_date": {"value": "15.03.2027", "source": "regex_jev"}}))
     assert len(calls) == 2
     assert result["early_report_deadline"]["value"] == "05.03.2027"

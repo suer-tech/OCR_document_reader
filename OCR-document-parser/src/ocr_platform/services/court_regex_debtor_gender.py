@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
 
 from .court_regex_debtor_full_name import extract_debtor_full_name_candidates
-
-Gender = Literal["Мужской", "Женский"]
+from .fio_gender import Gender, infer_gender_from_source_patronymic
 
 
 @dataclass(frozen=True)
@@ -27,8 +25,6 @@ class DebtorGenderResult:
     problem: str | None
 
 
-_MALE_PATRONYMIC = re.compile(r"(?:вич(?:а|у|ем|е)?|ьич(?:а|у|ем|е)?|оглы)$", re.I)
-_FEMALE_PATRONYMIC = re.compile(r"(?:вн(?:а|ы|е|у|ой)|ичн(?:а|ы|е|у|ой)|кызы)$", re.I)
 _CITIZEN = re.compile(r"\b(?P<m>граждан(?:ин|ина|ину|ином|ине))\b|"
                       r"\b(?P<f>гражданк(?:а|и|е|у|ой))\b", re.I)
 _DIRECT = re.compile(
@@ -63,8 +59,7 @@ def extract_debtor_gender_candidates(text: str) -> DebtorGenderResult:
         selected_identity = names.selected.value.casefold().replace("ё", "е")
         identities = [name for name in identities
                       if name.value.casefold().replace("ё", "е") == selected_identity]
-    has_patronymic = any(_MALE_PATRONYMIC.search(name.source_value)
-                         or _FEMALE_PATRONYMIC.search(name.source_value)
+    has_patronymic = any(infer_gender_from_source_patronymic(name.source_value) is not None
                          for name in identities)
     candidates: list[DebtorGenderCandidate] = []
     seen: set[tuple[str, int, int]] = set()
@@ -88,11 +83,7 @@ def extract_debtor_gender_candidates(text: str) -> DebtorGenderResult:
                      r"реб[её]нок|реб[её]нка|дет[ьи]|представител\w*|кредитор\w*)\s+"
                      r"должник\w*\s*[:–—-]?\s*(?:граждан\w*\s*)?$", context, re.I):
             continue
-        value: Gender | None = None
-        if _MALE_PATRONYMIC.search(source):
-            value = "Мужской"
-        elif _FEMALE_PATRONYMIC.search(source):
-            value = "Женский"
+        value = infer_gender_from_source_patronymic(source)
         if value:
             add(value, name.start, name.end)
         before = text[max(0, start - 40):start]

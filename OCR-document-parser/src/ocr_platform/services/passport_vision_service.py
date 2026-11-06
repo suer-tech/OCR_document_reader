@@ -1,4 +1,4 @@
-"""One multimodal request per passport: original pages -> structured fields."""
+"""Original passport pages -> fields, then at most three missing-field retries."""
 from __future__ import annotations
 
 import asyncio
@@ -16,9 +16,12 @@ from PIL import Image, ImageOps, ImageSequence
 
 from ocr_platform.config.settings import get_settings
 from ocr_platform.services.agent_tools import search_postal_index_by_address
+from ocr_platform.observability.logging import get_logger
+from ocr_platform.services.field_retries import MAX_EMPTY_FIELD_RETRIES, empty_value, merge_missing, required_names
 
 
 PASSPORT_PROFILES = {"passport_main", "passport_registration"}
+logger = get_logger(__name__)
 
 
 def _normalize_passport_value(name: str, value: str) -> str | None:
@@ -208,7 +211,7 @@ def _parse_fields(content: str, profile: dict[str, Any]) -> dict:
             "reasoning": (
                 "Значение отклонено проверкой формата; требуется ручная проверка исходного текста."
                 if isinstance(original_value, str) and original_value.strip() and value is None
-                else "Прямое извлечение из изображения паспорта за один запрос."
+                else "Прямое извлечение из изображения паспорта."
             ),
             "source": "passport_vision",
         }
@@ -262,23 +265,58 @@ async def extract_passport_fields(storage_path: str, profile: dict[str, Any]) ->
     }
     if "temperature" in config:
         payload["temperature"] = float(config["temperature"])
-    # Plain HTTP has no SDK/tool/schema retries: a failed response fails the run.
-    async with httpx.AsyncClient(timeout=float(config.get("timeout_seconds", 180))) as client:
+    async def read_fields(client, request_payload, requested_profile):
         response = await client.post(
             settings.router_ai_base_url.rstrip("/") + "/chat/completions",
             headers={"Authorization": "Bearer " + settings.router_ai_api_key},
-            json=payload,
+            json=request_payload,
         )
         response.raise_for_status()
-        body = response.json()
-    try:
-        choice = body["choices"][0]
-        if choice.get("finish_reason") != "stop":
-            raise ValueError("Passport vision response did not finish successfully")
-        content = choice["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError("Passport vision returned an invalid response") from exc
-    results = _parse_fields(content, profile)
+        try:
+            choice = response.json()["choices"][0]
+            if choice.get("finish_reason") != "stop":
+                raise ValueError("Passport vision response did not finish successfully")
+            content = choice["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError("Passport vision returned an invalid response") from exc
+        return _parse_fields(content, requested_profile)
+
+    # Transport failures of the initial request still fail the run. Missing
+    # values have a separate bounded retry policy, without re-reading good fields.
+    async with httpx.AsyncClient(timeout=float(config.get("timeout_seconds", 180))) as client:
+        results = await read_fields(client, payload, profile)
+        for retry in range(1, MAX_EMPTY_FIELD_RETRIES + 1):
+            # post_index is never extracted by this model: the address lookup
+            # below owns it. Do not spend model requests on an intentional null.
+            pending = {name for name in required_names(profile["fields"]) if name != "post_index"
+                       and empty_value(results[name]["value"])}
+            if not pending:
+                break
+            subset = {**profile, "fields": {name: cfg for name, cfg in profile["fields"].items() if name in pending}}
+            known = {name: info["value"] for name, info in results.items()
+                     if isinstance(info, dict) and not empty_value(info.get("value"))}
+            prompt = (_prompt(subset) + "\nRetry only the missing fields in the JSON shape. "
+                      "Re-read the original images; do not guess to avoid null. "
+                      "Already extracted values are fixed context, not requested outputs: "
+                      + json.dumps(known, ensure_ascii=False))
+            retry_payload = {**payload, "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt}, *images]}]}
+            logger.info("passport_empty_fields_retry", profile_id=profile["profile_id"],
+                        retry=retry, requested_fields=sorted(pending))
+            for name in pending:
+                results[name]["empty_field_retries"] = retry
+            try:
+                candidate = await read_fields(client, retry_payload, subset)
+            except (httpx.HTTPError, ValueError) as exc:
+                # Preserve the first response even when a later request fails.
+                logger.warning("passport_empty_fields_retry_failed", retry=retry, error=type(exc).__name__)
+                continue
+            accepted = merge_missing(results, candidate, pending)
+            for name in accepted:
+                results[name]["empty_field_retries"] = retry
+            extra_text = candidate.get("_raw_text", "").strip()
+            if accepted and extra_text and extra_text not in results["_raw_text"]:
+                results["_raw_text"] = "\n\n".join(filter(None, [results["_raw_text"], extra_text]))
     if profile["profile_id"] == "passport_registration":
         await asyncio.to_thread(_verify_postal_index, results)
     return results

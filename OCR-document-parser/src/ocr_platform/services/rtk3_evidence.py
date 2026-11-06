@@ -7,19 +7,27 @@ No case metadata or operator targets are inputs to this module.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
+import json
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+import httpx
 
 from ocr_platform.config.settings import get_settings
 from ocr_platform.services import rtk3_requisites as requisites
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback
+from ocr_platform.observability.logging import get_logger
+from ocr_platform.services.field_retries import (
+    MAX_EMPTY_FIELD_RETRIES, empty_value, has_empty_value, merge_missing, preserves_values, required_names,
+)
 from ocr_platform.services.rtk3_requisites import date_value as date_value
 
 VERSION = "rtk3_evidence_v2"
+logger = get_logger(__name__)
 GROUNDS = {"Кредитный договор", "Договор займа", "Налоговая задолженность", "Оплата коммунальных услуг"}
 QUEUES = {"1 очередь", "2 очередь", "3 очередь", "4 очередь", "За реестром", "Иное"}
 
@@ -524,27 +532,113 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
     return fields
 
 
+_FACT_OUTPUTS = {
+    "document_case_number": {"document_case_number", "case_number"},
+    "debtor_inn": {"debtor_inn"}, "creditor": {"creditor"}, "creditor_inn": {"creditor_inn"},
+    "inclusion_date": {"inclusion_date"}, "kad_publication_date": {"kad_publication_date"},
+    "grounds": {"grounds", "grounds_ocr"},
+}
+_CLAIM_OUTPUTS = {"claims", "total_claimed_amount", "pledge_resolution", "secured_by_pledge"}
+
+
+def _retry_groups(pending: set[str]) -> list[set[str]]:
+    groups = [{name} for name, outputs in _FACT_OUTPUTS.items() if pending & outputs]
+    if pending & _CLAIM_OUTPUTS:
+        # Monetary components, disposition and collateral must still describe
+        # the same claims. Never splice amounts from unrelated model answers.
+        groups.append({"claims", "claims_complete", "uncertainty"})
+    return groups
+
+
+def _compatible_fields(previous: dict, candidate: dict) -> bool:
+    return all(
+        preserves_values(info.get("value"), candidate[name].get("value"))
+        and not (not empty_value(info.get("value")) and not info.get("validation_issue")
+                 and candidate[name].get("validation_issue"))
+        for name, info in previous.items()
+    )
+
+
 async def extract_rtk3(text: str, profile: dict) -> dict:
+    """One extraction and at most three retries of missing/invalid components."""
     config = profile["models"]["llm_extraction"]
     settings = get_settings()
-    result = await asyncio.to_thread(
-        call_llm_json_with_fallback,
-        task_name=VERSION, provider=config["provider"], request_type="rtk3_components",
-        profile_id="rtk3", timeout_seconds=float(config.get("timeout_seconds", 180)),
-        api_key=settings.router_ai_api_key if config["provider"] == "router_ai" else None,
-        base_url=settings.router_ai_base_url if config["provider"] == "router_ai" else None,
-        models=[config["model"]], system_prompt=INSTRUCTION, user_content=text,
-        response_schema={"type": "json_schema", "json_schema": {
-            "name": "rtk3_document_evidence", "strict": True, "schema": DocumentEvidence.model_json_schema()}},
-        temperature=float(config.get("temperature", 0)), reasoning_effort=config.get("reasoning_effort", "low"),
-        max_tokens=int(config.get("max_tokens", 16384)),
-    )
-    try:
-        if result is None:
-            raise ValueError("Модель не вернула структурированный результат.")
-        return build_fields(DocumentEvidence.model_validate(result.parsed), text, profile)
-    except (ValidationError, ValueError) as exc:
-        return {name: {"value": None, "confidence": None, "source": VERSION,
-                       "reasoning": "Извлечение не подтверждено; требуется ручная проверка.",
-                       "validation_issue": f"Некорректный ответ извлечения РТК3: {type(exc).__name__}."}
-                for name in profile["fields"]}
+    evidence = None
+    fields = {name: {"value": None, "confidence": None, "source": VERSION,
+                     "reasoning": "Извлечение не подтверждено; требуется ручная проверка.",
+                     **({"validation_issue": "Модель не вернула подтверждённое значение РТК3."}
+                        if name in required_names(profile["fields"]) else {})}
+              for name in profile["fields"]}
+    failure_details = {}
+    for attempt in range(MAX_EMPTY_FIELD_RETRIES + 1):
+        pending = {name for name, info in fields.items()
+                   if name in required_names(profile["fields"])
+                   and (has_empty_value(info.get("value")) or info.get("validation_issue"))}
+        if attempt and not pending:
+            break
+        groups = _retry_groups(pending)
+        schema_model = DocumentEvidence
+        system = INSTRUCTION
+        if attempt:
+            names = set().union(*groups)
+            schema_model = create_model("Rtk3MissingEvidence", __config__=ConfigDict(extra="forbid"),
+                **{name: (DocumentEvidence.model_fields[name].annotation, ...) for name in names})
+            known = {name: info["value"] for name, info in fields.items()
+                     if not has_empty_value(info.get("value"))}
+            system += (
+                "\nThis is a retry of missing/invalid fields only: " + ", ".join(sorted(pending))
+                + ". Return only the components in the JSON schema. Re-read the source, never invent "
+                "an absent fact to avoid null. All already populated values, including individual "
+                "monetary cells and false/zero values, are fixed. Claims must retain their row order, "
+                "queues and known amounts. Fixed public values: " + json.dumps(known, ensure_ascii=False)
+            )
+        if attempt:
+            logger.info("rtk3_missing_fields_retry", retry=attempt, requested_fields=sorted(pending))
+            for name in pending:
+                fields[name]["empty_field_retries"] = attempt
+        try:
+            result = await asyncio.to_thread(
+                call_llm_json_with_fallback,
+                task_name=VERSION, provider=config["provider"], request_type="rtk3_components",
+                profile_id="rtk3", timeout_seconds=float(config.get("timeout_seconds", 180)),
+                api_key=settings.router_ai_api_key if config["provider"] == "router_ai" else None,
+                base_url=settings.router_ai_base_url if config["provider"] == "router_ai" else None,
+                models=[config["model"]], system_prompt=system, user_content=text,
+                response_schema={"type": "json_schema", "json_schema": {
+                    "name": "rtk3_document_evidence", "strict": True, "schema": schema_model.model_json_schema()}},
+                temperature=float(config.get("temperature", 0)), reasoning_effort=config.get("reasoning_effort", "low"),
+                max_tokens=int(config.get("max_tokens", 16384)), failure_details=failure_details,
+                mlflow_params={"field_retry": attempt, "requested_fields": ",".join(sorted(pending))},
+            )
+            if result is None:
+                if failure_details.get("terminal"):
+                    break
+                continue
+            patch = schema_model.model_validate(result.parsed).model_dump()
+            if not attempt:
+                evidence = DocumentEvidence.model_validate(patch)
+                initial = build_fields(evidence, text, profile)
+                if attempt:
+                    for info in initial.values():
+                        info["empty_field_retries"] = attempt
+                fields = initial
+                continue
+            # Independently merge each requested fact or atomic claims group.
+            # A conflicting claims answer must not block a valid missing date.
+            for group in groups:
+                trial = evidence.model_dump() if evidence is not None else {
+                    **{name: {"value": None, "quote": ""} for name in _FACT_OUTPUTS},
+                    "claims": [], "claims_complete": False, "uncertainty": "Не подтверждена полнота требований.",
+                }
+                trial.update({name: deepcopy(patch[name]) for name in group})
+                candidate_evidence = DocumentEvidence.model_validate(trial)
+                candidate = build_fields(candidate_evidence, text, profile)
+                if not _compatible_fields(fields, candidate):
+                    logger.warning("rtk3_retry_conflict_rejected", retry=attempt, components=sorted(group))
+                    continue
+                evidence = candidate_evidence
+                for name in merge_missing(fields, candidate, pending):
+                    fields[name]["empty_field_retries"] = attempt
+        except (ValidationError, ValueError, TypeError, httpx.HTTPError) as exc:
+            logger.warning("rtk3_missing_fields_retry_failed", attempt=attempt, error=type(exc).__name__)
+    return fields

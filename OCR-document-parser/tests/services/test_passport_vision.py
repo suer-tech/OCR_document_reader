@@ -46,7 +46,7 @@ def transport(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_direct_image_single_request_bypasses_text_agent(picture, transport, monkeypatch):
+async def test_direct_image_retries_only_missing_required_fields_bypasses_text_agent(picture, transport, monkeypatch):
     profile = router.load_profile("passport_main")
     client, respond = transport
     respond(answer(profile, passport_series="03 06", passport_number="001234", department_code="001002"))
@@ -61,7 +61,7 @@ async def test_direct_image_single_request_bypasses_text_agent(picture, transpor
     assert fields["passport_series"]["confidence"] is None
     assert fields["_raw_text"] == "ТЕСТОВ 03 06 001234"
     old_agent.assert_not_awaited()
-    client.post.assert_awaited_once()
+    assert client.post.await_count == 4
     request = client.post.await_args.kwargs["json"]
     assert request["model"] == "google/gemini-3-flash-preview"
     assert request["reasoning_effort"] == "low"
@@ -83,7 +83,7 @@ async def test_all_pdf_pages_go_in_one_request(tmp_path, transport):
     profile = router.load_profile("passport_main")
     respond(answer(profile))
     await vision.extract_passport_fields(str(path), profile)
-    client.post.assert_awaited_once()
+    assert client.post.await_count == 4
     parts = client.post.await_args.kwargs["json"]["messages"][0]["content"]
     assert len([p for p in parts if p["type"] == "image_url"]) == 2
 
@@ -293,7 +293,7 @@ async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
         return
     await run_processor._process_pipeline_run_impl("run")
     ocr.assert_not_called()
-    client.post.assert_awaited_once()
+    assert client.post.await_count == 4
     webhook.assert_awaited_once()
     assert webhook.await_args.args[1]["raw_text"] == expected_text
     assert webhook.await_args.args[1]["status"] == "done"

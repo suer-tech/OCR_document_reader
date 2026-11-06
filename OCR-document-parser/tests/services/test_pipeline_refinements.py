@@ -101,6 +101,7 @@ async def test_creditor_format_validation_and_retry():
     with patch.object(extraction_agent.agent_creditor, 'run', mock_run):
         fields_config = {
             "creditor": {
+                "required": True,
                 "extraction_method": "llm",
                 "prompt_instruction": "Extract creditor"
             }

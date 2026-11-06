@@ -66,6 +66,11 @@ def profile_field_issues(
     issues = court_field_issues(fields)
     if profile_id in PASSPORT_PROFILES:
         issues.extend(passport_field_issues(fields, profile_id, profile_config))
+    if profile_id == "bankruptcy_application":
+        from ocr_platform.orchestration.router import load_profile
+        from ocr_platform.services.bankruptcy_application import field_issues
+
+        issues.extend(field_issues(fields, profile_config or load_profile(profile_id)))
     if profile_id == "rtk2":
         from ocr_platform.services.rtk2_contract import rtk2_issues
 
@@ -74,6 +79,19 @@ def profile_field_issues(
         if not is_v2(fields):
             issues.extend(claimed_amount_issues(fields))
         issues.extend(rtk3_issues(fields))
+    if profile_id and any(isinstance(info, dict) and info.get("empty_field_retries") for info in fields.values()):
+        from ocr_platform.orchestration.router import load_profile
+        from ocr_platform.services.field_retries import MAX_EMPTY_FIELD_RETRIES, empty_value, required_names
+
+        config = profile_config or load_profile(profile_id)
+        for name in required_names(config.get("fields", {})):
+            info = fields.get(name)
+            if (isinstance(info, dict) and info.get("empty_field_retries", 0) >= MAX_EMPTY_FIELD_RETRIES
+                    and empty_value(info.get("value")) and not any(issue.field_name == name for issue in issues)):
+                issues.append(ValidationIssue(
+                    code="required_field_retry_exhausted", field_name=name, severity="error",
+                    message="Обязательное поле осталось пустым после трёх повторов; требуется ручная проверка.",
+                ))
     return issues
 
 
@@ -81,6 +99,10 @@ def review_requirement(overall: float | None, issues: list[ValidationIssue]) -> 
     if any(issue.code == COURT_ISSUE_CODE for issue in issues):
         return True, "court_field_requires_review"
     for issue in issues:
+        if issue.code == "required_field_retry_exhausted":
+            return True, issue.code
+        if issue.code == "bankruptcy_application_requires_review":
+            return True, issue.code
         if issue.code == "passport_requires_review":
             return True, issue.code
         if issue.code == "rtk2_requires_review":
@@ -118,7 +140,7 @@ def validate_fields(
 
     issues: list[ValidationIssue] = profile_field_issues(fields, profile_id, profile_config)
 
-    if profile_id in PASSPORT_PROFILES:
+    if profile_id in PASSPORT_PROFILES or profile_id == "bankruptcy_application":
         # The same completeness checks run for workers and historical GET results.
         required_fields = []
     elif profile_id == "rtk2":

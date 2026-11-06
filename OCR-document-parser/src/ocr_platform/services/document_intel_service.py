@@ -20,6 +20,14 @@ async def simple_extract_fields(
     """
     from ocr_platform.services import passport_vision_service
 
+    if profile_id == "bankruptcy_application":
+        if profile_config.get("extraction_mode") != "llm_header":
+            raise ValueError("Заявления должны использовать настроенный llm_header, без локального fallback.")
+        from ocr_platform.services.bankruptcy_application_llm import extract_fields
+
+        return await extract_fields(text, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id,
+                                    storage_path=storage_path if not text.strip() else None)
+
     if passport_vision_service.is_direct_vision_profile(profile_config):
         if not storage_path:
             raise ValueError("Passport direct vision requires the original document")

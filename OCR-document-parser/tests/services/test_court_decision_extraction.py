@@ -64,7 +64,7 @@ async def test_manager_after_10000_characters(monkeypatch, combined_fails):
 
     assert result["financial_manager_full_name"]["value"] == expected
     if combined_fails:
-        assert combined_run.await_count == 3
+        assert combined_run.await_count == 1  # These requested fields are optional.
         assert generic_run.await_count == 2
         for call in generic_run.await_args_list:
             assert call.args[0].endswith(text)

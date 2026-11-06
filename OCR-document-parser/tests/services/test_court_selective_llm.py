@@ -15,7 +15,7 @@ def execute(monkeypatch, requested, responses):
         return SimpleNamespace(parsed=responses[min(len(calls) - 1, len(responses) - 1)], winner_model="test")
     monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
     monkeypatch.setattr(service, "get_field_instruction", lambda *args, **kwargs: kwargs.get("default", ""))
-    result = asyncio.run(service.extract_court_llm_fields("source", {name: {} for name in requested},
+    result = asyncio.run(service.extract_court_llm_fields("source", {name: {"required": True} for name in requested},
                         {"models": {"llm_extraction": {"model": "test", "provider": "router_ai"}}}))
     return result, calls
 
@@ -38,7 +38,7 @@ def test_failed_response_retries_only_configured_claude_even_with_legacy_fallbac
     monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
     monkeypatch.setattr(service, "get_field_instruction", lambda *args, **kwargs: kwargs.get("default", ""))
     result = asyncio.run(service.extract_court_llm_fields(
-        "source", {"procedure_duration_months": {}},
+        "source", {"procedure_duration_months": {"required": True}},
         {"models": {"llm_extraction": {"provider": "router_ai", "model": model,
                                       "fallback_models": ["openai/gpt-oss-120b"]}}},
     ))
@@ -59,11 +59,11 @@ def test_provider_failure_exhausts_same_model_then_requires_review(monkeypatch):
     monkeypatch.setattr(service, "get_field_instruction", lambda *args, **kwargs: kwargs.get("default", ""))
     model = "anthropic/claude-sonnet-5.5"
     result = asyncio.run(service.extract_court_llm_fields(
-        "source", {"case_number": {}},
+        "source", {"case_number": {"required": True}},
         {"models": {"llm_extraction": {"provider": "router_ai", "model": model,
                                       "fallback_models": ["openai/gpt-oss-120b"]}}},
     ))
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert all(call["models"] == [model] for call in calls)
     assert result["case_number"]["value"] is None
     assert result["case_number"]["validation_issue"]
@@ -94,7 +94,7 @@ def test_bad_confidence_retries_only_failed_field(monkeypatch):
 
 def test_fabricated_citation_retries_then_requires_review(monkeypatch):
     result, calls = execute(monkeypatch, ["case_number"], [{"case_number": field("А01-1/2026", evidence="not present")}])
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert result["case_number"]["value"] is None
     assert result["case_number"]["validation_issue"]
 
@@ -109,13 +109,13 @@ def test_months_reject_string_float_and_zero(monkeypatch):
     result, calls = execute(monkeypatch, ["procedure_duration_months"], [
         {"procedure_duration_months": field("6")}, {"procedure_duration_months": field(6.0)}, {"procedure_duration_months": field(0)},
     ])
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert result["procedure_duration_months"]["value"] is None
 
 
 def test_invalid_calendar_date_does_not_escape(monkeypatch):
     result, calls = execute(monkeypatch, ["decision_date"], [{"decision_date": field("31.02.2026")}])
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert result["decision_date"]["value"] is None
 
 

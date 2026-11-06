@@ -25,9 +25,9 @@ logger = get_logger(__name__)
 OCR_TEXT_ARTIFACT_MAX_LEN = 100_000
 
 # Источник извлечённого текста (для логирования)
-TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "router_ai"]
+TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "router_ai", "docx", "direct_vision"]
 
-ContentType = Literal["pdf", "image", "text"]
+ContentType = Literal["pdf", "image", "text", "docx"]
 
 # Языки для Tesseract (русский + английский для смешанных документов)
 TESSERACT_LANG = "rus+eng"
@@ -205,8 +205,10 @@ def extract_text_at_ingest(
     """
     Единая точка извлечения текста на входе пайплайна.
     Возвращает (текст, ocr_was_used, ocr_latency_ms, text_source).
-    PDF: pdfplumber → pymupdf → OCR.
-    Image: OCR.
+    PDF: pdfplumber → pymupdf → OCR; профиль может предпочесть PyMuPDF.
+    При direct_vision_fallback PDF со сканами и Image возвращают пустой текст
+    с маркером direct_vision: оригинал прочитает извлекатель полей без OCR.
+    Image: OCR для остальных профилей.
     Text: чтение файла.
     """
     path = Path(file_path)
@@ -214,42 +216,40 @@ def extract_text_at_ingest(
         return "", False, None, "pdfplumber"
 
     if content_type == "pdf":
-        # 1. pdfplumber (текстовый слой)
-        text = extract_text_from_pdf(file_path)
-        if text.strip():
-            logger.info(
-                "text_extraction_source",
-                source="pdfplumber",
-                document_id=document_id,
-                pipeline_run_id=pipeline_run_id,
-                text_length=len(text),
-            )
-            return text, False, None, "pdfplumber"
+        if (ocr_config or {}).get("direct_vision_fallback"):
+            with pymupdf.open(file_path) as pdf:
+                # Page numbers alone are not a usable text layer. Mixed PDFs
+                # must retain their scanned pages rather than discard them.
+                if any(not any(char.isalpha() for char in page.get_text()) for page in pdf):
+                    return "", False, None, "direct_vision"
+        readers = [("pdfplumber", extract_text_from_pdf), ("pymupdf", extract_text_with_pymupdf)]
+        if (ocr_config or {}).get("pdf_text_engine") == "pymupdf":
+            # Explicit per-profile choice: some embedded-font PDFs lose word
+            # spaces with pdfplumber despite having a readable text layer.
+            readers.reverse()
+        for index, (reader_source, reader) in enumerate(readers):
+            if index:
+                logger.info(
+                    "text_extraction_step", step=reader_source,
+                    reason=readers[index - 1][0] + "_empty",
+                    document_id=document_id, pipeline_run_id=pipeline_run_id,
+                )
+            text = reader(file_path)
+            if text.strip():
+                logger.info(
+                    "text_extraction_source", source=reader_source,
+                    document_id=document_id, pipeline_run_id=pipeline_run_id,
+                    text_length=len(text),
+                )
+                return text, False, None, reader_source
 
-        # 2. PyMuPDF (может найти текст там, где pdfplumber не справился)
-        logger.info(
-            "text_extraction_step",
-            step="pymupdf",
-            reason="pdfplumber_empty",
-            document_id=document_id,
-            pipeline_run_id=pipeline_run_id,
-        )
-        text = extract_text_with_pymupdf(file_path)
-        if text.strip():
-            logger.info(
-                "text_extraction_source",
-                source="pymupdf",
-                document_id=document_id,
-                pipeline_run_id=pipeline_run_id,
-                text_length=len(text),
-            )
-            return text, False, None, "pymupdf"
-
+        if (ocr_config or {}).get("direct_vision_fallback"):
+            return "", False, None, "direct_vision"
         # 3. OCR (с выбором движка и fallback-ом)
         logger.info(
             "text_extraction_step",
             step="ocr",
-            reason="pymupdf_empty",
+            reason=readers[-1][0] + "_empty",
             document_id=document_id,
             pipeline_run_id=pipeline_run_id,
         )
@@ -267,6 +267,8 @@ def extract_text_at_ingest(
         return text, True, ocr_latency_ms, text_source
 
     if content_type == "image":
+        if (ocr_config or {}).get("direct_vision_fallback"):
+            return "", False, None, "direct_vision"
         logger.info(
             "text_extraction_step",
             step="ocr",
@@ -298,6 +300,11 @@ def extract_text_at_ingest(
                 error=str(exc),
             )
             return "", False, None, "text"
+
+    if content_type == "docx":
+        from ocr_platform.services.docx_service import read_docx_text
+
+        return read_docx_text(file_path), False, None, "docx"
 
     return "", False, None, "pdfplumber"
 

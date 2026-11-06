@@ -7,6 +7,7 @@ import tempfile
 import os
 import json
 from pathlib import Path
+from copy import deepcopy
 from typing import Any, Dict, Literal
 
 from bs4 import BeautifulSoup
@@ -14,6 +15,7 @@ import requests
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import UsageLimitExceeded
 from ocr_platform.services.agent_limits import BoundedAgent as Agent
+from ocr_platform.services.field_retries import MAX_EMPTY_FIELD_RETRIES, empty_value, merge_missing, required_names
 from pydantic import BaseModel, field_validator
 
 from ocr_platform.observability.logging import get_logger
@@ -1435,6 +1437,34 @@ async def run_agent_extraction(
         result = await _run_agent_extraction_impl(
             text, fields_config, profile_id, profile_config, storage_path, _vision_fallback_used
         )
+        if llm_cfg.get("provider") == "router_ai" and not _vision_fallback_used:
+            for retry in range(1, MAX_EMPTY_FIELD_RETRIES + 1):
+                pending = {name for name, cfg in fields_config.items()
+                           if name in required_names(fields_config) and name != "post_index" and cfg.get("extraction_method", "llm") in {
+                               "llm", "llm_with_tools", "llm_claims_amount"}
+                           and empty_value(result.get(name, {}).get("value"))}
+                if not pending:
+                    break
+                logger.info("agent_empty_fields_retry", profile_id=profile_id, retry=retry,
+                            requested_fields=sorted(pending))
+                subset = {name: cfg for name, cfg in fields_config.items() if name in pending}
+                retained = {name: info for name, info in result.items() if name not in pending}
+                for name in pending:
+                    if name in result:
+                        result[name]["empty_field_retries"] = retry
+                try:
+                    candidate = await _run_agent_extraction_impl(
+                        result.get("_raw_text") or text, subset, profile_id, profile_config,
+                        storage_path, True, retained_fields=retained,
+                    )
+                except UsageLimitExceeded:
+                    raise
+                except Exception as exc:
+                    logger.warning("agent_empty_fields_retry_failed", profile_id=profile_id,
+                                   retry=retry, error=type(exc).__name__)
+                    continue
+                for name in merge_missing(result, candidate, pending):
+                    result[name]["empty_field_retries"] = retry
         if profile_id == "rtk2":
             from ocr_platform.services.rtk2_postprocessing import guard_rtk2_results
 
@@ -1453,8 +1483,9 @@ async def _run_agent_extraction_impl(
     profile_config: dict | None = None,
     storage_path: str | None = None,
     _vision_fallback_used: bool = False,
+    retained_fields: dict | None = None,
 ) -> Dict[str, dict]:
-    results = {}
+    results = deepcopy(retained_fields or {})
 
     _vision_model = (
         profile_config.get("models", {}).get("ocr", {}).get("model", "google/gemini-2.5-flash-lite")
@@ -1501,7 +1532,7 @@ async def _run_agent_extraction_impl(
                 f"Document Text:\n{text[:10000]}"
             )
 
-            max_attempts = 3
+            max_attempts = 3 if required_names(fields_config) else 1
             combined_data = None
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -1702,7 +1733,7 @@ async def _run_agent_extraction_impl(
                 f"Document Text:\n{text[:10000]}"
             )
 
-            max_attempts = 3
+            max_attempts = 3 if required_names(fields_config) else 1
             combined_data = None
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -1818,7 +1849,7 @@ async def _run_agent_extraction_impl(
                 f"Document Text:\n{text}"
             )
 
-            max_attempts = 3
+            max_attempts = 3 if required_names(fields_config) else 1
             combined_data = None
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -1988,7 +2019,7 @@ async def _run_agent_extraction_impl(
 
             combined_prompt += "\n\n" + CONTRACT_INSTRUCTION
 
-            max_attempts = 3
+            max_attempts = 3 if required_names(fields_config) else 1
             combined_rtk2_data = None
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -2101,7 +2132,7 @@ async def _run_agent_extraction_impl(
                 f"Document Text:\n{text}"
             )
 
-            max_attempts = 3
+            max_attempts = 3 if required_names(fields_config) else 1
             combined_rtk3_data = None
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -2213,7 +2244,7 @@ async def _run_agent_extraction_impl(
                 f"Document Text:\n{text}"
             )
 
-            max_attempts = 3
+            max_attempts = 3 if required_names(fields_config) else 1
             combined_data = None
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -2306,7 +2337,7 @@ async def _run_agent_extraction_impl(
                 f"Document Text:\n{text}"
             )
 
-            max_attempts = 3
+            max_attempts = 3 if required_names(fields_config) else 1
             combined_data = None
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -2644,7 +2675,7 @@ async def _run_agent_extraction_impl(
                         base_prompt = f"Instruction: {prompt_instruction}\n\nDocument Text:\n{text[:10000]}"
 
                         agent = agent_tax_creditor
-                        max_attempts = 3
+                        max_attempts = 3 if field_def.get("required") is True else 1
                         val = None
                         confidence = 0.0
                         reasoning = ""
@@ -2684,7 +2715,7 @@ async def _run_agent_extraction_impl(
                         base_prompt = f"ВНИМАНИЕ! Ранее по этому документу был найден ИНН кредитора: {known_inn}\nИспользуй этот ИНН для вызова инструмента search_creditor_name.\n\n{base_prompt}"
 
                     agent = agent_creditor
-                    CREDITOR_RETRIES = 3
+                    CREDITOR_RETRIES = 3 if field_def.get("required") is True else 1
                     val = None
                     confidence = 0.0
                     reasoning = ""
@@ -2709,7 +2740,7 @@ async def _run_agent_extraction_impl(
                                     f"Creditor extraction retry {creditor_attempt}/{CREDITOR_RETRIES} due to recognition error"
                                 )
 
-                        max_attempts = 3
+                        max_attempts = 3 if field_def.get("required") is True else 1
                         for attempt in range(1, max_attempts + 1):
                             try:
                                 result = await agent.run(
@@ -2853,6 +2884,11 @@ async def _run_agent_extraction_impl(
                                                 confidence = 0.0
                                                 reasoning = f"{reasoning} | CRITICAL MISMATCH with registry for INN {cleaned_inn} (internet: {web_company_name})."
 
+                        # RouterAI empty values share the bounded field budget
+                        # in run_agent_extraction, rather than nested retries.
+                        if empty_value(val) and (profile_config or {}).get("models", {}).get(
+                                "llm_extraction", {}).get("provider") == "router_ai":
+                            break
                         if val != "Ошибка распознавания":
                             if not val and known_inn:
                                 if creditor_attempt < CREDITOR_RETRIES:
@@ -2863,6 +2899,8 @@ async def _run_agent_extraction_impl(
                         (not val or val == "Ошибка распознавания")
                         and profile_id == "rtk"
                         and not is_tax_document
+                        and field_def.get("required") is True
+                        and (profile_config or {}).get("models", {}).get("llm_extraction", {}).get("provider") != "router_ai"
                     ):
                         logger.info(
                             "Creditor not found or recognition error. Initiating fallback search for INN and creditor."
@@ -2871,7 +2909,7 @@ async def _run_agent_extraction_impl(
                             "Поищи актуальный ИНН в тексте документа еще раз. "
                             "Рекомендуется использовать инструмент search_creditor_inn передав в него имя кредитора/заявителя."
                         )
-                        max_attempts = 3
+                        max_attempts = 3 if field_def.get("required") is True else 1
                         new_inn_val = None
                         for attempt in range(1, max_attempts + 1):
                             try:
@@ -3053,7 +3091,7 @@ async def _run_agent_extraction_impl(
 
                 elif field_name == "claims_amount":
                     agent = agent_claims_amount
-                    max_attempts = 3
+                    max_attempts = 3 if field_def.get("required") is True else 1
                     for attempt in range(1, max_attempts + 1):
                         try:
                             result = await agent.run(
@@ -3112,7 +3150,7 @@ async def _run_agent_extraction_impl(
                         ]
                     )
                     agent = agent_grounds
-                    max_attempts = 3
+                    max_attempts = 3 if field_def.get("required") is True else 1
                     val = None
                     confidence = 0.0
                     reasoning = ""
@@ -3191,7 +3229,7 @@ async def _run_agent_extraction_impl(
                         if extraction_method == "llm_with_tools"
                         else agent_generic
                     )
-                    max_attempts = 3
+                    max_attempts = 3 if field_def.get("required") is True else 1
                     for attempt in range(1, max_attempts + 1):
                         try:
                             result = await agent.run(
@@ -3235,7 +3273,7 @@ async def _run_agent_extraction_impl(
                         agent = agent_early_report_required
                     if profile_id == "rtk3" and field_name == "claims":
                         agent = agent_rtk3_claims
-                    max_attempts = 3
+                    max_attempts = 3 if field_def.get("required") is True else 1
                     for attempt in range(1, max_attempts + 1):
                         try:
                             result = await agent.run(

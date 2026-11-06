@@ -188,6 +188,7 @@ def call_llm_json_with_fallback(
     decisions_questions: dict[str, dict[str, Any]] | None = None,
     decisions_state: str | dict[str, Any] | None = None,
     failure_details: dict[str, Any] | None = None,
+    image_parts: list[dict[str, Any]] | None = None,
 ) -> LlmJsonResult | None:
     if failure_details is not None:
         failure_details.clear()
@@ -251,7 +252,8 @@ def call_llm_json_with_fallback(
                 "response_format": response_schema,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
+                    {"role": "user", "content": ([{"type": "text", "text": user_content}, *image_parts]
+                                                 if image_parts else user_content)},
                 ],
             }
             if reasoning_effort:

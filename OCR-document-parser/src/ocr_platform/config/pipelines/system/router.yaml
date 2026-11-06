@@ -12,6 +12,7 @@ document_type_to_profile:
   rtk3: rtk3
   passport_main: passport_main
   passport_registration: passport_registration
+  bankruptcy_application: bankruptcy_application
   unknown: unknown
 
 detection:

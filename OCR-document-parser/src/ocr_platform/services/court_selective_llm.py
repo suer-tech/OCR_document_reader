@@ -19,6 +19,7 @@ from ocr_platform.services.court_decision_sections import MOTIVATING_HEADING, al
 from ocr_platform.services.court_regex_resolutive_part_date import extract_resolutive_part_date_candidates
 from ocr_platform.services.court_regex_next_session_date import extract_next_session_date_candidates
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback
+from ocr_platform.services.field_retries import MAX_EMPTY_FIELD_RETRIES, empty_value, required_names
 
 logger = get_logger(__name__)
 T = TypeVar("T")
@@ -206,7 +207,8 @@ async def extract_court_llm_fields(
 ) -> dict[str, dict]:
     """Reuse the profile model/prompts/gateway without requesting approved fields.
 
-    At most three attempts. Schema/type/confidence/citation failures retry only
+    Initial extraction plus at most three retries. Empty values and
+    schema/type/confidence/citation failures retry only
     the invalid fields. Successfully extracted fields never enter JEV again.
     """
     if not fields_config:
@@ -219,7 +221,12 @@ async def extract_court_llm_fields(
     models = [config["model"]] if config.get("model") else []
     errors = {}
     failure_details = {}
-    for attempt in range(3):
+    absent = {}
+    optional_failed = {}
+    for attempt in range(MAX_EMPTY_FIELD_RETRIES + 1):
+        if attempt:
+            for name in set(pending) - required_names(fields_config):
+                optional_failed[name] = pending.pop(name)
         if not pending:
             break
         schema_model = create_model(
@@ -340,9 +347,25 @@ async def extract_court_llm_fields(
                                pipeline_run_id=pipeline_run_id, attempt=attempt + 1, error=type(exc).__name__)
                 continue
             output["model"] = result.winner_model
+            if attempt:
+                output["empty_field_retries"] = attempt
+            if empty_value(output.get("value")):
+                if name not in required_names(fields_config):
+                    results[name] = output
+                    del pending[name]
+                    continue
+                absent[name] = output
+                errors[name] = "Повторно проверь пустое поле по исходному тексту. Не выдумывай отсутствующее значение."
+                continue
             results[name] = output
             del pending[name]
-    for name in pending:
+    for name in pending.keys() | optional_failed.keys():
+        if name in absent and not failure_details:
+            results[name] = absent[name]
+            results[name]["validation_issue"] = (
+                "Обязательное поле осталось пустым после повторных проверок; требуется ручная проверка."
+            )
+            continue
         reason = "Не удалось извлечь поле после проверки ответа LLM; требуется ручная проверка"
         if failure_details:
             reason += "; ошибка провайдера: " + failure_details["code"]

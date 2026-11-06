@@ -3,6 +3,11 @@ from __future__ import annotations
 
 def validate_document_content(content: bytes, content_type: str) -> None:
     """Reject a mislabeled PDF before storing or sending it to OCR providers."""
+    if content_type == "docx":
+        from ocr_platform.services.docx_service import extract_docx_text
+
+        extract_docx_text(content)
+        return
     if content_type != "pdf":
         return
 

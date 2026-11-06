@@ -68,7 +68,7 @@ def test_next_date_null_is_retried_using_confirmed_end_instead_of_surviving_as_a
             selection_basis='not_found' if value is None else 'procedure_end_fallback',evidence=text)})
     monkeypatch.setattr(selective,'call_llm_json_with_fallback',provider)
     monkeypatch.setattr(selective,'get_field_instruction',lambda *a,**kw:kw.get('default',''))
-    result=asyncio.run(selective.extract_court_llm_fields(text,{'next_session_date':{}},CONFIG,
+    result=asyncio.run(selective.extract_court_llm_fields(text,{'next_session_date':{'required': True}},CONFIG,
         reference_fields={'procedure_end_date':{'value':'20.04.2027'}}))
     assert result['next_session_date']['value']=='20.04.2027'
     assert len(calls)==2
