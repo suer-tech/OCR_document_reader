@@ -93,7 +93,9 @@ def resolve_profile(
             source_type=source_type,
             use_llm_when_missing=use_llm_when_missing,
         )
-        allowed_types = sorted(set(mapping.keys()) | {unknown_document_type})
+        allowed_types = sorted({
+            name for name, profile_id in mapping.items() if not profiles.get(profile_id, {}).get("explicit_only")
+        } | {unknown_document_type})
         llm_result = detect_document_type(
             detection_text or "",
             allowed_types,

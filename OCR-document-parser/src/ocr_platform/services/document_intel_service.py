@@ -20,6 +20,11 @@ async def simple_extract_fields(
     """
     from ocr_platform.services import passport_vision_service
 
+    if profile_id == "procedure_completion":
+        from ocr_platform.services.procedure_completion import extract_fields
+
+        return await extract_fields(text, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id)
+
     if profile_id == "bankruptcy_application":
         if profile_config.get("extraction_mode") != "llm_header":
             raise ValueError("Заявления должны использовать настроенный llm_header, без локального fallback.")

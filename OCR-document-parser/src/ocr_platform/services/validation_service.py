@@ -71,6 +71,11 @@ def profile_field_issues(
         from ocr_platform.services.bankruptcy_application import field_issues
 
         issues.extend(field_issues(fields, profile_config or load_profile(profile_id)))
+    if profile_id == "procedure_completion":
+        from ocr_platform.orchestration.router import load_profile
+        from ocr_platform.services.procedure_completion import field_issues
+
+        issues.extend(field_issues(fields, profile_config or load_profile(profile_id)))
     if profile_id == "rtk2":
         from ocr_platform.services.rtk2_contract import rtk2_issues
 
@@ -109,6 +114,8 @@ def review_requirement(overall: float | None, issues: list[ValidationIssue]) -> 
             return True, issue.code
         if issue.code == "rtk3_requires_review":
             return True, issue.code
+        if issue.code in {"procedure_completion_requires_review", "partial_debt_release"}:
+            return True, issue.message
         if issue.code in CLAIMED_AMOUNT_REVIEW_CODES:
             return True, issue.code
     if overall is not None and overall >= 0.75:
@@ -140,7 +147,7 @@ def validate_fields(
 
     issues: list[ValidationIssue] = profile_field_issues(fields, profile_id, profile_config)
 
-    if profile_id in PASSPORT_PROFILES or profile_id == "bankruptcy_application":
+    if profile_id in PASSPORT_PROFILES or profile_id in {"bankruptcy_application", "procedure_completion"}:
         # The same completeness checks run for workers and historical GET results.
         required_fields = []
     elif profile_id == "rtk2":

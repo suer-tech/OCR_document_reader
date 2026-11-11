@@ -14,6 +14,7 @@ DOCUMENT_TYPE_DESCRIPTION = (
     "rtk3 — включение требований кредитора в реестр (ЕФРСБ); "
     "passport_main — главная страница паспорта РФ; passport_registration — страница регистрации; "
     "bankruptcy_application — заявление на банкротство, паспортные данные должника из шапки; "
+    "procedure_completion — акт о завершении РИ или РД, включая переход РД → РИ (явный выбор); "
     "unknown — явно выбранный неизвестный тип, без автоматической классификации. "
     "Автоопределение доступно через POST /documents/ingest, если не заданы document_type и "
     "document_type_hint. В форме POST /documents/upload поле document_type обязательно."
@@ -113,19 +114,19 @@ class FieldValue(BaseModel):
     )
     source: Optional[str] = Field(
         default=None,
-        description="Для новых результатов court_decision — часть исходного документа: header, motivating_part, resolutive_part, signature_block, document (проверен документ целиком), либо null, если источник значения не установлен. В старых записях и других профилях сохраняется прежнее обозначение обработчика. Исторические ответы не мигрируются.",
+        description="Для court_decision и procedure_completion — часть исходного документа: header, motivating_part, resolutive_part, signature_block, document (проверен документ целиком), либо null, если источник значения не установлен. В старых записях и других профилях сохраняется прежнее обозначение обработчика. Исторические ответы не мигрируются.",
         examples=["resolutive_part"],
     )
     extraction_method: Optional[str] = Field(
         default=None,
-        description="Способ извлечения нового результата court_decision: regex_jev, court_llm_fallback, regex_legacy и др. Не является частью документа. null для служебных полей, старых записей и профилей, ещё не передающих метод отдельно.",
+        description="Способ извлечения поля. Для court_decision — regex_jev, court_llm_fallback, regex_legacy и др. Для procedure_completion — llm или calculation. null для служебных полей, старых записей и профилей, ещё не передающих метод отдельно.",
         examples=["regex_jev"],
     )
 
 
 class ValidationIssue(BaseModel):
     code: str = Field(
-        ..., description="Код проблемы: missing_required_field, court_field_requires_review, claimed_amount_by_queue_not_determined, claimed_amount_total_mismatch или rtk3_requires_review.", examples=["claimed_amount_by_queue_not_determined"]
+        ..., description="Код проблемы: missing_required_field, court_field_requires_review, claimed_amount_by_queue_not_determined, claimed_amount_total_mismatch, rtk3_requires_review и др. Для procedure_completion: procedure_completion_requires_review или partial_debt_release.", examples=["claimed_amount_by_queue_not_determined", "partial_debt_release"]
     )
     message: str = Field(
         ...,
@@ -304,6 +305,41 @@ PDF без текста, смешанные PDF и фото отправляют
 * PDF с текстовым слоем, текст и DOCX читаются напрямую. PDF без читаемого текста и
   изображения используют штатный Gemini OCR через RouterAI и требуют сверки результата.
 
+Для `procedure_completion` (Акт о завершении процедуры):
+Укажите тип явно при отправке. Gemini Argon (`google/gemini-4-argon`) через RouterAI
+извлекает значения по всему акту с дословными цитатами. `confidence` — оценка модели от 0 до 1.
+Даты имеют формат YYYY-MM-DD. Поля о новой процедуре относятся к переходу РД → РИ.
+* `document_is_completion_act` — Подтверждено ли завершение процедуры, boolean/null.
+* `document_type` — determination, decision, resolutive_only, other или null.
+* `document_title` — Дословный заголовок.
+* `case_number_raw` — Номер дела в написании суда.
+* `case_number` — Нормализованный номер текущего дела с четырёхзначным годом.
+* `court_name` — Название суда.
+* `judge_name` — ФИО или инициалы судьи.
+* `judicial_act_date` — Дата текущего акта или его полного текста.
+* `resolutive_part_date` — Явно указанная дата объявления резолюции.
+* `debtor_full_name` — ФИО должника в именительном падеже.
+* `debtor_aliases` — Массив прежних фамилий и вариантов ФИО либо null при неопределённости.
+* `debtor_inn` — ИНН должника, строка из 12 цифр с сохранением ведущего нуля.
+* `debtor_snils` — СНИЛС должника, строка или null.
+* `financial_manager_full_name` — Действующий управляющий завершённой процедуры.
+* `completed_procedure_type` — realization, restructuring или null.
+* `completion_result` — completed, completed_and_realization_started, not_completed, unclear или null.
+* `next_procedure_type` — realization при переходе РД → РИ, иначе null.
+* `resolutive_part_text` — Дословный текст распоряжений суда.
+* `debt_release_status` — applies, does_not_apply, partially_applies, not_applicable, unclear или null.
+* `debt_release_text` — Дословный абзац резолюции об освобождении.
+* `debt_release_reason_text` — Дословное пояснение суда, если указано.
+* `excluded_creditors` — Массив исключений с creditor_name, basis_act_date и дословным basis_text либо null.
+* `new_procedure_start_date` — Дата начала новой реализации имущества.
+* `new_procedure_end_date` — Дата окончания новой реализации имущества.
+* `new_procedure_end_date_is_calculated` — true для расчётной даты, false для прямо назначенной, иначе null.
+* `next_session_date` — Дата следующего назначенного заседания.
+* `next_session_time` — Время заседания, ЧЧ:ММ.
+* `next_session_address` — Адрес заседания.
+* `intermediate_report_required` — Требование о промежуточном отчёте, boolean/null.
+* `intermediate_report_deadline` — Срок подачи промежуточного отчёта.
+
 Для полей RouterAI с required=true в профиле пустое значение проверяется повторно:
 до 3 дополнительных запросов после первого ответа. Повторяются только недостающие
 обязательные поля; заполненные значения сохраняются. Необязательные null, а также
@@ -322,7 +358,7 @@ PDF без текста, смешанные PDF и фото отправляют
     )
     semantic_confidence_score: Optional[float] = Field(
         default=None,
-        description="Доля полей, признанных заполненными текущей эвристикой, в общем числе сохранённых полей, включая служебные. В расчёте используется заполненность value; оценки confidence модели не участвуют.",
+        description="Для procedure_completion — средняя confidence обязательных полей, пропуск или ошибка считается за 0. Для других профилей — доля заполненных полей, включая служебные.",
         examples=[0.8],
     )
     overall_quality_score: Optional[float] = Field(

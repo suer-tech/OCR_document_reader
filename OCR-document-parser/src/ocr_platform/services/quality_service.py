@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 
 
 def compute_quality_scores(
-    text: str, fields: Dict[str, dict]
+    text: str, fields: Dict[str, dict], *, required_fields: set[str] | None = None,
 ) -> Tuple[float, float, float]:
     """
     Простейшая эвристика качества для MVP:
@@ -15,6 +15,15 @@ def compute_quality_scores(
     technical = 0.2
     if text.strip():
         technical = 0.8
+
+    if required_fields:
+        scores = []
+        for name in required_fields:
+            info = fields.get(name, {})
+            score = info.get("confidence") if info.get("value") is not None and not info.get("validation_issue") else None
+            scores.append(score if score is not None else 0.0)
+        semantic = sum(scores) / len(required_fields)
+        return technical, semantic, (technical + semantic) / 2.0
 
     total_fields = len(fields)
     filled_fields = sum(

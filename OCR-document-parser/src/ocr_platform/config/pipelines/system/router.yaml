@@ -13,6 +13,7 @@ document_type_to_profile:
   passport_main: passport_main
   passport_registration: passport_registration
   bankruptcy_application: bankruptcy_application
+  procedure_completion: procedure_completion
   unknown: unknown
 
 detection:

@@ -1,0 +1,58 @@
+profile_id: procedure_completion
+document_type: procedure_completion
+name: "Акт о завершении процедуры банкротства"
+description: "Результат завершения РИ или РД, освобождение от обязательств и переход РД → РИ"
+extraction_mode: llm_evidence
+explicit_only: true
+version: "1.0"
+applicable_sources: [crm, email, portal, external, other]
+quality: {score_required_fields: true}
+
+models:
+  llm_extraction:
+    provider: router_ai
+    model: google/gemini-4-argon
+    temperature: 0.0
+    reasoning_effort: low
+    timeout_seconds: 180.0
+    max_tokens: 16384
+
+fields:
+  document_is_completion_act: {required: true}
+  document_type: {required: true}
+  document_title: {required: false}
+  case_number_raw: {required: false}
+  case_number: {required: true}
+  court_name: {required: false}
+  judge_name: {required: false}
+  judicial_act_date: {required: true}
+  resolutive_part_date: {required: false}
+  debtor_full_name: {required: false}
+  debtor_aliases: {required: false}
+  debtor_inn: {required: false}
+  debtor_snils: {required: false}
+  financial_manager_full_name: {required: false}
+  completed_procedure_type: {required: false}
+  completion_result: {required: true}
+  next_procedure_type: {required: false}
+  resolutive_part_text: {required: true}
+  debt_release_status: {required: true}
+  debt_release_text: {required: false}
+  debt_release_reason_text: {required: false}
+  excluded_creditors: {required: false}
+  new_procedure_start_date: {required: false}
+  new_procedure_end_date: {required: false}
+  new_procedure_end_date_is_calculated: {required: false}
+  next_session_date: {required: false}
+  next_session_time: {required: false}
+  next_session_address: {required: false}
+  intermediate_report_required: {required: false}
+  intermediate_report_deadline: {required: false}
+
+pipeline:
+  - {name: store_original, type: storage}
+  - {name: detect_document_type, type: classifier}
+  - {name: extract_entities, type: extraction}
+  - {name: validate_entities, type: validation}
+  - {name: compute_quality, type: quality}
+  - {name: route_to_human_review, type: routing}
