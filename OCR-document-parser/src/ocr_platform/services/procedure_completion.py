@@ -10,7 +10,10 @@ from datetime import date
 from typing import Generic, Literal, TypeVar
 
 from ocr_platform.api.schemas import ValidationIssue
-from ocr_platform.services.court_decision_legacy_rules import _add_months
+from ocr_platform.services.court_decision_legacy_rules import (
+    _OPERATIVE_HEADING,
+    _add_months,
+)
 from ocr_platform.services.court_procedure_duration import extract_procedure_duration
 from ocr_platform.services.field_retries import (
     MAX_EMPTY_FIELD_RETRIES,
@@ -18,14 +21,32 @@ from ocr_platform.services.field_retries import (
     required_names,
 )
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback
-from ocr_platform.services.rtk3_evidence import normalize_case
-from ocr_platform.services.rtk3_requisites import date_value
+from ocr_platform.services.rtk3_evidence import money, normalize_case
+from ocr_platform.services.rtk3_requisites import creditor_value, date_value
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
 PROFILE = "procedure_completion"
-PROMPT_VERSION = "procedure_completion_v1"
+PROMPT_VERSION = "procedure_completion_v2"
 REVIEW_CODE = "procedure_completion_requires_review"
 TRANSITION = "completed_and_realization_started"
+INFERRED_TRANSITION_REASON = "Завершение реструктуризации следует из перехода к реализации, но прямо не сформулировано судом"
+UNSPECIFIED_RELEASE_REASON = "Не удалось однозначно определить результат освобождения от обязательств"
+PARTIAL_RELEASE_REASON = "Освобождение не применяется только к требованиям конкретного кредитора"
+RELEASE_DECISIONS = {"applies", "does_not_apply", "partially_applies"}
+LIST_FIELDS = {"debtor_aliases", "excluded_creditors"}
+INTERNAL_FIELDS = {"new_procedure_duration_months", "prior_restructuring_quote", "explicit_completion_quote"}
+RUBLE_AMOUNT = re.compile(
+    r"(?<![\d.,])\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?\s*"
+    r"(?:руб(?:лей|ля|ль)?\.?|₽)(?!\w)(?:\s*\d{1,2}\s*коп(?:еек|ейки|ейка)?\.?(?!\w))?",
+    re.IGNORECASE,
+)
+RD_COMPLETION_ORDER = re.compile(r"\b(?:завершить|заверш[её]н(?:а|о|ной|ным)?)\b", re.IGNORECASE)
+PRIOR_RD_ORDER = re.compile(
+    r"\b(?:введ[её]н[аоы]?|вводилась|вв[её]л|проводилась|действовала|продл[её]н[аоы]?)\b", re.IGNORECASE,
+)
+RD_NAME = re.compile(r"\bреструктуризаци\w*\s+долгов\b", re.IGNORECASE)
+OPERATIVE_LINE = re.compile(rf"^[ \t]*{_OPERATIVE_HEADING}[ \t]*:[ \t]*", re.IGNORECASE | re.MULTILINE)
+SIGNATURE_LINE = re.compile(r"^[ \t]*(?:судья\b|электронная подпись действительна\b)", re.IGNORECASE | re.MULTILINE)
 TRANSITION_FIELDS = (
     "new_procedure_start_date", "new_procedure_end_date", "new_procedure_end_date_is_calculated",
     "next_session_date", "next_session_time", "next_session_address",
@@ -36,7 +57,9 @@ DATE_FIELDS = {
     "next_session_date", "intermediate_report_deadline",
 }
 ACT_DATE_FIELDS = {"judicial_act_date", "resolutive_part_date"}
-VERBATIM_FIELDS = {"document_title", "case_number_raw", "debt_release_text", "debt_release_reason_text"}
+VERBATIM_FIELDS = {
+    "document_title", "case_number_raw", "debt_release_text", "debt_release_reason_text", "secured_creditor_settlement_text",
+}
 
 T = TypeVar("T")
 
@@ -61,6 +84,9 @@ class Span(StrictModel):
 
 class ExcludedCreditor(StrictModel):
     creditor_name: str | None
+    creditor_inn: str | None
+    amount: str | None
+    restriction_text: str
     basis_act_date: str | None
     basis_text: str
 
@@ -82,11 +108,15 @@ class CompletionEvidence(StrictModel):
     completed_procedure_type: Fact[Literal["realization", "restructuring"]]
     completion_result: Fact[Literal["completed", "completed_and_realization_started", "not_completed", "unclear"]]
     next_procedure_type: Fact[Literal["realization"]]
+    prior_restructuring_quote: str
+    explicit_completion_quote: str
     resolutive_part_text: Fact[Span]
-    debt_release_status: Fact[Literal["applies", "does_not_apply", "partially_applies", "not_applicable", "unclear"]]
+    debt_release_status: Fact[Literal["applies", "does_not_apply", "partially_applies", "not_specified"]]
     debt_release_text: Fact[str]
     debt_release_reason_text: Fact[str]
     excluded_creditors: Fact[list[ExcludedCreditor]]
+    secured_creditor_settlement_approved: Fact[bool]
+    secured_creditor_settlement_text: Fact[str]
     new_procedure_start_date: Fact[str]
     new_procedure_end_date: Fact[str]
     new_procedure_duration_months: Fact[int]
@@ -108,7 +138,9 @@ INSTRUCTION = """Разбери целиком текущий судебный �
 reasoning кратко объясняет по-русски, почему выбран этот фрагмент и именно это лицо,
 событие или дата. При конкурирующих сведениях объясни, почему одно относится к текущему
 распоряжению, а другое к истории дела или к другому лицу. Если разумный выбор по тексту
-невозможен, верни null (unclear для исхода или освобождения) и заполни review_reason.
+невозможен, верни null (unclear для исхода, not_specified для неясного освобождения при РИ)
+и заполни review_reason. Несколько возможных должников, противоречащие даты или неполную
+резолюцию отметь в review_reason соответствующего поля, даже если часть реквизитов читается.
 Если поле просто отсутствует или не применимо, верни null и review_reason=null.
 debtor_aliases и excluded_creditors при подтверждённом отсутствии — [].
 
@@ -130,7 +162,8 @@ resolutive_part_date — отдельная явно указанная дата
 Не выбирай один из двух равносильных ИНН по контрольным цифрам. Не исправляй цифры.
 Управляющий — действующий в завершаемой процедуре. Сначала ищи его в резолюции или по
 прекращению полномочий, затем по последнему действующему назначению. Не подменяй его
-бывшим управляющим или лицом, назначенным только в новую РИ. Если роли неясны, отметь это.
+бывшим управляющим или лицом, назначенным только в новую РИ. Если действующий управляющий
+не установлен, верни null и объясни причину проверки.
 
 Резолюция: resolutive_part_text.value — start_quote и end_quote, дословные и достаточно
 длинные для однозначного поиска. Начни первым распоряжением после ОПРЕДЕЛИЛ/РЕШИЛ и
@@ -140,24 +173,45 @@ resolutive_part_date — отдельная явно указанная дата
 completed — завершена РИ (realization) или РД (restructuring). Если раньше шла РД и суд
 сейчас признал гражданина банкротом и ввёл РИ, укажи restructuring,
 completed_and_realization_started и next_procedure_type=realization. Отдельное «завершить
-РД» при таком переходе не требуется. Простое введение РИ без подтверждённой РД — не
-завершение. Отказ, продление, назначение заседания или ходатайство сами по себе также
+РД» при таком переходе не требуется. Для перехода дай explicit_completion_quote — дословное
+распоряжение о завершении РД, если оно есть. Иначе дай prior_restructuring_quote — дословное
+подтверждение предшествующей действующей РД этого должника, и оставь explicit_completion_quote="".
+Оба значения пустые вне перехода. Если при введении РИ прежнюю процедуру установить нельзя,
+верни completion_result=unclear и completed_procedure_type=null, с причиной ручной проверки.
+Если из акта ясно, что РИ введена впервые без предшествующей РД, это не завершение.
+Отказ, продление, назначение заседания или ходатайство сами по себе также
 не завершение: document_is_completion_act=false, completion_result=not_completed.
 
-Освобождение: для РД и отсутствия завершения РИ — not_applicable. При завершении РИ
+Освобождение: для РД и отсутствия подтверждённого завершения РИ — null. При завершении РИ
 applies — общее освобождение, does_not_apply — отказ в освобождении должнику в целом,
 partially_applies — сохранены конкретные требования или требования отдельного кредитора.
+Ограничение только по определённому кредитору — partially_applies и без отдельной фразы
+об освобождении от остальных обязательств. Для исключения верни отдельный элемент списка.
 Стандартная оговорка о пунктах 4 и 5 статьи 213.28 и неизвестных кредиторам требованиях
-не отменяет общее освобождение. Отсутствие решения или противоречие — unclear.
-debt_release_text — дословный абзац резолюции, debt_release_reason_text — дословный
+не отменяет общее освобождение. Отсутствие решения или противоречие при завершении РИ — not_specified.
+debt_release_text — полный дословный абзац резолюции от начала до конца, включая ограничения
+и указанные в этом абзаце реквизиты. debt_release_reason_text — дословный
 фрагмент мотивировки с установленной причиной, если она есть. excluded_creditors —
-только конкретные исключения из резолюции, с дословным basis_text на каждое исключение
-и basis_act_date только для явно указанного акта об этом требовании. В этом массиве
-отдельные basis_text служат цитатами. Для дословных полей quote можно оставить пустым.
+только конкретные исключения из резолюции. Для каждого дай точный restriction_text,
+дословный basis_text и basis_act_date явно указанного акта об этом требовании либо null.
+creditor_name=null, если лицо не названо. creditor_inn и amount (десятичная строка в рублях)
+заполняй только если в этом фрагменте реквизит или сумма однозначно относятся к исключению.
+Номера дел, статьи, даты, вознаграждение АУ и общая сумма долга не являются суммой исключения.
+Для дословных полей quote можно оставить пустым.
+
+Мировое соглашение с залоговым кредитором: secured_creditor_settlement_approved=true,
+если его утверждение подтверждено распоряжением суда, а залоговый характер установлен по акту.
+Приведи полный точный фрагмент в secured_creditor_settlement_text из резолюции. Для false
+нужен полный акт и отсутствие такого утверждения. Для отдельной резолюции без подтверждения
+или при сомнении верни null. Это отдельный факт, он не определяет debt_release_status.
 
 Переход РД → РИ: только при completed_and_realization_started верни начало новой РИ,
 прямо назначенную дату её окончания, дату, время HH:MM и адрес следующего заседания
-и требование о промежуточном отчёте с его сроком. Начало — явно указанное, а при отсутствии
+и требование о промежуточном отчёте с его сроком. Выбирай заседание по результатам новой РИ,
+отчёту управляющего или завершению процедуры. Предварительный отчёт требуется при поручении
+представить его до заседания, заранее или к указанной дате. Поручение представить отчёт после
+мероприятий без указания заблаговременности само по себе не подходит. Если указан относительный
+срок, верни intermediate_report_deadline=null. Начало — явно указанное, а при отсутствии
 отдельной даты — дата текущего акта о введении РИ. Если суд указал только срок в месяцах,
 верни new_procedure_duration_months с дословной цитатой всего распоряжения о введении РИ
 и сроке и оставь new_procedure_end_date=null:
@@ -188,6 +242,12 @@ def _operative_text(text: str, span: Span) -> str | None:
         return None
     if _literal(text[start.end():], span.start_quote) or _literal(text[end.end():], span.end_quote):
         return None
+    headings = list(OPERATIVE_LINE.finditer(text, 0, start.start()))
+    if headings and not re.fullmatch(r"\s*(?:\d+[.)]\s*)?", text[headings[-1].end():start.start()]):
+        return None
+    signature = SIGNATURE_LINE.search(text, start.start())
+    if signature and (end.end() > signature.start() or text[end.end():signature.start()].strip()):
+        return None
     return text[start.start():end.end()]
 
 
@@ -202,6 +262,49 @@ def _date_supported(value: str, quote: str) -> bool:
 
 def _invalidate(field: dict, reason: str) -> None:
     field.update(value=None, confidence=None, validation_issue=reason)
+
+
+def _complete_paragraph(text: str, match: re.Match) -> bool:
+    """Check visible paragraph boundaries in the text layer without rewriting the quote."""
+    before, after = text[:match.start()], text[match.end():]
+    previous_line = before.rsplit("\n", 1)[-1].strip()
+    starts_paragraph = not before.strip() or bool(re.fullmatch(r"\d+[.)]", previous_line))
+    if not previous_line and before.rstrip().endswith((".", "!", "?", ";", ",", ":")):
+        starts_paragraph = True
+    ends_paragraph = not after.strip() or (
+        match[0].endswith((".", "!", "?", ";")) and bool(re.match(r"[^\S\r\n]*\r?\n+", after))
+    )
+    return starts_paragraph and ends_paragraph
+
+
+def _excluded_creditors(items: list[ExcludedCreditor], operative: str, output: dict) -> None:
+    rows = []
+    for item in items:
+        restriction = _literal(operative, item.restriction_text)
+        if restriction is None:
+            output["validation_issue"] = "Исключение по кредитору не подтверждено резолютивной частью."
+            continue
+        quote = restriction[0]
+        basis = _literal(operative, item.basis_text)
+        basis_text = basis[0] if basis else quote
+        name = creditor_value(item.creditor_name, quote, operative).value if item.creditor_name else None
+        if item.creditor_name and name is None:
+            output["validation_issue"] = "Наименование кредитора не подтверждено текстом исключения."
+        if name and re.fullmatch(r"ПАО\s+«?Сбербанк(?: России)?»?", name, re.IGNORECASE):
+            name = "ПАО Сбербанк"
+        inn = item.creditor_inn
+        if inn and (not re.fullmatch(r"(?:[0-9]{10}|[0-9]{12})", inn) or
+                    not re.search(rf"\bИНН\s*[:№]?\s*{inn}(?![0-9])", quote, re.IGNORECASE)):
+            inn = None
+        amount = money(item.amount)
+        cited_amounts = {money(match[0].replace("₽", "руб.")) for match in RUBLE_AMOUNT.finditer(quote)}
+        rows.append({
+            "creditor_name": name, "creditor_inn": inn,
+            "amount": format(amount, ".2f") if amount is not None and cited_amounts == {amount} else None,
+            "restriction_text": quote, "basis_text": basis_text,
+            "basis_act_date": item.basis_act_date if item.basis_act_date and _date_supported(item.basis_act_date, basis_text) else None,
+        })
+    output["value"] = rows
 
 
 def _fact_output(name: str, fact: Fact, text: str, operative: str | None, model: str) -> dict:
@@ -221,6 +324,8 @@ def _fact_output(name: str, fact: Fact, text: str, operative: str | None, model:
     }
     if fact.review_reason and fact.review_reason.strip():
         output["validation_issue"] = fact.review_reason.strip()
+    if name in LIST_FIELDS and value is None:
+        output["value"] = []
     if value is None or value == []:
         return output
 
@@ -228,18 +333,16 @@ def _fact_output(name: str, fact: Fact, text: str, operative: str | None, model:
         output["value"] = operative
         output["evidence"] = fact.value.model_dump()
         if not operative or fact.source != "resolutive_part":
-            _invalidate(output, "Границы резолютивной части не подтверждены цитатами.")
+            _invalidate(output, "Не подтверждены границы полной резолютивной части.")
         return output
 
     if name == "excluded_creditors":
-        if not operative or fact.source != "resolutive_part" or any(
-            not _literal(operative, item.basis_text) or
-            (item.basis_act_date is not None and not _date_supported(item.basis_act_date, item.basis_text))
-            for item in value
-        ):
-            _invalidate(output, "Исключение по кредитору не подтверждено резолютивной частью.")
-        else:
-            output["value"] = [item.model_dump() for item in value]
+        _excluded_creditors(value, operative if fact.source == "resolutive_part" and operative else "", output)
+        return output
+
+    if name == "debt_release_status" and value == "not_specified":
+        return output
+    if name == "secured_creditor_settlement_approved" and value is False and fact.source == "document" and not quote:
         return output
 
     source_text = operative if fact.source == "resolutive_part" else text
@@ -250,6 +353,10 @@ def _fact_output(name: str, fact: Fact, text: str, operative: str | None, model:
         _invalidate(output, "Дата текущего судебного акта должна быть подтверждена его шапкой.")
     elif name == "debt_release_text" and fact.source != "resolutive_part":
         _invalidate(output, "Текст распоряжения об освобождении должен быть из резолютивной части.")
+    elif name == "debt_release_text" and not _complete_paragraph(source_text, literal):
+        _invalidate(output, "Не подтверждён полный абзац резолюции об освобождении от обязательств.")
+    elif name == "secured_creditor_settlement_text" and fact.source != "resolutive_part":
+        _invalidate(output, "Утверждение мирового соглашения должно подтверждаться резолюцией.")
     elif name in DATE_FIELDS and not _date_supported(value, quote):
         _invalidate(output, "Дата не подтверждена цитатой или имеет неверный формат.")
     elif name in {"debtor_inn", "debtor_snils"}:
@@ -267,13 +374,50 @@ def _fact_output(name: str, fact: Fact, text: str, operative: str | None, model:
     return output
 
 
+def _finalize_outcome(fields: dict, evidence: CompletionEvidence, text: str, operative: str | None) -> None:
+    completion = fields["completion_result"]
+    procedure = fields["completed_procedure_type"]
+    if completion["value"] == TRANSITION:
+        explicit = evidence.explicit_completion_quote
+        direct = bool(_literal(operative or "", explicit) and RD_NAME.search(explicit)
+                      and RD_COMPLETION_ORDER.search(explicit))
+        prior = evidence.prior_restructuring_quote
+        indirect = bool(_literal(text, prior) and RD_NAME.search(prior) and PRIOR_RD_ORDER.search(prior))
+        if not (direct or indirect) or procedure["value"] != "restructuring" or fields["next_procedure_type"]["value"] != "realization":
+            reason = "Не удалось подтвердить завершение действовавшей реструктуризации при введении реализации имущества."
+            _invalidate(fields["document_is_completion_act"], reason)
+            _invalidate(procedure, reason)
+            completion.update(value="unclear", validation_issue=reason)
+        elif not direct:
+            completion["validation_issue"] = INFERRED_TRANSITION_REASON
+
+    status = fields["debt_release_status"]
+    if completion["value"] == "completed" and procedure["value"] == "realization" and fields["document_is_completion_act"]["value"] is True:
+        if status["value"] not in RELEASE_DECISIONS:
+            status.update(value="not_specified", validation_issue=UNSPECIFIED_RELEASE_REASON)
+    else:
+        status.update(value=None, confidence=None, source=None, evidence="",
+                      reasoning="Для этого результата процедуры вопрос освобождения не установлен.")
+        status.pop("validation_issue", None)
+
+    settlement = fields["secured_creditor_settlement_approved"]
+    if settlement["value"] is True and not fields["secured_creditor_settlement_text"]["value"]:
+        _invalidate(settlement, "Не подтверждена цитата об утверждении мирового соглашения.")
+    if settlement["value"] is False and (settlement["source"] != "document"
+                                        or fields["document_type"]["value"] not in {"determination", "decision"}
+                                        or not operative or evidence.resolutive_part_text.review_reason):
+        settlement.update(value=None, source=None, confidence=None,
+                          reasoning="Отсутствие соглашения нельзя подтвердить без полного акта.")
+
+
 def build_fields(evidence: CompletionEvidence, text: str, model: str) -> dict:
     span = evidence.resolutive_part_text.value
     operative = _operative_text(text, span) if span else None
     fields = {
         name: _fact_output(name, getattr(evidence, name), text, operative, model)
-        for name in CompletionEvidence.model_fields if name != "new_procedure_duration_months"
+        for name in CompletionEvidence.model_fields if name not in INTERNAL_FIELDS
     }
+    _finalize_outcome(fields, evidence, text, operative)
     raw = fields["case_number_raw"]
     fields["case_number"] = {**raw, "value": normalize_case(raw["value"])[1]}
     if raw["value"] and not fields["case_number"]["value"]:
@@ -376,7 +520,7 @@ async def extract_fields(text: str, profile: dict, *, document_id: str, pipeline
 
 
 def _unavailable_fields(profile: dict, error: str) -> dict:
-    return {name: {"value": None, "confidence": None, "source": None, "reasoning": error,
+    return {name: {"value": [] if name in LIST_FIELDS else None, "confidence": None, "source": None, "reasoning": error,
                    "extraction_method": "llm", "prompt_version": PROMPT_VERSION,
                    **({"validation_issue": error} if name == "completion_result" else {})}
             for name in profile["fields"]}
@@ -388,7 +532,11 @@ def field_issues(fields: dict, profile: dict) -> list[ValidationIssue]:
 
     problems = {name: info["validation_issue"] for name, info in fields.items()
                 if isinstance(info, dict) and info.get("validation_issue")}
-    for name in required_names(profile["fields"]):
+    is_new = fields.get("completion_result", {}).get("prompt_version") == PROMPT_VERSION
+    required = required_names(profile["fields"])
+    if not is_new:
+        required.add("debt_release_status")  # Match review behavior for stored v1 responses.
+    for name in required:
         if value(name) is None:
             problems.setdefault(name, f"Обязательное поле {name} не установлено.")
     completion = value("completion_result")
@@ -401,12 +549,40 @@ def field_issues(fields: dict, profile: dict) -> list[ValidationIssue]:
                                      value("next_procedure_type") != "realization"):
         problems.setdefault("next_procedure_type", "Результат перехода РД → РИ противоречив.")
     release = value("debt_release_status")
-    realization_completed = completed and value("completed_procedure_type") == "realization"
-    if release == "unclear" or (release and (release != "not_applicable") != realization_completed):
+    realization_completed = completion == "completed" and value("completed_procedure_type") == "realization"
+    if is_new:
+        if completed and value("document_is_completion_act") is True:
+            if not value("debtor_inn"):
+                problems.setdefault("debtor_inn", "Не установлен ИНН должника.")
+            if not value("financial_manager_full_name"):
+                problems.setdefault("financial_manager_full_name", "Не установлен действующий финансовый управляющий.")
+        if realization_completed and release not in RELEASE_DECISIONS:
+            problems["debt_release_status"] = UNSPECIFIED_RELEASE_REASON
+        if realization_completed and release in RELEASE_DECISIONS and not value("debt_release_text"):
+            problems.setdefault("debt_release_text", "Не подтверждён полный абзац резолюции об освобождении от обязательств.")
+        if release == "partially_applies" and not value("excluded_creditors"):
+            problems.setdefault("excluded_creditors", "Не удалось подтвердить дословный текст исключения в резолюции.")
+        if value("secured_creditor_settlement_approved") is True:
+            if not value("secured_creditor_settlement_text"):
+                problems.setdefault("secured_creditor_settlement_text", "Не подтверждена цитата об утверждении мирового соглашения.")
+            if release == "does_not_apply":
+                problems.setdefault("secured_creditor_settlement_approved",
+                                    "Суд не применил освобождение и одновременно утвердил мировое соглашение с залоговым кредитором.")
+        for earlier, later in [("resolutive_part_date", "judicial_act_date"),
+                               ("new_procedure_start_date", "new_procedure_end_date")]:
+            if value(earlier) and value(later) and value(earlier) > value(later):
+                problems.setdefault(later, f"Даты {earlier} и {later} противоречат порядку событий.")
+    elif release == "unclear" or (release and (release != "not_applicable") !=
+                                  (completed and value("completed_procedure_type") == "realization")):
         problems.setdefault("debt_release_status", "Статус освобождения не установлен или противоречит исходу процедуры.")
     issues = [ValidationIssue(code=REVIEW_CODE, field_name=name, message=message)
               for name, message in sorted(problems.items())]
     if release == "partially_applies":
-        issues.append(ValidationIssue(code="partial_debt_release", field_name="debt_release_status",
-                                      message="Суд сохранил отдельные требования кредиторов."))
+        issue = ValidationIssue(code="partial_debt_release", field_name="debt_release_status",
+                                message=PARTIAL_RELEASE_REASON if is_new else "Суд сохранил отдельные требования кредиторов.")
+        issues.insert(0 if is_new else len(issues), issue)
+    elif is_new and release == "not_specified":
+        issues.sort(key=lambda issue: issue.field_name != "debt_release_status")
+    elif is_new and problems.get("completion_result") == INFERRED_TRANSITION_REASON:
+        issues.sort(key=lambda issue: issue.field_name != "completion_result")
     return issues

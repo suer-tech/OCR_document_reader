@@ -33,7 +33,7 @@ ContentType = Literal["pdf", "image", "text", "docx"]
 TESSERACT_LANG = "rus+eng"
 
 
-def extract_text_from_pdf(file_path: str) -> str:
+def extract_text_from_pdf(file_path: str, *, skip_page_numbers: bool = False) -> str:
     """
     Пытается извлечь текст из PDF без OCR.
     Для MVP: простое конкатенирование текста со всех страниц.
@@ -46,8 +46,17 @@ def extract_text_from_pdf(file_path: str) -> str:
     try:
         text_parts: list[str] = []
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text() or ""
+            for index, page in enumerate(pdf.pages, 1):
+                if skip_page_numbers:
+                    lines = page.extract_text_lines(return_chars=False)
+                    page_text = "\n".join(
+                        line["text"] for line in lines if not (
+                            line["text"].strip() == str(index)
+                            and (line["top"] <= 60 or line["bottom"] >= page.height - 50)
+                        )
+                    )
+                else:
+                    page_text = page.extract_text() or ""
                 text_parts.append(page_text)
         return "\n".join(text_parts).strip()
     except Exception as exc:
@@ -234,7 +243,10 @@ def extract_text_at_ingest(
                     reason=readers[index - 1][0] + "_empty",
                     document_id=document_id, pipeline_run_id=pipeline_run_id,
                 )
-            text = reader(file_path)
+            if reader_source == "pdfplumber" and (ocr_config or {}).get("skip_page_numbers"):
+                text = reader(file_path, skip_page_numbers=True)
+            else:
+                text = reader(file_path)
             if text.strip():
                 logger.info(
                     "text_extraction_source", source=reader_source,

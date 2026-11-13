@@ -327,10 +327,12 @@ PDF без текста, смешанные PDF и фото отправляют
 * `completion_result` — completed, completed_and_realization_started, not_completed, unclear или null.
 * `next_procedure_type` — realization при переходе РД → РИ, иначе null.
 * `resolutive_part_text` — Дословный текст распоряжений суда.
-* `debt_release_status` — applies, does_not_apply, partially_applies, not_applicable, unclear или null.
-* `debt_release_text` — Дословный абзац резолюции об освобождении.
-* `debt_release_reason_text` — Дословное пояснение суда, если указано.
-* `excluded_creditors` — Массив исключений с creditor_name, basis_act_date и дословным basis_text либо null.
+* `debt_release_status` — applies, does_not_apply, partially_applies, not_specified или null. null при завершении РД и при отсутствии подтверждённого завершения РИ. not_specified при завершении РИ, если результат освобождения не установлен, с ручной проверкой. В сохранённых ответах прежней версии встречаются not_applicable и unclear.
+* `debt_release_text` — Полный дословный абзац резолюции об освобождении. Из value этого поля ЕФРСБ получает «Причину неприменения освобождения».
+* `debt_release_reason_text` — Дословный фрагмент мотивировки суда, если указан.
+* `excluded_creditors` — Массив исключений. В каждой строке creditor_name, creditor_inn, amount (десятичная строка в рублях), дословный restriction_text и прежние basis_act_date и basis_text. Неустановленные имя, ИНН, дата и сумма имеют значение null. При отсутствии подтверждённых строк возвращается [].
+* `secured_creditor_settlement_approved` — true при подтверждённом утверждении мирового соглашения с залоговым кредитором, false при установленном отсутствии в полном акте, null при неопределённости. Значение независимо от debt_release_status.
+* `secured_creditor_settlement_text` — Дословный фрагмент резолюции об утверждении мирового соглашения с залоговым кредитором либо null.
 * `new_procedure_start_date` — Дата начала новой реализации имущества.
 * `new_procedure_end_date` — Дата окончания новой реализации имущества.
 * `new_procedure_end_date_is_calculated` — true для расчётной даты, false для прямо назначенной, иначе null.

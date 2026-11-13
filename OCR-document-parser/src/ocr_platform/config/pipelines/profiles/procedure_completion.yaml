@@ -4,11 +4,13 @@ name: "Акт о завершении процедуры банкротства"
 description: "Результат завершения РИ или РД, освобождение от обязательств и переход РД → РИ"
 extraction_mode: llm_evidence
 explicit_only: true
-version: "1.0"
+version: "2.0"
 applicable_sources: [crm, email, portal, external, other]
 quality: {score_required_fields: true}
 
 models:
+  ocr:
+    skip_page_numbers: true
   llm_extraction:
     provider: router_ai
     model: google/gemini-4-argon
@@ -36,10 +38,12 @@ fields:
   completion_result: {required: true}
   next_procedure_type: {required: false}
   resolutive_part_text: {required: true}
-  debt_release_status: {required: true}
+  debt_release_status: {required: false}
   debt_release_text: {required: false}
   debt_release_reason_text: {required: false}
   excluded_creditors: {required: false}
+  secured_creditor_settlement_approved: {required: false}
+  secured_creditor_settlement_text: {required: false}
   new_procedure_start_date: {required: false}
   new_procedure_end_date: {required: false}
   new_procedure_end_date_is_calculated: {required: false}
