@@ -97,7 +97,7 @@ def test_published_schema_matches_optional_string_contract():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("combined_fails", [False, True])
-async def test_extraction_keeps_claimed_amount_with_cached_prompts_and_fallback(monkeypatch, combined_fails):
+async def test_legacy_extraction_keeps_claimed_amount_with_cached_prompts_and_fallback(monkeypatch, combined_fails):
     rows = [claim(68962.0, "75000.00", "2 очередь"),
             dict(priority_queue="3 очередь", claimed_amount="45000.00", principal_debt=28914.0,
                  financial_sanctions=14835.0, total_amount=43749.0)]
@@ -116,7 +116,12 @@ async def test_extraction_keeps_claimed_amount_with_cached_prompts_and_fallback(
     monkeypatch.setattr(agent, "get_field_instruction", lambda *a, **kw: "Old Langfuse prompt")
     monkeypatch.setattr(agent, "_get_lf_client", lambda: None)
     monkeypatch.setattr(agent.asyncio, "sleep", AsyncMock())
-    profile = load_profile("rtk3")
+    profile = copy.deepcopy(load_profile("rtk3"))
+    profile["extraction_mode"] = "legacy"
+    # Exercise legacy cached-prompt composition with a synthetic extension.
+    # The active regex_jev profile no longer carries this obsolete instruction.
+    profile["fields"]["claims"]["claimed_amount_instruction"] = (
+        "Формат claimed_amount: строка с двумя знаками после точки либо null.")
     text = "Определение. " * 1000 + "Первоначально заявлено 120000 рублей."
     output = await agent._run_agent_extraction_impl(
         text, {"claims": profile["fields"]["claims"]}, profile_id="rtk3", profile_config=profile)

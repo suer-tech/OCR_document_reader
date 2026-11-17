@@ -78,3 +78,25 @@ text without a new model call and retains original nonempty values where a local
 resolver has no candidate. Human creditor targets are never passed to that local
 evaluation. Repeat full extraction on an explicitly selected small control set
 before considering deployment; no such model run is claimed by this preparation.
+
+Gemini prompt/schema revision (2026-11-17)
+-----------------------------------------
+rtk3_gemini_prompts.py is the single source of field instructions. The active
+regex_jev route selects instructions by the actual missing-field schema. Full
+claims use components/components_complete and separate pledge/salary quotes;
+confirmed claim layouts use claim_N_* fields and items/complete. The two response
+formats no longer share contradictory format instructions. Profile YAML contains
+configuration and field metadata, not duplicate prompts or legacy claimed-amount
+semantics. JEV verification questions remain separate from Gemini extraction rules.
+
+Salary/severance is true, false or null in both formats. Unsupported bool answers
+become unknown without erasing supported money. Merging same-queue rows preserves
+unknown (unless another included component explicitly establishes salary). Unknown
+status remains reviewable. Queue and pledge fields have explicit enum constraints.
+Current duty, prior costs, sanctions and computed totals retain the EMU convention.
+
+All RTK3 service tests were run with real HTTP transports blocked. Model responses
+in gateway/integration tests are synthetic substitutes. The 212 training documents
+and 21 now-authorized batch_01 regression documents were evaluated using only regex
+and arithmetic; prompt changes do not alter those results. The other 177 reserved
+documents remain outside these runs. No production deployment is included.

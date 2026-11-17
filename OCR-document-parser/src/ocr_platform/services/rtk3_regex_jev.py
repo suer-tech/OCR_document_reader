@@ -14,12 +14,14 @@ from ocr_platform.observability.logging import get_logger
 from ocr_platform.services import rtk3_requisites as req
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback, decision_probabilities
 from ocr_platform.services.rtk3_evidence import (
-    GROUNDS, INSTRUCTION, QUEUES, VERSION, ClaimEvidence, DocumentEvidence, Fact, amount_supported,
+    GROUNDS, QUEUES, VERSION, ClaimEvidence, DocumentEvidence, Fact, PledgeFact, PriorityFact, amount_supported,
     build_fields, compact, excluded_component, money, normalize_case, previous_cost, quoted,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
     CATEGORY_FIELDS, SALARY_WORDS, Claim, Components, CourtTotal, Salary, extract_candidates,
 )
+
+from ocr_platform.services.rtk3_gemini_prompts import build_gemini_prompt
 
 logger = get_logger(__name__)
 
@@ -43,9 +45,9 @@ CLAIM_QUESTIONS = {
     "included_total": "Это явно напечатанный окончательный итог именно этого требования, с указанным охватом пошлины, если он известен?",
 }
 CLAIM_TYPES = {
-    "priority_queue": Fact,
+    "priority_queue": PriorityFact,
     **dict.fromkeys(CATEGORY_FIELDS, Components),
-    "pledge_resolution": Fact,
+    "pledge_resolution": PledgeFact,
     "is_salary_or_severance": Salary,
     "included_total": CourtTotal,
 }
@@ -135,25 +137,7 @@ async def _gemini(
     if not property_types:
         return {}
     model = create_model("Rtk3MissingFields", __config__=ConfigDict(extra="forbid"), **property_types)
-    instructions = INSTRUCTION + """
-The response schema lists ONLY the unconfirmed or missing facts to return.
-Do not search for a KAD publication date. Do not return any computed amount or pledge flag.
-case_number: the base bankruptcy case number; preserve the distinct current-act number in document_case_number.
-grounds_ocr: quote the stated basis for the admitted obligation. If the act does not state it, return null.
-Do not infer pledge=no from silence. Require an explicit denial of security or express statement that
-this admitted claim is unsecured. When security is not decided, use unknown for a full claim, null for a field.
-A second priority by itself does not prove salary or severance. Look for explicit wording.
-For a fixed claim listed in verified_claims, the field key claim_N_* refers to claim N,
-starting at one. Use only the money, queue and collateral belonging to that same claim.
-Keep the confirmed facts fixed. Use the full act for a breakdown only if the earlier passage
-unambiguously describes that exact finally admitted obligation and amount.
-For principal_debt, financial_sanctions and pau_only_amount, supply quoted individual
-components (items) and their complete flag. Empty items with complete=true mean zero
-confirmed for that category; explain with a literal excerpt of the full relevant clause.
-If a category is not established, use null or complete=false. Do not return a partial sum.
-included_total is the explicitly stated final amount (exact amount token, quote and scope),
-or null if there is no independently stated total. It is used only for arithmetic checks.
-"""
+    instructions = build_gemini_prompt(set(property_types), full_claims="claims" in property_types)
     body = {
         "document": text,
         "verified_fields": {name: candidate.value.model_dump() for name, candidate in accepted.items()},

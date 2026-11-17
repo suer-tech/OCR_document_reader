@@ -56,7 +56,7 @@ def fixture(components=None, total="227 065,76", duty="8 177"):
             "components": [{"kind": kind, "amount": amount, "quote": quote} for kind, amount, quote in components],
             "components_complete": True, "included_total": fact(total, decision),
             "total_scope": "without_duty", "pledge_resolution": "no", "pledge_quote": "",
-            "is_salary_or_severance": False, "salary_quote": "", "uncertainty": "",
+            "is_salary_or_severance": False, "salary_quote": decision, "uncertainty": "",
         }],
     }
     return payload, text
@@ -80,7 +80,7 @@ async def test_rtk3_failed_response_has_three_retries_without_optional_fields(mo
     monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
     fields = await service.extract_rtk3("synthetic", load_profile("rtk3"))
     assert len(calls) == 4
-    assert all(call["models"] == ["anthropic/claude-sonnet-5.5"] for call in calls)
+    assert all(call["models"] == ["google/gemini-4-argon"] for call in calls)
     assert all("grounds" not in schema_properties(call) for call in calls[1:])
     assert all(info["value"] is None for info in fields.values())
     assert fields["creditor"]["empty_field_retries"] == 3
@@ -187,13 +187,21 @@ async def test_rtk3_conflicting_retry_cannot_replace_existing_money(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_rtk3_external_date_saves_one_result_without_retries(monkeypatch, tmp_path):
+async def test_legacy_external_date_saves_one_result_without_retries(monkeypatch, tmp_path):
     from unittest.mock import AsyncMock
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
     from ocr_platform.orchestration import run_processor as worker
     from ocr_platform.storage import models, repository
+    original_load_profile = worker.router.load_profile
+    def legacy_profile(profile_id):
+        profile = copy.deepcopy(original_load_profile(profile_id))
+        if profile_id == "rtk3":
+            profile["extraction_mode"] = "evidence_components"
+        return profile
+    # This test mocks the evidence_components gateway, not the JEV route.
+    monkeypatch.setattr(worker.router, "load_profile", legacy_profile)
     payload, text = fixture()
     text = text.replace("Дата публикации в КАД: 05.10.2026", "")
     payload["kad_publication_date"] = fact(None, "")
@@ -767,6 +775,7 @@ def test_two_queues_stay_separate_and_order_does_not_change_totals():
     claim = second["claims"][0]
     claim["priority_queue"] = fact("2 очередь", "вторую очередь")
     claim["decision_quote"] = claim["decision_quote"].replace("третью", "вторую")
+    claim["salary_quote"] = claim["decision_quote"]
     claim["included_total"]["quote"] = claim["decision_quote"]
     payload["claims"].append(claim)
     text += "\n" + claim["decision_quote"]
