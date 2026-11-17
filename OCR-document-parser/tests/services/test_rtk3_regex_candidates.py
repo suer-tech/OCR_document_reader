@@ -238,3 +238,137 @@ def test_case_quote_normalizes_year_and_dispute_without_losing_identity():
     assert _case_in_quote('А53-49302-2/2025', 'А53-49302-2/25')
     assert not _case_in_quote('А53-49302/2025', 'А53-49302-2/25')
     assert not _case_in_quote('А53-49302/2025', 'А53-49303-2/25', main_case=True)
+
+
+def test_fee_with_words_between_digits_and_currency():
+    text = ('ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» в третью очередь в сумме 100 руб. основного долга. '
+            'Признать требование ПАО «Тест» в размере 9 296 (девять тысяч двести девяносто шесть) рублей '
+            'госпошлины по настоящему заявлению обоснованным по пункту 3 статьи 137.')
+    row = fields(text)['claims']['value'][0]
+    assert row['pau_only_amount'] == '9296.00'
+    assert row['total_amount'] == '9396.00'
+    unreadable = text.replace('9 296 (девять тысяч двести девяносто шесть) рублей', 'нечитаемой суммы')
+    row = fields(unreadable)['claims']['value'][0]
+    assert row['pau_only_amount'] is None
+    assert row['principal_debt'] == '100.00'
+
+
+def test_creditor_from_admitted_claim_not_fee_explanation():
+    name = 'Межрайонной инспекции Федеральной налоговой службы №4 по Республике Башкортостан'
+    text = (f'ОПРЕДЕЛИЛ:\nПризнать требование уполномоченного органа в лице {name} '
+            'в размере 100 руб. основного долга обоснованным и включить в третью очередь. '
+            'Взыскать с должника 5 руб. пошлины. Разъяснить, что требование МИФНС №32 по Челябинской области '
+            'подлежит удовлетворению по пункту 3 статьи 137.')
+    assert '№4' in extract_candidates(text).fields['creditor'].value
+    ambiguous = text + ' Включить требования МИФНС №32 по Челябинской области в третью очередь в размере 10 руб.'
+    assert 'creditor' not in extract_candidates(ambiguous).fields
+
+
+def test_contract_list_keeps_every_reference():
+    text = ('ОПРЕДЕЛИЛ:\nВключить требование по кредитным договорам №A-1 от 01.01.2025; '
+            '№B-2 от 02.02.2025; №C-3 от 03.03.2025 в сумме 100 руб. основного долга.')
+    value = extract_candidates(text).fields['grounds_ocr'].value
+    assert all(ref in value for ref in ['A-1', 'B-2', 'C-3'])
+
+
+def test_unquoted_bank_and_former_surname_requisites():
+    from ocr_platform.services.rtk3_requisites import source_inn
+    text = ('Рассмотрев заявление БАНК ГПБ (АО) (ИНН 7744001497) в рамках дела о банкротстве '
+            'Тестовой (ранее фамилия Примерова) Анны Ивановны (ИНН 123456789012). '
+            'ОПРЕДЕЛИЛ:\nВключить требования БАНК ГПБ (АО) в третью очередь в размере 100 руб. основного долга.')
+    result = extract_candidates(text).fields
+    assert result['creditor'].value == 'АО «Банк ГПБ»'
+    assert result['creditor_inn'].value == '7744001497'
+    assert result['debtor_inn'].value == '123456789012'
+    address = 'ПАО «Тест», 117312, г. Москва, ул. Тестовая, д. 1, ОГРН 1234567890123, ИНН 7707083893'
+    assert source_inn(address, 'creditor_inn', 'ПАО «Тест»').value == '7707083893'
+
+
+def test_single_bare_amount_with_explicit_outside_satisfaction():
+    text = ('ОПРЕДЕЛИЛ:\nПризнать обоснованными и подлежащими включению в третью очередь '
+            'требования ООО «Тест» в размере 171 291,65 основной долг, отдельно, как подлежащие '
+            'удовлетворению за счет имущества должника, оставшегося после удовлетворения требований '
+            'кредиторов, включенных в реестр требований кредиторов должника.')
+    row = fields(text)['claims']['value'][0]
+    assert row['priority_queue'] == 'За реестром'
+    assert row['principal_debt'] == '171291.65'
+    assert row['financial_sanctions'] == '0.00'
+    assert row['total_amount'] == '171291.65'
+
+
+def test_duty_repayment_clause_after_comma_belongs_to_same_amount():
+    text = ('ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» в третью очередь: '
+            '100 руб. - основной долг; 20 руб. - проценты; 3 руб. - неустойка; '
+            '5 руб. - расходы на оплату государственной пошлины, в порядке положений пункта 3 статьи 137.')
+    row = fields(text)['claims']['value'][0]
+    assert row['principal_debt'] == '120.00'
+    assert row['financial_sanctions'] == '3.00'
+    assert row['pau_only_amount'] == '5.00'
+    assert row['claimed_amount'] == '123.00'
+    assert row['total_amount'] == '128.00'
+    unknown = text.replace(', в порядке положений пункта 3 статьи 137', '')
+    assert fields(unknown)['claims']['value'][0]['pau_only_amount'] is None
+
+
+def test_named_embedded_fee_does_not_assign_its_queue_to_debt():
+    text = ('ОПРЕДЕЛИЛ:\nВключить в реестр требования ПАО «Тест» в размере 100 руб., '
+            'в том числе: 80 руб. основной долг, 20 руб. проценты, как обеспеченные залогом квартиры. '
+            'Судебные расходы ПАО «Тест» по уплате государственной пошлины в размере 5 руб. '
+            'подлежат учету в третьей очереди реестра по п. 3 ст. 137.')
+    row = fields(text)['claims']['value'][0]
+    assert row['principal_debt'] == '100.00'
+    assert row['pau_only_amount'] == '5.00'
+    assert row['priority_queue'] is None
+
+
+def test_collateral_in_capacity_wording():
+    from ocr_platform.services.rtk3_regex_candidates import pledge_candidate
+    assert pledge_candidate('установить требование в качестве обеспеченного залогом автомобиля').value == 'yes'
+    assert pledge_candidate('отказать в признании требования в качестве обеспеченного залогом автомобиля').value == 'no'
+
+
+def test_separate_admission_after_approved_plan_does_not_include_plan_amounts():
+    text = ('ОПРЕДЕЛИЛ:\nУтвердить локальный план реструктуризации в следующей редакции: '
+            '1. Задолженность составляет 900 руб. 2. Должник уплачивает 50 руб. госпошлины. '
+            '3. Требования обеспечены залогом квартиры. '
+            'Производство по заявлению ПАО «Тест» о включении в реестр требований '
+            'по кредитному договору №1 от 01.01.2025 - прекратить. '
+            'Включить в третью очередь реестра денежное требование ПАО «Тест» в размере 100 руб. '
+            'Признать судебные расходы ПАО «Тест» по уплате госпошлины в размере 5 руб. '
+            'обоснованными по пункту 3 статьи 137. Возвратить ПАО «Тест» 2 руб. госпошлины.')
+    result = fields(text)
+    assert len(result['claims']['value']) == 1
+    row = result['claims']['value'][0]
+    assert row['priority_queue'] == '3 очередь'
+    assert row['pau_only_amount'] == '5.00'
+    assert row['principal_debt'] is None  # A total alone does not prove its composition.
+    assert row['total_amount'] is None
+    assert result['pledge_resolution']['value'] is None
+    no_boundary = text.replace(' - прекратить.', ' продолжает действовать.')
+    assert extract_candidates(no_boundary).claims == []
+
+
+def test_refusal_of_secured_creditor_status_and_separate_fee_sentence():
+    text = ('ОПРЕДЕЛИЛ:\nПризнать обоснованными и включить в третью очередь '
+            'требования ПАО «Тест» в сумме 100 руб., из которой: '
+            '80 руб. основной долг, 17 руб. проценты, 3 руб. неустойка. '
+            'В удовлетворении требования о признании за обществом статуса залогового кредитора отказать. '
+            'Государственная пошлина по настоящему требованию в размере 5 руб. '
+            'учитывается в реестре применительно к пункту 3 статьи 137.')
+    result = fields(text)
+    row = result['claims']['value'][0]
+    assert result['pledge_resolution']['value'] == 'no'
+    assert result['secured_by_pledge']['value'] is False
+    assert row['pau_only_amount'] == '5.00'
+    assert row['total_amount'] == '105.00'
+
+
+def test_exclusion_stops_before_independent_fee_but_still_rejects_refund():
+    from ocr_platform.services.rtk3_evidence import excluded_component
+    rejected = 'В удовлетворении требования о взыскании 10 руб. отказать.'
+    awarded = 'Государственная пошлина 5 руб. учитывается по пункту 3 статьи 137.'
+    refunded = 'Государственная пошлина 2 руб. подлежит возврату заявителю.'
+    text = rejected + ' ' + awarded + ' ' + refunded
+    assert excluded_component('10 руб.', text)
+    assert not excluded_component(awarded, text)
+    assert excluded_component(refunded, text)

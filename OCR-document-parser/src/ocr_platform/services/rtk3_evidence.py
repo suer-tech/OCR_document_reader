@@ -214,6 +214,7 @@ def money(value: object) -> Decimal | None:
     if isinstance(value, bool) or value is None:
         return None
     s = re.sub(r"\s+", "", str(value)).casefold()
+    s = re.sub(r"(?<=\d)\([а-яё-]{3,200}\)(?=руб)", "", s)
     m = re.fullmatch(r"([0-9]+)(?:руб(?:лей|ля|ль)?\.?|р\.)([0-9]{1,2})(?:коп(?:еек|ейки|ейка)?\.?|к\.)", s)
     if m:
         s = m[1] + "." + m[2].zfill(2)
@@ -248,7 +249,8 @@ def excluded_component(quote: str, text: str) -> bool:
     """
     source = compact(text)
     stop = (r"(?=\s+(?:включить|признать|взыскать|вернуть|возвратить|"
-            r"производство\s+по|прекратить\s+производство|определение\s)|$)")
+            r"производство\s+по|прекратить\s+производство|определение\s)|"
+            r"(?<=\.)\s+(?:государственная\s+пошлина|судебные\s+расходы)\b|$)")
     starts = (r"(?:прекратить\s+производство|производство\s+по|"
               r"в\s+удовлетворении|вернуть|возвратить)")
     for match in re.finditer(starts + r".{0,2200}?" + stop, source):

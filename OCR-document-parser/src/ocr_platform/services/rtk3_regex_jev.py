@@ -313,7 +313,8 @@ def _amount_sum(
             return None
         if not verified and not quoted(item.quote, claim.quote):
             separate_duty = sole_claim and kind == "duty" and re.search(
-                r"взыскать|признать|включить|учитывать|подлежащ\w*\s+взысканию", item.quote, re.I)
+                r"взыскать|признать|включить|учитыва(?:ть|ется|ются)|подлежащ\w*\s+взысканию|"
+                r"подлеж\w*\s+(?:учету|удовлетворению)", item.quote, re.I)
             linked_breakdown = (total and quoted(item.quote, value.quote)
                                 and amount_supported(total.amount, value.quote) and quoted(total.quote, claim.quote))
             if not separate_duty and not linked_breakdown:

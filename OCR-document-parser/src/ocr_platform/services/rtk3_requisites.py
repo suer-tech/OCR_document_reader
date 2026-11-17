@@ -39,6 +39,7 @@ def normalize_creditor(value: str) -> str:
         value = re.sub(r"межрайонн[а-яё]+\s+инспекци[а-яё]+", "Межрайонная инспекция", value, flags=re.I)
     value = re.sub(r"№\s*([0-9])", r"№\1", value)
     value = re.sub(r"\s*\(?\s*(?:ИНН|ОГРН|КПП)\s*[:№]?\s*[0-9].*$", "", value, flags=re.I).rstrip(" ,;(")
+    value = re.sub(r'(?<=[»"])\s*,\s*\d{6}\s*,\s*г\..*$', '', value)
     value = re.sub(r",\s*(?:г\.\s*|г\s+|город\s+).*$", "", value, flags=re.I)
     value = re.sub(r'(?<=[»"])\s+г\.\s*[А-ЯЁ][а-яё-]+.*$', '', value)
     # Straight/curly quotation pairs only; keep internal capitalization and ё.
@@ -48,8 +49,8 @@ def normalize_creditor(value: str) -> str:
     value = re.sub(r"\s+([,;])", r"\1", value).strip(" ,;")
     if re.fullmatch(r"(?:ПАО\s+)?Банк(?:а|у|ом)?\s+«?ВТБ»?(?:\s*\(ПАО\))?", value, re.I):
         return "Банк ВТБ"
-    if bank := re.fullmatch(r"Банк(?:а|у|ом)?\s+«([^»]+)»\s*\((ПАО|АО)\)", value, re.I):
-        return bank[2].upper() + ' «Банк ' + bank[1] + '»'
+    if bank := re.fullmatch(r"Банк(?:а|у|ом)?\s+(?:«([^»]+)»|([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]{1,60}))\s*\((ПАО|АО)\)", value, re.I):
+        return bank[3].upper() + ' «Банк ' + (bank[1] or bank[2]) + '»'
     if "«" not in value and (organization := re.fullmatch(r"(ПАО|АО|ООО)(\s+ПКО)?\s+([^()]+)", value)):
         value = organization[1] + (organization[2] or "") + " «" + organization[3].strip() + "»"
     return value
@@ -111,7 +112,7 @@ INN = re.compile(r"\bИНН\s*[:№]?\s*([0-9]{12}|[0-9]{10})(?![0-9])", re.I)
 WORD = r"[А-ЯЁ][А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)*"
 PERSON = re.compile(
     rf"\b(?!(?:ИП|ПАО|АО|ООО|ПКО)\b)({WORD})"
-    rf"(?:\s+\((?:(?i:ранее)\s*[-–—]?\s*)?{WORD}(?:,\s*{WORD})*\))?\s+({WORD})\s+({WORD})"
+    rf"(?:\s+\((?:(?i:ранее)(?:\s+(?i:фамилия))?\s*[-–—]?\s*)?{WORD}(?:,\s*{WORD})*\))?\s+({WORD})\s+({WORD})"
 )
 
 
@@ -171,7 +172,8 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
         else:
             if not wanted_tokens:
                 continue
-            starts = list(re.finditer(r"\bБанк(?:а|у|ом)?\s+ВТБ(?:\s*\((?:ПАО|публичн\w*\s+акционерн\w*\s+обществ\w*)\))?|"
+            starts = list(re.finditer(r'\bБанк(?:а|у|ом)?\s+(?:[«"][^»"]+[»"]|[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]{1,60})\s*\((?:ПАО|АО)\)|'
+                r"\bБанк(?:а|у|ом)?\s+ВТБ(?:\s*\((?:ПАО|публичн\w*\s+акционерн\w*\s+обществ\w*)\))?|"
                 r"\b(?:ООО|ПАО|АО|ИП)\b|" + "|".join(
                 pattern for pattern, _ in LEGAL_FORMS[:4]), prefix, re.I))
             tax = list(re.finditer(r"(?:межрайонн\w*\s+)?(?:инспекци\w*\s+)?федеральн\w*\s+налогов\w*\s+служб\w*|(?:межрайонн\w*\s+)?\b(?:МИФНС|ИФНС|ФНС)\b", prefix, re.I))
