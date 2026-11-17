@@ -789,14 +789,17 @@ def test_legacy_arithmetic_error_forces_review_without_mutation():
 
 
 @pytest.mark.asyncio
-async def test_public_dispatch_uses_profile_model_and_one_gateway_call(monkeypatch):
+async def test_legacy_dispatch_uses_profile_model_and_one_gateway_call(monkeypatch):
     payload, text = fixture()
     gateway = MagicMock(return_value=SimpleNamespace(parsed=payload))
     monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
     monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(
         router_ai_api_key="test-router-key", router_ai_base_url="https://router.invalid/v1"))
     from ocr_platform.services.document_intel_service import simple_extract_fields
-    fields = await simple_extract_fields(text, load_profile("rtk3"), "rtk3", "run", "doc")
+    profile = copy.deepcopy(load_profile("rtk3"))
+    profile["extraction_mode"] = "evidence_components"
+    profile["models"]["llm_extraction"]["model"] = "anthropic/claude-sonnet-5.5"
+    fields = await simple_extract_fields(text, profile, "rtk3", "run", "doc")
     assert fields["total_claimed_amount"]["value"] == "227065.76"
     gateway.assert_called_once()
     assert gateway.call_args.kwargs["models"] == ["anthropic/claude-sonnet-5.5"]

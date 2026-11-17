@@ -84,7 +84,7 @@ quote="". Do not search the web or use an assumed creditor INN.
 Write uncertainty explanations in Russian for the human reviewer. uncertainty=""
 when there is no unresolved problem; do not put a narrative summary or a clear
 disposition into uncertainty. An explicitly excluded amount is resolved scope,
-not a reason to set claims_complete=false. Missing INN/publication date does not
+not a reason to set claims_complete=false. Missing INN does not
 make the monetary claims incomplete; leave only those individual facts null.
 Unknown, unsupported or mixed collateral status also does not by itself make
 components_complete or claims_complete false. Report collateral uncertainty in
@@ -129,9 +129,6 @@ substitute another entity with the same brand or invent a name from one word Б�
 inclusion_date: date of THIS ruling in DD.MM.YYYY; not a hearing or signature date.
 If this act separately states the date of preparation in full and the date its
 resolution was pronounced, use the explicit full-act date, not the earlier pronouncement.
-kad_publication_date: only an explicit separate publication/placement date in KAD.
-Never copy inclusion_date or an electronic signature date. If not visible in the
-provided text, return null (manual review is preferable to a guessed date).
 grounds.value: exactly Кредитный договор, Договор займа, Налоговая задолженность,
 Оплата коммунальных услуг, or null. Quote the actual supporting wording; if inferred
 only from an unknown creditor's generic monetary obligations, return null.
@@ -176,9 +173,10 @@ the quoted total includes duty. Do not use an original requested amount as this 
 priority_queue.value: 1 очередь / 2 очередь / 3 очередь / 4 очередь / За реестром /
 Иное; quote its operative context. A reference to пункт 4 статьи 142 is not itself
 the words '4 очередь'; identify its stated satisfaction outside the register.
-pledge_resolution: yes only if THIS included claim is finally secured; no if this
-included claim has no pledge; separated if its pledge status is explicitly deferred
-or separated; unknown if unclear. Quote the operative support. A mortgage on a
+pledge_resolution: yes only if THIS included claim is finally secured; no only if
+the court explicitly refuses security for THIS claim or expressly states that it
+is unsecured. Silence about pledge is unknown, not no. Use separated if its status
+is explicitly deferred or separated; unknown if unclear. Quote the operative support. A mortgage on a
 different settled/excluded claim must not make the included residual claim secured.
 Conversely, dismissal of one mortgage claim does not cancel a vehicle pledge on
 another included claim. Mixed included pledge statuses require manual review.
@@ -190,11 +188,16 @@ describes sanctions within a queue; it does not by itself mean За реестр
 claims_complete=false and uncertainty must explain unclear creditor count, missed
 claims, multiple possible operative scopes or unresolved allocations.
 
-Do not return public API fields, money totals, calculated EMU metadata or confidence.
+Do not return computed totals, calculated EMU metadata or confidence.
 Code constructs the existing FieldValue response and applies the confirmed EMU
 convention: public total_amount = included principal + interest + sanctions + duty;
 public claimed_amount = included amount without duty, NOT the originally requested
 amount. All internal facts must still describe the document faithfully.
+"""
+
+LEGACY_PUBLICATION_INSTRUCTION = """
+kad_publication_date: only an explicit separate publication/placement date in KAD.
+Never copy inclusion_date or an electronic signature date. Return null if absent.
 """
 
 
@@ -306,7 +309,8 @@ def source_case(text: str) -> tuple[str | None, str | None, str]:
     """Recover an unambiguous heading number, never a cited historical case."""
     heading = re.split(r"\b(?:в\s+составе|рассмотрев|рассмотрел|установил|определил)\b", text, maxsplit=1, flags=re.I)[0][:2000]
     found = {}
-    for m in re.finditer(r"(?:дело\s*№?\s*)([АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[^\n,;]+)", heading, re.I):
+    case_label = r"(?:дел[оу]\s*№?\s*|№\s*дела\s*(?:[^\n]{0,80}\n)?[^\n]{0,80}?)"
+    for m in re.finditer(case_label + r"([АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[^\n,;]+)", heading, re.I):
         # Stop before prose; preserve a separate trailing Ф used by Moscow.
         token = re.match(r"[АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[0-9]+(?:\s*-\s*[0-9]+)?\s*/\s*[0-9]{2,4}"
                          r"(?:(?:\s*[-/]\s*[0-9]+)|(?:\s*[-/]?\s*(?:тр\.?[0-9]+|УТ|Б|[«\"]?Ф[»\"]?)(?![а-яё])))*", m[1], re.I)
@@ -349,11 +353,17 @@ def previous_cost(quote: str) -> bool:
     amounts = re.findall(r"(?<![0-9])([0-9][0-9\s]*(?:[,.][0-9]{1,2})?)\s*руб", quote, re.I)
     if len(amounts) != 1 or re.search(r"по\s+настоящему\s+заявлению|по\s+текущему\s+спору", quote, re.I):
         return False
-    return bool(re.search(r"(?:пошлин|расход).{0,120}(?:по\s+судебн\w*\s+приказ|в\s+районн\w*\s+суд|по\s+решени\w*\s+.{0,60}суд)", compact(quote), re.I))
+    return bool(re.search(
+        r"(?:пошлин|расход).{0,120}(?:по\s+судебн\w*\s+приказ|в\s+районн\w*\s+суд|"
+        r"по\s+решени\w*\s+.{0,60}суд|взысканн\w*\s+(?:заочн\w*\s+)?решени\w*\s+.{0,60}суд)",
+        compact(quote), re.I,
+    ))
 
 
 
-def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
+def build_fields(
+    evidence: DocumentEvidence, text: str, profile: dict, *, recover_from_source: bool = True,
+) -> dict:
     fields = {name: {"value": None, "confidence": None, "reasoning": "Не установлено по документу.",
                      "source": VERSION} for name in profile["fields"]}
 
@@ -378,7 +388,7 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
         candidates = re.findall(r"[АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[0-9]+(?:\s*-\s*[0-9]+)?\s*/\s*[0-9]{2,4}(?:\s*/\s*тр\.?\s*[0-9]+)?", header.quote, re.IGNORECASE)
         if document not in [normalize_case(c)[0] for c in candidates]:
             document, main = None, None
-    recovered_document, recovered_main, recovered_quote = source_case(text)
+    recovered_document, recovered_main, recovered_quote = source_case(text) if recover_from_source else (None, None, "")
     if recovered_document:
         document, main = recovered_document, recovered_main
         header = Fact(value=document, quote=recovered_quote)
@@ -388,7 +398,7 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
     creditor = evidence.creditor
     resolved_creditor = requisites.creditor_value(
         creditor.value, creditor.quote, text)
-    if not resolved_creditor.value and creditor.value:
+    if recover_from_source and not resolved_creditor.value and creditor.value:
         # A rewritten model quote is not evidence. Recover a literal company
         # record only when the same legal name also occurs in an admitted order.
         bound = requisites.source_inn(text, "creditor_inn", creditor.value)
@@ -401,8 +411,8 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
     for name in ["debtor_inn", "creditor_inn"]:
         # Recover from actual labeled records even if the model shortened a
         # quote or selected another spouse's number. Never repair its digits.
-        resolved = requisites.source_inn(text, name, resolved_creditor.value)
-        if resolved.value:
+        resolved = requisites.source_inn(text, name, resolved_creditor.value) if recover_from_source else None
+        if resolved and resolved.value:
             put(name, resolved.value, resolved.quote)
             continue
         f = fact(name)
@@ -441,8 +451,9 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
         for name in ["debtor_inn", "creditor_inn"]:
             put(name, None, problem="Один ИНН приписан должнику и кредитору; требуется проверка субъектов.")
 
-    for name, resolver in [("inclusion_date", requisites.ruling_date),
-                           ("kad_publication_date", requisites.publication_date)]:
+    date_resolvers = [("inclusion_date", requisites.ruling_date),
+                      ("kad_publication_date", requisites.publication_date)] if recover_from_source else []
+    for name, resolver in date_resolvers:
         resolved = resolver(text)
         put(name, resolved.value, resolved.quote, resolved.problem)
         if name == "kad_publication_date" and not resolved.value:
@@ -554,9 +565,10 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
             pledge_problems.append("Цитата не подтверждает включение именно залогового требования.")
         if pledge == "separated" and not re.search(r"отлож|отдельн|выдел", claim.pledge_quote, re.IGNORECASE):
             pledge_problems.append("Не подтверждено отдельное рассмотрение залога.")
-        if pledge == "no" and re.search(r"залог", claim.decision_quote, re.IGNORECASE):
+        if pledge == "no" and (not recover_from_source or re.search(r"залог", claim.decision_quote, re.IGNORECASE)):
             if not (quoted(claim.pledge_quote, claim.decision_quote)
-                    and re.search(r"не\s*обеспеч|не являет|отказ", claim.pledge_quote, re.IGNORECASE)):
+                    and re.search(r"не\s*обеспеч|не являет|отказ", claim.pledge_quote, re.IGNORECASE)
+                    and (recover_from_source or re.search(r"залог", claim.pledge_quote, re.IGNORECASE))):
                 pledge_problems.append("Упоминание залога требует проверки связи с включённым требованием.")
         if pledge == "unknown":
             pledge_problems.append("Неоднозначный залоговый статус.")
@@ -614,7 +626,7 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
     rows = list(combined.values())
     # Recover a model-omitted standalone fee only with a single admitted row,
     # a literal art.137(3) award and a shared named creditor. No guessed allocation.
-    fee_facts = separately_awarded_fees(text)
+    fee_facts = separately_awarded_fees(text) if recover_from_source else []
     if len(rows) == 1 and len(fee_facts) == 1 and money(rows[0]["pau_only_amount"]) == 0:
         amount, quote = fee_facts[0]
         creditor_words = re.findall(r"[а-яёa-z]{4,}", resolved_creditor.value.casefold()) if resolved_creditor.value else []
@@ -684,7 +696,7 @@ async def extract_rtk3(text: str, profile: dict) -> dict:
             break
         groups = _retry_groups(pending)
         schema_model = DocumentEvidence
-        system = INSTRUCTION
+        system = INSTRUCTION + LEGACY_PUBLICATION_INSTRUCTION
         if attempt:
             names = set().union(*groups)
             schema_model = create_model("Rtk3MissingEvidence", __config__=ConfigDict(extra="forbid"),

@@ -8,10 +8,10 @@ applicable_sources:
   - other
 
 document_type: rtk3
-extraction_mode: evidence_components
+extraction_mode: regex_jev
 name: "Включение кредитора ЕФРСБ"
 description: "Определение о включении требований кредитора в реестр (ЕФРСБ)"
-version: "2.3"
+version: "2.4"
 
 models:
   ocr:
@@ -20,11 +20,16 @@ models:
     timeout_seconds: 300.0
   llm_extraction:
     provider: router_ai
-    model: anthropic/claude-sonnet-5.5
+    model: google/gemini-4-argon
     temperature: 0.0
     max_tokens: 16384
     timeout_seconds: 180.0
     reasoning_effort: low
+  verification:
+    provider: router_ai
+    model: typesafe/jev-1.14
+    timeout_seconds: 40.0
+    threshold: 0.6
 
 thresholds:
   technical_quality_min: 0.6
@@ -52,8 +57,8 @@ fields:
   kad_publication_date:
     required: false
     label_ru: "Дата публикации в КАД"
-    description_ru: "Извлекается только при явном указании в документе. Иначе нужны внешние метаданные КАД; дата определения не подставляется."
-    extraction_method: "llm"
+    description_ru: "Внешние метаданные КАД. В документе поле не ищется."
+    extraction_method: "external"
   grounds_ocr:
     required: false
     label_ru: "Основание из документа"

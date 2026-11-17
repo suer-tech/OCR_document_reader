@@ -39,14 +39,17 @@ def normalize_creditor(value: str) -> str:
         value = re.sub(r"межрайонн[а-яё]+\s+инспекци[а-яё]+", "Межрайонная инспекция", value, flags=re.I)
     value = re.sub(r"№\s*([0-9])", r"№\1", value)
     value = re.sub(r"\s*\(?\s*(?:ИНН|ОГРН|КПП)\s*[:№]?\s*[0-9].*$", "", value, flags=re.I).rstrip(" ,;(")
-    value = re.sub(r",\s*(?:г\.?\s+|город\s+).*$", "", value, flags=re.I)
+    value = re.sub(r",\s*(?:г\.\s*|г\s+|город\s+).*$", "", value, flags=re.I)
+    value = re.sub(r'(?<=[»"])\s+г\.\s*[А-ЯЁ][а-яё-]+.*$', '', value)
     # Straight/curly quotation pairs only; keep internal capitalization and ё.
     value = re.sub(r'["“„]([^"“”„]+)["”]', r"«\1»", value)
     value = re.sub(r"«\s*", "«", value)
     value = re.sub(r"\s*»", "»", value)
     value = re.sub(r"\s+([,;])", r"\1", value).strip(" ,;")
-    if re.fullmatch(r"(?:ПАО\s+)?Банк\s+ВТБ(?:\s*\(ПАО\))?", value, re.I):
+    if re.fullmatch(r"(?:ПАО\s+)?Банк(?:а|у|ом)?\s+«?ВТБ»?(?:\s*\(ПАО\))?", value, re.I):
         return "Банк ВТБ"
+    if bank := re.fullmatch(r"Банк(?:а|у|ом)?\s+«([^»]+)»\s*\((ПАО|АО)\)", value, re.I):
+        return bank[2].upper() + ' «Банк ' + bank[1] + '»'
     if "«" not in value and (organization := re.fullmatch(r"(ПАО|АО|ООО)(\s+ПКО)?\s+([^()]+)", value)):
         value = organization[1] + (organization[2] or "") + " «" + organization[3].strip() + "»"
     return value
@@ -106,7 +109,10 @@ def creditor_value(value: str | None, quote: str, text: str) -> Requisite:
 
 INN = re.compile(r"\bИНН\s*[:№]?\s*([0-9]{12}|[0-9]{10})(?![0-9])", re.I)
 WORD = r"[А-ЯЁ][А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)*"
-PERSON = re.compile(rf"\b(?!(?:ИП|ПАО|АО|ООО|ПКО)\b)({WORD})(?:\s+\({WORD}(?:,\s*{WORD})*\))?\s+({WORD})\s+({WORD})")
+PERSON = re.compile(
+    rf"\b(?!(?:ИП|ПАО|АО|ООО|ПКО)\b)({WORD})"
+    rf"(?:\s+\((?:(?i:ранее)\s*[-–—]?\s*)?{WORD}(?:,\s*{WORD})*\))?\s+({WORD})\s+({WORD})"
+)
 
 
 def person_key(match: re.Match) -> tuple[str, str, str]:
@@ -131,8 +137,11 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
         prefix = intro[max(0, match.start()-140):match.start()]
         if re.search(r"(?:супруг[а-яё]*|поручител[а-яё]*|гарант|управляющ[а-яё]*)[^.;]{0,60}$", prefix, re.I):
             continue
+        if re.match(r"\s*\(\s*должник\b", intro[match.end():], re.I):
+            anchors.add(person_key(match))
+            continue
         if re.search(r"(?:реестр[а-яё]*\s+требований\s+кредиторов|о\s+банкротстве|(?:о\s+)?несостоятельности\s*\(банкротстве\)|"
-                     r"в\s+рамках\s+дел[а-яё]*\s+по\s+заявлению|"
+                     r"в\s+рамках\s+дел[а-яё]*\s+(?:№\s*[АAаa][0-9/-]+\s+)?по\s+заявлению|"
                      r"должник[а-яё]*|должниц[а-яё]*|гражданин[а-яё]*(?:\(ки\))?|гражданк[а-яё]*)"
                      r"\s*(?:(?:должник|гражданк|гражданин)[а-яё]*\s*)?[—–,:-]?\s*$", prefix, re.I):
             anchors.add(person_key(match))
@@ -162,7 +171,8 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
         else:
             if not wanted_tokens:
                 continue
-            starts = list(re.finditer(r"\b(?:ООО|ПАО|АО|ИП)\b|" + "|".join(
+            starts = list(re.finditer(r"\bБанк(?:а|у|ом)?\s+ВТБ(?:\s*\((?:ПАО|публичн\w*\s+акционерн\w*\s+обществ\w*)\))?|"
+                r"\b(?:ООО|ПАО|АО|ИП)\b|" + "|".join(
                 pattern for pattern, _ in LEGAL_FORMS[:4]), prefix, re.I))
             tax = list(re.finditer(r"(?:межрайонн\w*\s+)?(?:инспекци\w*\s+)?федеральн\w*\s+налогов\w*\s+служб\w*|(?:межрайонн\w*\s+)?\b(?:МИФНС|ИФНС|ФНС)\b", prefix, re.I))
             if tax_identity(creditor or ""):
@@ -172,7 +182,8 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
             record_prefix = prefix[starts[-1].start():]
             # Never carry an organization's name across the closing of its
             # requisites into the next debtor/manager's tax ID.
-            if ")" in record_prefix or re.search(
+            boundary_check = re.sub(r"\((?:ПАО|АО|публичн\w*\s+акционерн\w*\s+обществ\w*)\)", "", record_prefix, flags=re.I)
+            if ")" in boundary_check or re.search(
                     r"должник|должниц|граждан|поручител|управляющ|требований\s+кредиторов", record_prefix, re.I):
                 continue
             if not re.match(r"ИП\b", record_prefix, re.I) and list(persons(record_prefix)):

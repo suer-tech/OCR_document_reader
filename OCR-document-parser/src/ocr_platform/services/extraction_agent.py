@@ -1412,6 +1412,10 @@ async def run_agent_extraction(
     _vision_fallback_used: bool = False,
 ) -> Dict[str, dict]:
     # Resolve and activate the LLM model based on profile config
+    if profile_id == "rtk3" and (profile_config or {}).get("extraction_mode") == "regex_jev":
+        from ocr_platform.services.rtk3_regex_jev import extract_fields
+
+        return await extract_fields(text, {**profile_config, "fields": fields_config})
     if profile_id == "rtk3" and (profile_config or {}).get("extraction_mode") == "evidence_components":
         from ocr_platform.services.rtk3_evidence import extract_rtk3
 

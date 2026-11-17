@@ -45,6 +45,13 @@ async def simple_extract_fields(
             text, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id,
         )
 
+    if profile_id == "rtk3" and profile_config.get("extraction_mode") == "regex_jev":
+        from ocr_platform.services.rtk3_regex_jev import extract_fields
+
+        return await extract_fields(
+            text, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id,
+        )
+
     from ocr_platform.services.extraction_agent import run_agent_extraction
 
     fields_config = profile_config.get("fields", {})
