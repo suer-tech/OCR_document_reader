@@ -119,3 +119,32 @@ def test_kad_date_recovery_and_literal_quote_not_birthday_same_day():
 @pytest.mark.parametrize("wording", ["31.02.2026", "31 февраля 2026", "29.02.2025"])
 def test_impossible_calendar_date_is_not_returned(wording):
     assert service.dates(wording) == []
+
+
+def test_bankruptcy_parenthesis_and_multiple_old_surnames_bind_debtor():
+    text = ("Рассмотрев заявление в деле о несостоятельности (банкротстве) "
+            "Тестовой (Прежней, Старой) Анны Ивановны (ИНН 012345678901). "
+            "УСТАНОВИЛ: финансовый управляющий Другов Иван Петрович (ИНН 022222222222).")
+    assert service.source_inn(text, "debtor_inn").value == "012345678901"
+
+
+def test_tax_abbreviation_preserves_inspection_and_region():
+    quote = "требование Межрайонной инспекции Федеральной налоговой службы № 7 по Омской области"
+    assert service.creditor_value("МИФНС №7 по Омской области", quote, quote).value
+    assert service.creditor_value("МИФНС №8 по Омской области", quote, quote).value is None
+    assert service.creditor_value("МИФНС №7 по Саратовской области", quote, quote).value is None
+    assert service.creditor_value("ФНС", "Федеральной налоговой службы", "Федеральной налоговой службы").value == "ФНС"
+
+
+def test_tax_inn_is_bound_to_inspection_not_federal_or_debtor():
+    text = ("ФНС России (ИНН 7707329152) в лице Межрайонной ИФНС России №7 по Омской области "
+            "(ОГРН 1215500019052, ИНН 5503198187), должник Тестов Иван Иванович (ИНН 012345678901).")
+    assert service.source_inn(text, "creditor_inn", "МИФНС №7 по Омской области").value == "5503198187"
+    assert service.source_inn(text, "creditor_inn", "ФНС России").value == "7707329152"
+
+
+def test_motivated_header_without_full_act_boilerplate_and_nominative_month():
+    text = ("ОПРЕДЕЛЕНИЕ (мотивированное)\n02 ноября 2026 года Дело №А41-100/2026\n"
+            "Резолютивная часть определения объявлена 28 сентября 2026 года\nСуд в составе судьи")
+    assert service.ruling_date(text).value == "02.11.2026"
+    assert service.ruling_date("ОПРЕДЕЛЕНИЕ\n29 октябрь 2026 года\nСуд в составе судьи").value == "29.10.2026"

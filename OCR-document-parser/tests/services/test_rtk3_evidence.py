@@ -121,7 +121,7 @@ async def test_rtk3_retries_only_missing_creditor_and_preserves_money(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_rtk3_missing_publication_stays_null_and_retries_only_date(monkeypatch):
+async def test_rtk3_missing_publication_stays_external_without_useless_retries(monkeypatch):
     payload, text = fixture()
     text = text.replace("Дата публикации в КАД: 05.10.2026", "")
     payload["kad_publication_date"] = fact(None, "")
@@ -133,12 +133,12 @@ async def test_rtk3_missing_publication_stays_null_and_retries_only_date(monkeyp
             "kad_publication_date": fact("05.10.2026", "Дата публикации в КАД: 05.10.2026")})
     monkeypatch.setattr(service, "call_llm_json_with_fallback", provider)
     fields = await service.extract_rtk3(text, load_profile("rtk3"))
-    assert len(calls) == 4
-    assert all(schema_properties(call) == {"kad_publication_date"} for call in calls[1:])
+    assert len(calls) == 1
     assert fields["kad_publication_date"]["value"] is None
     assert fields["claims"] == initial["claims"]
     assert fields["secured_by_pledge"] == initial["secured_by_pledge"]
-    assert review_requirement(1.0, profile_field_issues(fields, "rtk3"))[0]
+    assert validate_fields(fields, "rtk3", load_profile("rtk3"))[0] == "warnings"
+    assert not review_requirement(1.0, profile_field_issues(fields, "rtk3"))[0]
 
 
 @pytest.mark.asyncio
@@ -187,7 +187,7 @@ async def test_rtk3_conflicting_retry_cannot_replace_existing_money(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_rtk3_exhausted_field_retries_save_one_reviewable_result(monkeypatch, tmp_path):
+async def test_rtk3_external_date_saves_one_result_without_retries(monkeypatch, tmp_path):
     from unittest.mock import AsyncMock
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -223,16 +223,19 @@ async def test_rtk3_exhausted_field_retries_save_one_reviewable_result(monkeypat
         session.commit()
     try:
         await worker._process_pipeline_run_impl("retry-run")
-        assert len(calls) == 4
+        assert len(calls) == 1
         webhook.assert_awaited_once()
         sent = webhook.await_args.args[1]
-        assert sent["status"] == "done" and sent["human_review_reason"] == "rtk3_requires_review"
+        assert sent["status"] == "done"
+        assert sent["validation_status"] == "warnings"
+        assert any(i["code"] == "rtk3_external_data_required" for i in sent["validation_issues"])
         with sessions() as session:
             assert session.get(models.PipelineRun, "retry-run").status == "done"
             assert session.query(models.StructuredVersion).count() == 1
             stored = session.query(models.StructuredVersion).one().data
             assert stored["kad_publication_date"]["value"] is None
-            assert stored["kad_publication_date"]["empty_field_retries"] == 3
+            assert "empty_field_retries" not in stored["kad_publication_date"]
+            assert stored["kad_publication_date"]["external_data_required"] is True
             assert stored["total_claimed_amount"]["value"] == "227065.76"
             assert stored["secured_by_pledge"]["value"] is False
     finally:
@@ -624,13 +627,14 @@ def test_unknown_pledge_keeps_each_proven_row_but_not_an_incomplete_global_total
     assert review_requirement(1.0, profile_field_issues(fields, "rtk3"))[0]
 
 
-def test_kad_is_not_ruling_or_signature_date_and_forces_review():
+def test_kad_is_not_ruling_or_signature_date_and_requests_external_data():
     payload, text = fixture()
     payload["kad_publication_date"] = payload["inclusion_date"].copy()
     text = text.replace("Дата публикации в КАД: 05.10.2026", "Электронная подпись: 05.10.2026")
     fields = build(payload, text)
     assert fields["kad_publication_date"]["value"] is None
-    assert review_requirement(0.99, profile_field_issues(fields, "rtk3"))[0]
+    assert not review_requirement(0.99, profile_field_issues(fields, "rtk3"))[0]
+    assert profile_field_issues(fields, "rtk3")[0].code == "rtk3_external_data_required"
 
 
 @pytest.mark.parametrize("value,document,main", [
@@ -640,6 +644,121 @@ def test_kad_is_not_ruling_or_signature_date_and_forces_review():
 ])
 def test_dispute_suffixes_are_not_lost(value, document, main):
     assert service.normalize_case(value) == (document, main)
+
+
+@pytest.mark.parametrize("number,main", [
+    ("А40-39320/2026-66-110", "А40-39320/2026"),
+    ("А32-76906/2025-69/461-Б-2УТ", "А32-76906/2025"),
+    ("А40-11404/26-78-36 Ф", "А40-11404/2026"),
+])
+def test_source_heading_recovers_extended_index_without_llm_quote(number, main):
+    payload, text = fixture()
+    payload["document_case_number"] = fact(None, "")
+    text = text.replace("А15-4245-1/2026", number)
+    fields = build(payload, text)
+    assert fields["case_number"]["value"] == main
+    assert fields["document_case_number"]["value"] == service.normalize_case(number)[0]
+
+
+def test_two_different_heading_cases_are_not_selected_arbitrarily():
+    assert service.source_case("Дело №А40-1/2026\nДело №А40-2/2026\nСуд в составе судьи") == (None, None, "")
+
+
+def test_heading_suffix_does_not_take_first_letter_from_prose():
+    assert service.source_case("Дело №А40-1/2026 Финансовый управляющий Тестов")[0] == "А40-1/2026"
+
+
+@pytest.mark.parametrize("operative", [True, False])
+def test_list_item_inherits_command_only_in_current_order(operative):
+    payload, text = fixture([("principal", "57465,82", "57465,82 руб. основного долга")], "57465,82", duty="")
+    claim = payload["claims"][0]
+    item = "- во вторую очередь задолженность в размере 57465,82 руб. основного долга."
+    claim.update(decision_quote=item, priority_queue=fact("2 очередь", "во вторую очередь"),
+                 included_total=fact("57465,82", item))
+    text = text[:text.index("Включить")] + ("ОПРЕДЕЛИЛ: " if operative else "Кредитор просил: ")
+    text += "Признать обоснованными требования, в том числе:\n" + item
+    row = build(payload, text)["claims"]["value"][0]
+    assert row["principal_debt"] == ("57465.82" if operative else None)
+
+
+def test_explicit_old_order_fee_overrides_model_duty_label():
+    payload, text = fixture([
+        ("principal", "20631", "20631 руб. основного долга"),
+        ("duty", "2000", "2000 руб. расходов по уплате государственной пошлины по судебному приказу №2-10/2026"),
+    ], total="22631", duty="")
+    payload["claims"][0]["total_scope"] = "with_duty"
+    result = build(payload, text)
+    row = result["claims"]["value"][0]
+    assert row["principal_debt"] == "22631.00"
+    assert row["pau_only_amount"] == "0.00"
+    assert result["total_claimed_amount"]["value"] == "22631.00"
+    assert payload["claims"][0]["components"][1]["kind"] == "duty"  # input unchanged
+
+
+def test_old_fee_origin_cannot_reclassify_current_fee_from_a_wide_quote():
+    quote = "2000 руб. пошлины по судебному приказу; взыскать 5000 руб. государственной пошлины."
+    assert not service.previous_cost(quote)
+    assert service.previous_cost("2000 руб. пошлины\nпо судебному приказу №2-10/2026")
+
+
+@pytest.mark.asyncio
+async def test_absent_tax_ids_request_external_data_without_repeating_the_model(monkeypatch):
+    payload, text = fixture()
+    text = text.replace(" (ИНН 012345678901)", "").replace(" (ИНН 1234567890)", "")
+    payload["debtor_inn"] = fact(None, "")
+    payload["creditor_inn"] = fact(None, "")
+    payload["creditor"] = fact("ООО «Тест»", "кредитора ООО «Тест»")
+    gateway = MagicMock(return_value=SimpleNamespace(parsed=payload))
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    fields = await service.extract_rtk3(text, load_profile("rtk3"))
+    gateway.assert_called_once()
+    status, issues = validate_fields(fields, "rtk3", load_profile("rtk3"))
+    assert status == "warnings"
+    assert fields["debtor_inn"]["value"] is None
+    assert all(i.code == "rtk3_external_data_required" for i in issues)
+    assert review_requirement(1.0, issues) == (True, "rtk3_external_data_required")
+    # Missing enrichment must not hide a higher-priority monetary error.
+    fields["claims"]["value"][0]["total_amount"] = "1.00"
+    status, issues = validate_fields(fields, "rtk3", load_profile("rtk3"))
+    assert status == "errors"
+    assert review_requirement(1.0, issues) == (True, "rtk3_requires_review")
+
+
+def test_separate_fee_award_with_vzyskat_is_attached_to_one_claim():
+    payload, text = fixture(duty="")
+    decision = "Взыскать 5798 руб. государственной пошлины в порядке пункта 3 статьи 137."
+    fee = copy.deepcopy(payload["claims"][0])
+    fee.update(decision_quote=decision, priority_queue=fact("Иное", "пункта 3 статьи 137"),
+               components=[dict(kind="duty", amount="5798", quote="5798 руб. государственной пошлины")],
+               included_total=fact("5798", decision), total_scope="with_duty")
+    payload["claims"].append(fee)
+    rows = build(payload, text+"\n"+decision)["claims"]["value"]
+    assert len(rows) == 1
+    assert rows[0]["pau_only_amount"] == "5798.00"
+
+
+def test_same_queue_contracts_aggregate_only_validated_amounts():
+    payload, text = fixture(duty="")
+    second, _ = fixture([("principal", "123", "123 руб. основного долга")], "123", duty="")
+    payload["claims"].extend(second["claims"])
+    text += "\n" + second["claims"][0]["decision_quote"]
+    rows = build(payload, text)["claims"]["value"]
+    assert len(rows) == 1
+    assert rows[0]["claimed_amount"] == "227188.76"
+    payload["claims"][1]["components"][0]["amount"] = "124"
+    assert build(payload, text)["claims"]["value"][0]["claimed_amount"] is None
+
+
+def test_separate_sanctions_accounting_is_not_outside_register():
+    payload, text = fixture()
+    quote = "Учесть отдельно после погашения основного долга и процентов"
+    text += " " + quote
+    claim = payload["claims"][0]
+    claim["decision_quote"] += " " + quote
+    claim["priority_queue"] = fact("За реестром", quote)
+    result = build(payload, text)
+    assert result["total_claimed_amount"]["value"] is None
+    assert "не подтверждает" in result["claims"]["reasoning"]
 
 
 def test_two_queues_stay_separate_and_order_does_not_change_totals():
@@ -746,8 +865,8 @@ async def test_v2_worker_storage_webhook_and_get_share_validation(monkeypatch, t
         returned = response.json()
         for key in ["validation_status", "validation_issues", "human_review_required", "human_review_reason"]:
             assert sent[key] == returned[key]
-        assert returned["human_review_required"] is (missing_kad or unknown_pledge)
-        assert returned["validation_status"] == ("errors" if missing_kad or unknown_pledge else "ok")
+        assert returned["human_review_required"] is unknown_pledge
+        assert returned["validation_status"] == ("errors" if unknown_pledge else "warnings" if missing_kad else "ok")
         if unknown_pledge:
             assert returned["fields"]["secured_by_pledge"]["value"] is None
             assert returned["fields"]["total_claimed_amount"]["value"] == "227065.76"

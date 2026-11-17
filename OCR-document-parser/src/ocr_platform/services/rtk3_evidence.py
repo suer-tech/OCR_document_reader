@@ -93,6 +93,10 @@ independently from collateral. Do not guess a yes/no pledge label to obtain sums
 Quotes must NOT contain ellipses, rewritten company abbreviations, reordered
 names or corrected wording. Include the entire operative paragraph (including
 related component and duty sentences) in decision_quote; not just its summary.
+For a list introduced by «в том числе»/«из которых», keep its shared judicial
+command together with the list item. Do not omit the command just because an
+amount or queue is in a separate bullet. A bare «Взыскать ... пошлину ... п.3
+ст.137» is a separate current-fee award, not a new independent priority queue.
 
 Identify the CURRENT court's operative decision. Prior decisions, applications,
 arguments and a settlement agreement quoted inside the operative part are not
@@ -144,6 +148,10 @@ prior_cost = previously awarded court costs already contained in the admitted de
 not the fee for this inclusion proceeding. Keep those costs in the admitted principal;
 do not add them a second time as duty. If their origin or treatment is unclear, flag
 uncertainty. Other court costs must not silently become a new proceeding's fee.
+For example, «2 000 руб. пошлины по судебному приказу» is prior_cost even when
+the ruling repeats that cost in its operative debt breakdown. A new «Взыскать
+5 000 руб. пошлины» for THIS inclusion is duty. Classify from the local origin
+wording, not merely from the presence of the word пошлина.
 Do not classify a penalty FOR interest as ordinary interest. Ordinary court costs
 without the word пошлина are not duty. Returned/refunded duty is NOT included duty.
 Operational EMU rule: duty under p.3 art.137 is pau_only_amount, not a new ordinary
@@ -176,6 +184,9 @@ Conversely, dismissal of one mortgage claim does not cancel a vehicle pledge on
 another included claim. Mixed included pledge statuses require manual review.
 is_salary_or_severance=true requires an explicit salary/severance wording and quote;
 second priority alone is not sufficient.
+An introductory reference to third priority does not override an explicit
+second-priority sub-item. «Учесть отдельно после основного долга и процентов»
+describes sanctions within a queue; it does not by itself mean За реестром.
 claims_complete=false and uncertainty must explain unclear creditor count, missed
 claims, multiple possible operative scopes or unresolved allocations.
 
@@ -277,7 +288,9 @@ def normalize_case(value: str | None) -> tuple[str | None, str | None]:
         return None, None
     value = re.sub(r"\s+", "", value).replace("A", "А").replace("a", "А").replace("а", "А")
     value = re.sub("[–—−]", "-", value)
-    m = re.fullmatch(r"А([0-9]{1,3})-([0-9]+)(-[0-9]+)?/([0-9]{4}|[0-9]{2})(/тр\.?[0-9]+)?", value, re.IGNORECASE)
+    value = value.replace('«', '').replace('»', '').replace('"', '')
+    m = re.fullmatch(r"А([0-9]{1,3})-([0-9]+)(-[0-9]+)?/([0-9]{4}|[0-9]{2})"
+                     r"((?:(?:[-/][0-9]+)|(?:[-/]?(?:тр\.?[0-9]+|УТ|Б|Ф)))*)", value, re.IGNORECASE)
     if not m:
         return None, None
     year = m[4]
@@ -287,6 +300,56 @@ def normalize_case(value: str | None) -> tuple[str | None, str | None]:
         year = "20" + year
     main = f"А{m[1]}-{m[2]}/{year}"
     return f"А{m[1]}-{m[2]}{m[3] or ''}/{year}{m[5] or ''}", main
+
+
+def source_case(text: str) -> tuple[str | None, str | None, str]:
+    """Recover an unambiguous heading number, never a cited historical case."""
+    heading = re.split(r"\b(?:в\s+составе|рассмотрев|рассмотрел|установил|определил)\b", text, maxsplit=1, flags=re.I)[0][:2000]
+    found = {}
+    for m in re.finditer(r"(?:дело\s*№?\s*)([АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[^\n,;]+)", heading, re.I):
+        # Stop before prose; preserve a separate trailing Ф used by Moscow.
+        token = re.match(r"[АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[0-9]+(?:\s*-\s*[0-9]+)?\s*/\s*[0-9]{2,4}"
+                         r"(?:(?:\s*[-/]\s*[0-9]+)|(?:\s*[-/]?\s*(?:тр\.?[0-9]+|УТ|Б|[«\"]?Ф[»\"]?)(?![а-яё])))*", m[1], re.I)
+        if token:
+            document, main = normalize_case(token[0])
+            if document:
+                found[document] = (main, token[0])
+    if len(found) == 1:
+        document, (main, quote) = next(iter(found.items()))
+        return document, main, quote
+    return None, None, ""
+
+
+def inherited_order(quote: str, text: str) -> bool:
+    """A list item may inherit the command preceding its colon, inside the order."""
+    source, fragment = compact(text), compact(quote)
+    if not fragment:
+        return False
+    for match in re.finditer(re.escape(fragment), source):
+        prefix = source[:match.start()]
+        markers = list(re.finditer(r"о\s*п\s*р\s*е\s*д\s*е\s*л\s*и\s*л\s*:", prefix))
+        if not markers:
+            continue
+        context = prefix[markers[-1].end():]
+        commands = list(re.finditer(r"\b(?:включить|признать|учесть|взыскать|отказать|прекратить|возвратить)\b", context))
+        if not commands:
+            continue
+        tail = context[commands[-1].start():]
+        if (commands[-1][0] in {"включить", "признать", "учесть"} and len(tail) <= 1800
+                and re.search(r"(?:в\s+том\s+числе|из\s+которых)\s*:", tail)
+                and not re.search(r"отказ|прекрат|возврат|текущ\w*\s+плат", tail)):
+            return True
+    return False
+
+
+def previous_cost(quote: str) -> bool:
+    """Only explicit origin, not merely a historical order somewhere in the act."""
+    # A wide excerpt can describe both an old and a new fee. Do not transfer
+    # the old origin to whichever amount the model picked from that excerpt.
+    amounts = re.findall(r"(?<![0-9])([0-9][0-9\s]*(?:[,.][0-9]{1,2})?)\s*руб", quote, re.I)
+    if len(amounts) != 1 or re.search(r"по\s+настоящему\s+заявлению|по\s+текущему\s+спору", quote, re.I):
+        return False
+    return bool(re.search(r"(?:пошлин|расход).{0,120}(?:по\s+судебн\w*\s+приказ|в\s+районн\w*\s+суд|по\s+решени\w*\s+.{0,60}суд)", compact(quote), re.I))
 
 
 
@@ -315,6 +378,10 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
         candidates = re.findall(r"[АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[0-9]+(?:\s*-\s*[0-9]+)?\s*/\s*[0-9]{2,4}(?:\s*/\s*тр\.?\s*[0-9]+)?", header.quote, re.IGNORECASE)
         if document not in [normalize_case(c)[0] for c in candidates]:
             document, main = None, None
+    recovered_document, recovered_main, recovered_quote = source_case(text)
+    if recovered_document:
+        document, main = recovered_document, recovered_main
+        header = Fact(value=document, quote=recovered_quote)
     put("document_case_number", document, header.quote if header else "")
     put("case_number", main, header.quote if header else "")
 
@@ -365,6 +432,11 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
                 and digits == {value} and has_role and not conflicting_role):
             value = None
         put(name, value, f.quote if f else "", "Неоднозначная или неподтверждённая связь ИНН с субъектом." if not value else "")
+        available = requisites.INN.findall(text)
+        if value is None and not any(len(inn) == 12 if name == "debtor_inn" else True for inn in available):
+            fields[name].pop("validation_issue", None)
+            fields[name]["external_data_required"] = True
+            fields[name]["reasoning"] = "ИНН не найден среди явно обозначенных реквизитов документа; требуется дополнение из проверенного внешнего источника."
     if fields.get("debtor_inn", {}).get("value") and fields["debtor_inn"]["value"] == fields["creditor_inn"]["value"]:
         for name in ["debtor_inn", "creditor_inn"]:
             put(name, None, problem="Один ИНН приписан должнику и кредитору; требуется проверка субъектов.")
@@ -373,6 +445,10 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
                            ("kad_publication_date", requisites.publication_date)]:
         resolved = resolver(text)
         put(name, resolved.value, resolved.quote, resolved.problem)
+        if name == "kad_publication_date" and not resolved.value:
+            fields[name].pop("validation_issue", None)
+            fields[name]["external_data_required"] = True
+            fields[name]["reasoning"] = "Дата публикации КАД не установлена по документу; нужны метаданные публикации, а не дата определения."
     grounds = fact("grounds")
     put("grounds", grounds.value if grounds and grounds.value in GROUNDS else None,
         grounds.quote if grounds else "")
@@ -389,10 +465,18 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
         errors = []
         if not quoted(claim.decision_quote, text):
             errors.append("Не подтверждён фрагмент окончательного решения.")
-        if not re.search(r"включ|признать|учесть", claim.decision_quote, re.IGNORECASE):
+        duty_award = (all(c.kind == "duty" for c in claim.components) and bool(claim.components)
+                      and re.search(r"взыскать", claim.decision_quote, re.I)
+                      and re.search(r"(?:пункт\w*\s*3\s*стать\w*|п\.\s*3\s*ст\.)\s*137", claim.decision_quote, re.I))
+        if not (re.search(r"включ|признать|учесть", claim.decision_quote, re.IGNORECASE)
+                or duty_award or inherited_order(claim.decision_quote, text)):
             errors.append("Цитата не содержит команды суда о требовании.")
         if not quoted(claim.priority_queue.quote, claim.decision_quote) or claim.priority_queue.value not in QUEUES:
             errors.append("Не установлена очередь требования.")
+        if claim.priority_queue.value == "За реестром" and not re.search(
+                r"за\s+реестр|после\s+(?:полного\s+)?удовлетворения\s+требований\s+кредиторов.{0,100}(?:включ[её]н|реестр)",
+                compact(claim.priority_queue.quote), re.I):
+            errors.append("Отдельный учёт санкций не подтверждает требование за реестром.")
         if not claim.components_complete or not claim.components:
             errors.append("Не подтверждена полнота денежных компонентов.")
         breakdown = claim.breakdown_quote
@@ -411,6 +495,11 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
             problems.append(claim.uncertainty)
         amounts = {kind: Decimal(0) for kind in ["principal", "interest", "sanction", "duty", "prior_cost"]}
         for component in claim.components:
+            # The model may call an old order's fee 'duty'; its explicitly
+            # quoted origin determines the accounting category, not the label.
+            if component.kind == "duty" and previous_cost(component.quote):
+                component = component.model_copy(update={"kind": "prior_cost"})
+                ledger_reasons.append("Расходы по прежнему судебному акту учтены в составе долга, не как пошлина текущего включения: " + component.quote)
             amount = money(component.amount)
             key = (compact(component.quote), component.amount)
             if (amount is None or not (quoted(component.quote, claim.decision_quote)
@@ -507,6 +596,22 @@ def build_fields(evidence: DocumentEvidence, text: str, profile: dict) -> dict:
         payer["pau_only_amount"] = format(money(payer["pau_only_amount"]) + extra, ".2f")
         payer["total_amount"] = format(money(payer["total_amount"]) + extra, ".2f")
         rows = [r for r in rows if r not in duties]
+    # Same-queue obligations are additive only after each independent ledger
+    # passed validation and duplicate-component detection. Never sum nulls as 0.
+    combined = {}
+    for row in rows:
+        queue = row["priority_queue"]
+        if queue not in combined:
+            combined[queue] = deepcopy(row)
+            continue
+        existing = combined[queue]
+        for key in ["principal_debt", "financial_sanctions", "pau_only_amount", "claimed_amount", "total_amount"]:
+            values = [money(existing[key]), money(row[key])]
+            existing[key] = format(sum(values, Decimal(0)), ".2f") if all(v is not None for v in values) else None
+        if existing["is_salary_or_severance"] != row["is_salary_or_severance"]:
+            problems.append("Одна очередь содержит разные признаки зарплаты; требуется проверка.")
+        existing["is_salary_or_severance"] |= row["is_salary_or_severance"]
+    rows = list(combined.values())
     # Recover a model-omitted standalone fee only with a single admitted row,
     # a literal art.137(3) award and a shared named creditor. No guessed allocation.
     fee_facts = separately_awarded_fees(text)
@@ -573,6 +678,7 @@ async def extract_rtk3(text: str, profile: dict) -> dict:
     for attempt in range(MAX_EMPTY_FIELD_RETRIES + 1):
         pending = {name for name, info in fields.items()
                    if name in required_names(profile["fields"])
+                   and not info.get("external_data_required")
                    and (has_empty_value(info.get("value")) or info.get("validation_issue"))}
         if attempt and not pending:
             break

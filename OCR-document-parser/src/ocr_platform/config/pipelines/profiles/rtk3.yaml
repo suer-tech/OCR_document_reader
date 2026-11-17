@@ -11,7 +11,7 @@ document_type: rtk3
 extraction_mode: evidence_components
 name: "Включение кредитора ЕФРСБ"
 description: "Определение о включении требований кредитора в реестр (ЕФРСБ)"
-version: "2.2"
+version: "2.3"
 
 models:
   ocr:
@@ -50,8 +50,9 @@ fields:
     label_ru: "ИНН кредитора"
     extraction_method: "llm"
   kad_publication_date:
-    required: true
+    required: false
     label_ru: "Дата публикации в КАД"
+    description_ru: "Извлекается только при явном указании в документе. Иначе нужны внешние метаданные КАД; дата определения не подставляется."
     extraction_method: "llm"
   grounds_ocr:
     required: false

@@ -248,6 +248,12 @@ human_review_required=true и human_review_reason=rtk2_requires_review. Отсу
 без разделителей тысяч. Неизвестные суммы не заменяются нулём и требуют ручной проверки.
 Ошибка суммы, цитаты, полноты или реквизитов: validation_status=errors,
 human_review_required=true, human_review_reason=rtk3_requires_review независимо от quality.
+Нужные внешние данные обозначаются validation_issues.code=rtk3_external_data_required
+с severity=warning; значение поля остаётся null. Если иных ошибок нет,
+validation_status=warnings. Отсутствующая дата публикации КАД сама по себе не требует
+повторного извлечения или ручной проверки документа. Отсутствующий ИНН участника
+требует внешнего дополнения: human_review_reason=rtk3_external_data_required.
+Внешние значения ЕМУ не подставляются в поля с источником документного извлечения.
 Показатели efrsb_total_amount/pau_total_amount и подтверждения amount_mismatch_* формирует ЕМУ.
 Сохранённые исторические результаты rtk3_combined возвращаются без переписывания значений;
 в них деньги могут быть JSON number, а claimed_amount означает первоначально заявленную сумму.
@@ -368,7 +374,7 @@ PDF без текста, смешанные PDF и фото отправляют
     )
 
     validation_status: Literal["ok", "warnings", "errors"] = Field(
-        ..., description="Статус проверки: ok или errors. Значение warnings зарезервировано. Статус done у задачи означает завершение обработки и не гарантирует validation_status=ok.", examples=["ok"]
+        ..., description="Статус проверки: ok, warnings или errors. В RTK3 warnings может обозначать необходимость внешних метаданных, отсутствующих в документе. Статус done у задачи означает завершение обработки и не гарантирует validation_status=ok.", examples=["ok"]
     )
     validation_issues: list[ValidationIssue] = Field(
         default_factory=list, description="Профильные проблемы судебных полей или сумм РТК3. Webhook дополнительно содержит результаты проверки отсутствующих обязательных полей; GET результата сейчас возвращает только профильные проблемы."

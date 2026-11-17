@@ -594,7 +594,8 @@ def create_app() -> FastAPI:
             if isinstance(data_dict, dict) else []
         )
         if validation_issues:
-            validation_status = "errors"
+            validation_status = ("warnings" if run.profile_id == "rtk3"
+                                 and all(issue.severity != "error" for issue in validation_issues) else "errors")
         human_review_required, human_review_reason = review_requirement(overall, validation_issues)
 
         return schemas.DocumentResultResponse(

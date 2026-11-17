@@ -1,0 +1,80 @@
+RTK3 2.3: extraction, enrichment and training targets
+
+Scope
+-----
+The extractor/model is unchanged: RouterAI, anthropic/claude-sonnet-5.5.
+No JEV step, alternative model, database migration or automatic production
+reprocessing is introduced. Public field names and monetary formulas are retained.
+
+Validation changes
+------------------
+Extended court case indices are preserved in document_case_number. case_number
+contains the independent main case. Only an unambiguous current-act heading can
+recover a missing/invalid model number; cited historical case numbers cannot.
+Tax-body spelling aliases retain the inspection number and region. Debtor tax IDs
+remain bound to the named debtor, not another spouse, manager or the first ID.
+The date resolver recognises a nominated month and separates an explicitly
+labelled pronouncement date from the heading of a motivated ruling.
+
+A monetary list item may inherit a command from the enclosing current operative
+order, with an explicit "в том числе" / "из которых" colon. Narrative/applications
+do not qualify. A separately awarded art.137(3) duty can attach to a sole included
+claim. A narrowly quoted fee explicitly originating in a prior court order is
+accounted as prior_cost, even if the model called it duty. Wide quotes containing
+both old and new fees are not reclassified automatically. Refunds, duplicates,
+unsubstantiated totals and incomplete ledgers remain reviewable errors.
+Same-queue rows are combined only with null propagation; missing amounts are
+never silently converted to zero. Separate sanctions accounting does not by
+itself establish an outside-register priority.
+
+External data is not document extraction
+---------------------------------------
+A missing KAD publication date remains null. No ruling/signature date or external
+EMU value is substituted. Its issue code is rtk3_external_data_required, severity
+warning. RTK3 validation_status is warnings when all issues are non-errors; GET
+and webhook use the same rule. KAD alone does not force human document review.
+An INN with no labelled source candidate is similarly marked as requiring an
+external source, and still requires completion/review with reason
+rtk3_external_data_required. No repeated LLM attempts are spent on these fields.
+Other incomplete/ambiguous requisites and money remain rtk3_requires_review.
+The existing API enum already supports warnings; consumers must not interpret
+done as proof that every required business field has been filled.
+
+Preparing a private dataset
+--------------------------
+Run from the project environment with src on PYTHONPATH:
+
+python scripts/prepare_rtk3_training.py --source <selected-folder> --output <separate-private-folder>
+
+The script reads only the selected folder. It makes no LLM/network requests.
+Keep its output outside Git: it contains the original personal documents.
+
+For each sample:
+  source.pdf, ocr.json, human.json: byte-for-byte originals, hashes in manifest.
+  human.cleaned.json: working annotation with recorded corrections. This is NOT
+                      an unconditional full-document gold target.
+  document_labels.json: eligible field targets, their audit status and evidence.
+                        An omitted field is a LOSS MASK, never a null target.
+                        An explicit null label denotes a source-absence target.
+  external_data.json: confirmed EMU additions absent from source + service metadata.
+                      Their original external provenance is not assumed known.
+  review_required.json: unresolved/conflicting values, excluded from training.
+  changes.json: old/new values, reason and literal source evidence per correction.
+
+Levels of evidence are kept distinct. human_confirmed_ocr_agreement means the
+provided human annotation agrees with the stored output after format normalisation;
+it does not pretend that a second independent PDF review has taken place.
+source_bound_rule means a local resolver found an unambiguous literal requisite.
+manually_checked_pdf denotes the explicitly reviewed corrections.
+
+Only the selected 212-document subset was used in the 2026-11-17 preparation.
+Corrected collateral refusal, sanctions classification and queue assignment have
+source-gated rules. Other unresolved money classifications are masked instead of
+being overwritten with the OCR prediction. A queue-only correction does not
+automatically certify all monetary cells in that row.
+
+Local requisite comparison is not a full pipeline benchmark. It uses stored raw
+text without a new model call and retains original nonempty values where a local
+resolver has no candidate. Human creditor targets are never passed to that local
+evaluation. Repeat full extraction on an explicitly selected small control set
+before considering deployment; no such model run is claimed by this preparation.

@@ -118,6 +118,9 @@ def review_requirement(overall: float | None, issues: list[ValidationIssue]) -> 
             return True, issue.message
         if issue.code in CLAIMED_AMOUNT_REVIEW_CODES:
             return True, issue.code
+    if any(issue.code == "rtk3_external_data_required" and issue.field_name in {"debtor_inn", "creditor_inn"}
+           for issue in issues):
+        return True, "rtk3_external_data_required"
     if overall is not None and overall >= 0.75:
         return False, None
     return True, "low_quality_or_missing_fields"
@@ -172,7 +175,9 @@ def validate_fields(
                 )
             )
 
-    if not issues:
+    if profile_id == "rtk3" and issues and all(issue.severity != "error" for issue in issues):
+        status = "warnings"
+    elif not issues:
         status = "ok"
     else:
         status = "errors"

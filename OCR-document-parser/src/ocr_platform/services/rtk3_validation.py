@@ -26,10 +26,15 @@ def rtk3_issues(fields: dict) -> list[ValidationIssue]:
 
     if modern:
         required = ["document_case_number", "case_number", "debtor_inn", "creditor", "creditor_inn",
-                    "inclusion_date", "kad_publication_date", "grounds", "claims", "pledge_resolution"]
+                    "inclusion_date", "grounds", "claims", "pledge_resolution"]
         for name in required:
-            if value(name) in (None, "", []):
+            if value(name) in (None, "", []) and not fields.get(name, {}).get("external_data_required"):
                 add(name, f"Не установлено обязательное значение РТК3: {name}.")
+        for name in ["kad_publication_date", "debtor_inn", "creditor_inn"]:
+            if value(name) is None and (name == "kad_publication_date" or fields.get(name, {}).get("external_data_required")):
+                issues.append(ValidationIssue(
+                    code="rtk3_external_data_required", field_name=name, severity="warning",
+                    message=f"Поле {name} требует проверенного внешнего источника; это не подтверждённое значение из документа."))
         for name, info in fields.items():
             if isinstance(info, dict) and info.get("validation_issue"):
                 add(name, str(info["validation_issue"]))

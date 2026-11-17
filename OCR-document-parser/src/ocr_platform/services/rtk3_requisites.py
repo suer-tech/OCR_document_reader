@@ -59,6 +59,31 @@ def identity(value: str) -> tuple[str | None, frozenset[str]]:
     return form.group(0) if form else None, tokens
 
 
+def tax_identity(value: str) -> str | None:
+    """Equate spelling of tax bodies, retaining region and inspection number."""
+    if not re.search(r"налогов|\b(?:фнс|ифнс|мифнс)\b", value, re.I):
+        return None
+    value = compact(value)
+    value = re.sub(r"федеральн\w*\s+налогов\w*\s+служб\w*", "фнс", value)
+    value = re.sub(r"межрайонн\w*\s+(?:инспекци\w*\s+фнс|ифнс)", "мифнс", value)
+    value = re.sub(r"инспекци\w*\s+фнс", "ифнс", value)
+    value = re.sub(r"\bроссии\b", "", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def tax_name_matches(value: str, quote: str) -> bool:
+    wanted, source = tax_identity(value), tax_identity(quote)
+    if not wanted or not source:
+        return False
+    # A generic federal body can occur in a representative's full name. An
+    # inspection, however, must retain its number AND geographical qualifiers.
+    if wanted == "фнс":
+        return bool(re.search(r"\bфнс\b", source))
+    wanted = re.sub(r"\s*№\s*", " №", wanted)
+    source = re.sub(r"\s*№\s*", " №", source)
+    return bool(re.search(r"(?<!\w)" + re.escape(wanted) + r"(?!\w)", source))
+
+
 def creditor_value(value: str | None, quote: str, text: str) -> Requisite:
     if not value or not quote.strip() or compact(quote) not in compact(text):
         return Requisite(None, problem="Наименование кредитора не подтверждено буквальной цитатой.")
@@ -72,7 +97,7 @@ def creditor_value(value: str | None, quote: str, text: str) -> Requisite:
         and compact(re.sub(r"^ИП\s+", "", normalized)) == compact(person_names[0].group(0)) and any(
         person_key(person_names[0]) == person_key(candidate) for candidate in persons(quote)))
     source_forms = set(re.findall(r"\b(?:ООО|ПАО|АО|ИП)\b", source))
-    if not tokens or (not tokens <= source_tokens and not same_person) or (form and form not in source_forms):
+    if not tokens or (not tokens <= source_tokens and not same_person and not tax_name_matches(normalized, quote)) or (form and form not in source_forms):
         return Requisite(None, quote, "Наименование кредитора не соответствует организации в цитате.")
     if not form and len(source_forms) == 1 and normalized != "Банк ВТБ":
         normalized = normalize_creditor(next(iter(source_forms)) + " " + normalized)
@@ -81,7 +106,7 @@ def creditor_value(value: str | None, quote: str, text: str) -> Requisite:
 
 INN = re.compile(r"\bИНН\s*[:№]?\s*([0-9]{12}|[0-9]{10})(?![0-9])", re.I)
 WORD = r"[А-ЯЁ][А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)*"
-PERSON = re.compile(rf"\b(?!(?:ИП|ПАО|АО|ООО|ПКО)\b)({WORD})(?:\s+\({WORD}\))?\s+({WORD})\s+({WORD})")
+PERSON = re.compile(rf"\b(?!(?:ИП|ПАО|АО|ООО|ПКО)\b)({WORD})(?:\s+\({WORD}(?:,\s*{WORD})*\))?\s+({WORD})\s+({WORD})")
 
 
 def person_key(match: re.Match) -> tuple[str, str, str]:
@@ -106,9 +131,9 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
         prefix = intro[max(0, match.start()-140):match.start()]
         if re.search(r"(?:супруг[а-яё]*|поручител[а-яё]*|гарант|управляющ[а-яё]*)[^.;]{0,60}$", prefix, re.I):
             continue
-        if re.search(r"(?:реестр[а-яё]*\s+требований\s+кредиторов|о\s+банкротстве|"
+        if re.search(r"(?:реестр[а-яё]*\s+требований\s+кредиторов|о\s+банкротстве|(?:о\s+)?несостоятельности\s*\(банкротстве\)|"
                      r"в\s+рамках\s+дел[а-яё]*\s+по\s+заявлению|"
-                     r"должник[а-яё]*|должниц[а-яё]*|гражданин[а-яё]*|гражданк[а-яё]*)"
+                     r"должник[а-яё]*|должниц[а-яё]*|гражданин[а-яё]*(?:\(ки\))?|гражданк[а-яё]*)"
                      r"\s*(?:(?:должник|гражданк|гражданин)[а-яё]*\s*)?[—–,:-]?\s*$", prefix, re.I):
             anchors.add(person_key(match))
     return anchors
@@ -139,6 +164,9 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
                 continue
             starts = list(re.finditer(r"\b(?:ООО|ПАО|АО|ИП)\b|" + "|".join(
                 pattern for pattern, _ in LEGAL_FORMS[:4]), prefix, re.I))
+            tax = list(re.finditer(r"(?:межрайонн\w*\s+)?(?:инспекци\w*\s+)?федеральн\w*\s+налогов\w*\s+служб\w*|(?:межрайонн\w*\s+)?\b(?:МИФНС|ИФНС|ФНС)\b", prefix, re.I))
+            if tax_identity(creditor or ""):
+                starts = tax
             if not starts:
                 continue
             record_prefix = prefix[starts[-1].start():]
@@ -153,7 +181,7 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
             form, tokens = identity(name)
             if wanted_form and form != wanted_form:
                 continue
-            if tokens != wanted_tokens:
+            if tokens != wanted_tokens and not tax_name_matches(creditor or "", name):
                 continue
             # Keep an actual source excerpt, not the normalized organization text.
             record = record_prefix + match.group(0)
@@ -169,6 +197,9 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
 
 MONTHS = {"января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
           "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12}
+MONTHS.update(dict(zip(
+    ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"],
+    range(1, 13))))
 DATE = re.compile(r"(?<![0-9])([0-9]{1,2})\s*\.\s*([0-9]{1,2})\s*\.\s*([0-9]{4})(?![0-9])|"
                   r"(?<![0-9])(?:[«\"]\s*)?([0-9]{1,2})(?:\s*[»\"])?\s+(" + "|".join(MONTHS) + r")\s+([0-9]{4})(?![0-9])", re.I)
 
@@ -205,7 +236,13 @@ def ruling_date(text: str) -> Requisite:
     if full and len(explicit := dict(dates(full[1]))) == 1:
         value = next(iter(explicit))
         return Requisite(value, full.group(0))
-    candidates = dict(dates(heading))
+    # Pronouncement is explicitly another date, even without the boilerplate
+    # "изготовлено в полном объеме" next to the current motivated ruling date.
+    heading_without_pronouncement = re.sub(
+        r"резолютивн\w*\s+часть\s+(?:определения\s+)?объявлен[ао]?\s+"
+        r"(?:[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4}|[0-9]{1,2}\s+[а-яё]+\s+[0-9]{4})(?:\s+года)?",
+        "", heading, flags=re.I)
+    candidates = dict(dates(heading_without_pronouncement))
     if len(candidates) == 1:
         value, quote = next(iter(candidates.items()))
         return Requisite(value, quote)
