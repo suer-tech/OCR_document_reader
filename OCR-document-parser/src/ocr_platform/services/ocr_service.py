@@ -25,9 +25,9 @@ logger = get_logger(__name__)
 OCR_TEXT_ARTIFACT_MAX_LEN = 100_000
 
 # Источник извлечённого текста (для логирования)
-TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "router_ai", "docx", "direct_vision"]
+TextSource = Literal["pdfplumber", "pymupdf", "ocr", "text", "router_ai", "docx", "doc", "direct_vision"]
 
-ContentType = Literal["pdf", "image", "text", "docx"]
+ContentType = Literal["pdf", "image", "text", "docx", "doc"]
 
 # Языки для Tesseract (русский + английский для смешанных документов)
 TESSERACT_LANG = "rus+eng"
@@ -312,6 +312,11 @@ def extract_text_at_ingest(
                 error=str(exc),
             )
             return "", False, None, "text"
+
+    if content_type == "doc":
+        from ocr_platform.services.doc_service import read_doc_text
+
+        return read_doc_text(file_path), False, None, "doc"
 
     if content_type == "docx":
         from ocr_platform.services.docx_service import read_docx_text

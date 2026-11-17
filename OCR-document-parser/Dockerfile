@@ -14,7 +14,7 @@ WORKDIR /app
 # libgomp1 — OpenMP runtime; poppler — pdf2image; tesseract — OCR; libgl1, libglib2.0-0 — рендеринг изображений
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc g++ libgomp1 \
-    poppler-utils \
+    poppler-utils antiword \
     tesseract-ocr tesseract-ocr-rus \
     libgl1 libglib2.0-0 && \
     pip install --no-cache-dir --upgrade pip && \

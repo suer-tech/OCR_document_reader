@@ -44,6 +44,8 @@ def _infer_content_type(filename: str, content_type: str) -> str:
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     if ext == "docx" or content_type.lower() == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         return "docx"
+    if ext == "doc" or content_type.lower().split(";", 1)[0].strip() == "application/msword":
+        return "doc"
     if ext in ("pdf",) or "pdf" in content_type.lower():
         return "pdf"
     if ext in (
@@ -334,7 +336,7 @@ def create_app() -> FastAPI:
         ),
     )
     async def upload_document(
-        file: UploadFile = File(..., description="PDF, изображение, текстовый файл или DOCX"),
+        file: UploadFile = File(..., description="PDF, изображение, текстовый файл, DOCX или DOC"),
         source_type: str = Form(
             "external", description="Источник: crm, email, portal, external, other"
         ),
@@ -355,10 +357,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="file is empty")
 
         content_type = _infer_content_type(file.filename or "", file.content_type or "")
-        if content_type not in ("pdf", "image", "text", "docx"):
+        if content_type not in ("pdf", "image", "text", "docx", "doc"):
             raise HTTPException(
                 status_code=400,
-                detail=f"unsupported file type: {file.filename or file.content_type}. Use pdf, image (png/jpg), text, or docx.",
+                detail=f"unsupported file type: {file.filename or file.content_type}. Use pdf, image (png/jpg), text, docx, or doc.",
             )
         try:
             validate_document_content(content_bytes, content_type)

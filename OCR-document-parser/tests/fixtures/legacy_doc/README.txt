@@ -1,0 +1,1 @@
+Synthetic Word 97 fixtures generated using LibreOffice 25.2 from the test HEADER in test_bankruptcy_application.py. All names, passport numbers and addresses are fictitious. Includes Russian text and a two-cell table. No external documents or personal data.

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 SourceType = Literal["crm", "email", "portal", "external", "other"]
-ContentType = Literal["pdf", "image", "text", "docx"]
+ContentType = Literal["pdf", "image", "text", "docx", "doc"]
 
 DOCUMENT_TYPE_DESCRIPTION = (
     "Тип документа: court_decision — судебное решение/определение (профиль court_decision_ru); "
@@ -38,7 +38,7 @@ class IngestDocumentRequest(BaseModel):
         description="Устаревающий аналог document_type. Используется как явно заданный тип, если document_type не заполнен.",
     )
     content_type: ContentType = Field(
-        ..., description="Тип содержимого: pdf, image, text или docx."
+        ..., description="Тип содержимого: pdf, image, text, docx или doc."
     )
     content_base64: str = Field(
         ..., description="Содержимое документа, закодированное в base64."

@@ -296,9 +296,10 @@ def local_api(monkeypatch, tmp_path):
     engine.dispose()
 
 
+@pytest.mark.parametrize("file_format", ["docx", "doc"])
 @pytest.mark.parametrize("route", ["upload", "ingest"])
 @pytest.mark.parametrize("case", ["russian", "foreign", "missing_date"])
-def test_docx_load_worker_storage_and_result(local_api, route, case):
+def test_word_load_worker_storage_and_result(local_api, route, case, file_format):
     client, worker, sessions = local_api
     from ocr_platform.storage import models
     text = HEADER
@@ -306,14 +307,20 @@ def test_docx_load_worker_storage_and_result(local_api, route, case):
         text = text.replace("Паспорт: 01 02 001234", "Иностранный паспорт: 402371687").replace(", код подразделения 001-002", "")
     elif case == "missing_date":
         text = text.replace("дата выдачи 03.04.2010, ", "")
-    content = docx_bytes(text)
+    if file_format == "doc":
+        import shutil
+        if not shutil.which("antiword"):
+            pytest.skip("antiword is required for binary DOC integration")
+        content = (Path(__file__).parents[1] / "fixtures" / "legacy_doc" / (case + ".doc")).read_bytes()
+    else:
+        content = docx_bytes(text)
     if route == "upload":
         response = client.post("/documents/upload", data={"source_type": "external", "document_type": app.PROFILE_ID,
                                "idempotency_key": "test-docx"},
-                               files={"file": ("sample.docx", content, "application/octet-stream")})
+                               files={"file": ("Заявление в АС (2)." + file_format, content, "application/octet-stream")})
     else:
         response = client.post("/documents/ingest", json={"source_type": "external", "document_type": app.PROFILE_ID,
-            "content_type": "docx", "content_base64": base64.b64encode(content).decode()})
+            "content_type": file_format, "content_base64": base64.b64encode(content).decode()})
     assert response.status_code == 202, response.text
     ids = response.json()
     asyncio.run(worker._process_pipeline_run_impl(ids["pipeline_run_id"]))
@@ -329,7 +336,7 @@ def test_docx_load_worker_storage_and_result(local_api, route, case):
     assert data["human_review_required"] is (case == "missing_date")
     with sessions() as session:
         stored = session.query(models.DocumentFile).one()
-        assert stored.file_type == "docx" and Path(stored.storage_path).suffix == ".docx"
+        assert stored.file_type == file_format and Path(stored.storage_path).suffix == "." + file_format
         assert Path(stored.storage_path).read_bytes() == content
         saved = session.query(models.StructuredVersion).one().data
         assert saved["passport_number"]["model"] == "google/gemini-4-argon"
@@ -343,6 +350,23 @@ def test_upload_rejects_invalid_docx_before_queue(local_api):
                            "idempotency_key": "test-bad-docx"},
                            files={"file": ("bad.docx", b"not docx", "application/octet-stream")})
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("filename,mime", [
+    ("Заявление в АС (2).DOC", "application/octet-stream"),
+    ("attachment", "application/msword"),
+    ("attachment", "application/msword; charset=binary"),
+])
+def test_doc_upload_detection_and_invalid_content(local_api, filename, mime):
+    from ocr_platform.api.main import _infer_content_type
+    from ocr_platform.storage import models
+    client, _, sessions = local_api
+    assert _infer_content_type(filename, mime) == "doc"
+    response = client.post("/documents/upload", data={"idempotency_key": "bad-doc", "document_type": app.PROFILE_ID},
+                           files={"file": (filename, b"not a Word document", mime)})
+    assert response.status_code == 400 and "binary Word DOC" in response.json()["detail"]
+    with sessions() as session:
+        assert session.query(models.Document).count() == 0
 
 
 @pytest.mark.parametrize("content_type", ["pdf", "image", "mixed_pdf"])
