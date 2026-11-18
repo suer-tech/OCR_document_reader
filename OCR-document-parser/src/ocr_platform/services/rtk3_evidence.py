@@ -72,8 +72,15 @@ class Component(BaseModel):
 class ClaimEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     priority_queue: PriorityFact
-    decision_quote: str = Field(description="Final operative decision for this claim, not an application or a quoted earlier act")
-    breakdown_quote: str = Field(description="Exact earlier breakdown of this same finally admitted total, or empty when all components are in decision_quote")
+    decision_quote: str = Field(description=(
+        "Contiguous operative quote from the court's admission command through this contract's item, "
+        "including the shared admission heading when there are several contracts."
+    ))
+    breakdown_quote: str = Field(description=(
+        "For several contracts under one admission command, required exact quote of this single contract's item "
+        "with its number, subtotal and all components, even if decision_quote already includes the item. "
+        "For a separate admission command, an exact earlier breakdown of the same admitted total or empty."
+    ))
     components: list[Component]
     components_complete: bool
     included_total: Fact = Field(description="Explicit court total for this claim; not the originally requested sum")
@@ -567,7 +574,11 @@ def build_fields(
             rows[0]["total_amount"] = format(money(rows[0]["claimed_amount"]) + amount, ".2f")
             ledger_reasons.append("Отдельно присуждённая пошлина: " + quote)
     pledges = row_pledges(rows)
-    if not pledges or None in pledges:
+    if not evidence.claims_complete or incomplete_layout:
+        problem = "Общий залоговый статус требует полного списка включённых требований."
+        put("pledge_resolution", None, problem=problem)
+        put("secured_by_pledge", None, problem=problem)
+    elif not pledges or None in pledges:
         put("pledge_resolution", None, problem="Не установлен залоговый статус требования.")
         put("secured_by_pledge", None, problem="Требуется проверка залогового статуса.")
     else:

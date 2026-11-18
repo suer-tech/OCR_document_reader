@@ -52,6 +52,17 @@ def test_only_requested_field_instructions_are_sent():
     assert 'Формат отдельных' not in prompt
 
 
+def test_full_prompt_and_schema_require_one_contract_per_breakdown():
+    model = schema([])
+    description = ClaimEvidence.model_json_schema()['properties']['breakdown_quote']['description']
+    assert 'required exact quote of this single contract' in description
+    prompt = build_gemini_prompt(set(model.model_fields), full_claims=True)
+    assert 'breakdown_quote в каждой такой строке обязательна' in prompt
+    assert 'все денежные цитаты строки должны находиться внутри неё' in prompt
+    assert 'даже если grounds_ocr равно null' in prompt
+    assert 'Неясные отдельные расходы не меняют' in prompt
+
+
 def test_nullable_salary_and_allowed_queue_and_pledge_values():
     assert 'null' in str(ClaimEvidence.model_json_schema()['properties']['is_salary_or_severance'])
     fixed = schema([Claim("Строка", {}, None)])
@@ -81,6 +92,53 @@ def ledger(statuses):
         'kad_publication_date', 'grounds')}, claims=claims, claims_complete=True, uncertainty='')
     text = '\n'.join(c['decision_quote'] for c in claims)
     return evidence, text
+
+
+def test_two_contracts_in_one_order_keep_amounts_and_collateral_independent():
+    evidence, _ = ledger([False, False])
+    heading = 'Включить в третью очередь требования ПАО «Пример»: '
+    first = 'в рамках кредитного договора № A-1 в размере 100 руб., из них: 100 руб. основного долга, обеспеченного залогом;'
+    second = 'в рамках кредитного договора № A-2 в размере 20 руб., из них: 20 руб. основного долга.'
+    text = heading + first + ' ' + second + ' Признать судебные расходы в размере 7 руб. обоснованными.'
+    evidence.uncertainty = 'Суд отдельно указал 7 руб. судебных расходов без уточнения их вида.'
+    for i, (clause, amount) in enumerate(((first, '100 руб.'), (second, '20 руб.'))):
+        claim = evidence.claims[i]
+        claim.decision_quote = heading + first + (' ' + second if i else '')
+        claim.breakdown_quote = clause
+        claim.components[0].amount = amount
+        claim.components[0].quote = f'{amount} основного долга'
+        claim.included_total.value = amount
+        claim.included_total.quote = f'в размере {amount}'
+        claim.salary_quote = clause
+    evidence.claims[0].pledge_resolution = 'yes'
+    evidence.claims[0].pledge_quote = 'обеспеченного залогом'
+    result = build_fields(evidence, text, load_profile('rtk3'), recover_from_source=False)
+    assert [(row['contract_number'], row['pledge_resolution'], row['claimed_amount'])
+            for row in result['claims']['value']] == [('A-1', 'yes', '100.00'), ('A-2', None, '20.00')]
+    assert result['total_claimed_amount']['value'] == '120.00'
+    assert result['pledge_resolution']['value'] is None
+
+    # The second row can't be trusted with a breakdown containing two contracts.
+    evidence.claims[1].breakdown_quote = first + ' ' + second
+    partial = build_fields(evidence, text, load_profile('rtk3'), recover_from_source=False)
+    assert len(partial['claims']['value']) == 1
+    assert partial['claims']['value'][0]['pledge_resolution'] == 'yes'
+    assert partial['pledge_resolution']['value'] is None
+    assert partial['secured_by_pledge']['value'] is None
+    assert partial['total_claimed_amount']['value'] is None
+
+
+def test_explicitly_incomplete_model_list_cannot_set_overall_pledge():
+    evidence, _ = ledger([False])
+    evidence.claims_complete = False
+    claim = evidence.claims[0]
+    claim.decision_quote += ' Требование обеспечено залогом автомобиля.'
+    claim.pledge_resolution = 'yes'
+    claim.pledge_quote = 'Требование обеспечено залогом автомобиля.'
+    result = build_fields(evidence, claim.decision_quote, load_profile('rtk3'), recover_from_source=False)
+    assert result['claims']['value'][0]['pledge_resolution'] == 'yes'
+    assert result['pledge_resolution']['value'] is None
+    assert result['secured_by_pledge']['value'] is None
 
 
 @pytest.mark.parametrize('statuses', [[None], [False], [None, False], [None, None]])
