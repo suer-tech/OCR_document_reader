@@ -342,6 +342,10 @@ def publication_date(text: str) -> Requisite:
 
 
 TAX_KIND = r"(?:транспортн\w*|земельн\w*|имущественн\w*)\s+налог\w*"
+TAX_NONPAYMENT_GROUND = (
+    r"\bкотор\w*\s+возник\w*\s+в\s+результате\s+неисполнения\s+"
+    r"должник\w*\s+обязательств\s+по\s+уплате\s+налог(?:а|ов)\b"
+)
 GROUND_PATTERNS = {
     "Кредитный договор": (
         r"(?:кредитн\w+\s+(?:договор\w*|соглашени\w*|карт\w*)|"
@@ -384,7 +388,8 @@ def explicit_ground_category(quote: str) -> str | None:
         for match in re.finditer(pattern, quote, re.I)
         if not NEGATED_GROUND.search(quote[max(0, match.start() - 45):match.start()])
     }
-    if re.search(rf"\b(?:по\s+(?:уплате\s+)?обязательн\w*\s+платеж\w*|по\s+налогам\s+и\s+пеням|{TAX_KIND})\b",
+    if re.search(rf"\b(?:по\s+(?:уплате\s+)?обязательн\w*\s+платеж\w*|по\s+налогам\s+и\s+пеням|{TAX_KIND})\b"
+                 rf"|{TAX_NONPAYMENT_GROUND}",
                  quote, re.I):
         categories.add("Налоговая задолженность")
     return next(iter(categories)) if len(categories) == 1 else None

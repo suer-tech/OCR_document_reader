@@ -3,7 +3,7 @@ from ocr_platform.services.rtk3_regex_candidates import (
     claim_amounts, extract_candidates, nested_contract_amounts,
 )
 from ocr_platform.services.rtk3_regex_jev import _claim_key, _claim_values, _fixed_claims
-from ocr_platform.services.rtk3_requisites import source_inn
+from ocr_platform.services.rtk3_requisites import explicit_ground_category, source_inn
 from ocr_platform.services.rtk3_validation import rtk3_issues
 
 
@@ -203,6 +203,29 @@ def test_joint_debt_declaration_does_not_supersede_the_same_contract_basis():
     )
     result = extract_candidates(text).fields
     assert result["grounds_ocr"].value == "основанное на кредитном договоре от 17.02.2021 №12345"
+    row, = fields(text)["claims"]["value"]
+    assert row["priority_queue"] == "3 очередь"
+    assert row["contract_number"] == "12345"
+    assert row["is_salary_or_severance"] is False
+    assert row["pledge_resolution"] is None
+    other = text.replace("№12345 общими", "№54321 общими")
+    assert not extract_candidates(other).claims
+
+
+def test_tax_nonpayment_ground_matches_the_admitted_filing_amount():
+    ground = "которые возникли в результате неисполнения должником обязательств по уплате налога"
+    text = (
+        "Рассмотрев заявление ФНС России о включении в реестр требований кредиторов должника "
+        f"задолженности в размере 100 руб. 00 коп., {ground}, ОПРЕДЕЛИЛ:\n"
+        "Признать обоснованным и включить в третью очередь реестра требований кредиторов должника "
+        "требование ФНС России в размере 100 руб. – основной долг."
+    )
+    result = extract_candidates(text).fields
+    assert result["grounds_ocr"].value == ground
+    assert result["grounds"].value == explicit_ground_category(result["grounds"].quote) == "Налоговая задолженность"
+    different = text.replace("100 руб. 00 коп.", "101 руб. 00 коп.")
+    assert "grounds" not in extract_candidates(different).fields
+    assert "grounds_ocr" not in extract_candidates(different).fields
 
 
 def test_gross_is_computable_without_classifying_an_itemized_court_cost():

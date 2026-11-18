@@ -1231,6 +1231,15 @@ def claim_candidates(operative: str, creditor: Fact | None, *, body: str = "") -
         if command == "признать" and not AMOUNTS.search(block) and admitted and re.search(
                 r"(?:пункт\w*\s*3\s*стать\w*|п\.\s*3\s*ст\.)\s*137", block, re.I):
             continue
+        if command == "признать" and len(admitted) == 1 and re.match(
+                r"(?:\d{1,2}[.)]\s*)?признать\s+обязательств\w*\s+по\s+кредитн\w*\s+договор\w*"
+                r".{0,210}?\bобщими\s+обязательствами\s+супругов\b",
+                block, re.I):
+            shared = req.contract_numbers(block)
+            if (len(shared) == 1 and shared.keys() == req.contract_numbers(admitted[0]).keys()
+                    and not AMOUNTS.search(block) and not queue_candidates(block)
+                    and not re.search(r"залог|отказ|исключ", block, re.I)):
+                continue
         if command == "включить" and len(fees) == 1 and re.search(
                 r"в\s+порядке\s+(?:части|пункта)\s+3\s+статьи\s+137", block, re.I):
             amounts = list(AMOUNTS.finditer(block))
@@ -1453,7 +1462,10 @@ def claim_candidates(operative: str, creditor: Fact | None, *, body: str = "") -
             fields["is_salary_or_severance"] = Salary(value=True, quote=salary[0])
         elif itemized_admission is not None or all(name in fields for name in CATEGORY_FIELDS):
             fields["is_salary_or_severance"] = Salary(value=False, quote=quote)
-        elif total and total.scope != "unknown" and (basis := CONTRACT_BASIS.search(quote)):
+        elif total and (basis := CONTRACT_BASIS.search(quote)) and (
+                total.scope != "unknown" or len(contracts) == 1
+                and re.match(r"основанн\w*\s+на\b", basis[0], re.I)
+                and quote[:basis.start()].rstrip().endswith(",")):
             fields["is_salary_or_severance"] = Salary(value=False, quote=basis[0])
         if unknown_fees:
             # An embedded duty would make the relationship to the unreadable
@@ -1561,6 +1573,20 @@ def _filing_court_order(body: str, claim: Claim) -> Fact | None:
     return Fact(value=order[0], quote=body[filing.start():filing.end() + order.end()])
 
 
+def _filing_tax_ground(body: str, claim: Claim) -> str | None:
+    """Use the explicit tax basis only for the same amount sought and included."""
+    if not claim.total:
+        return None
+    filings = list(re.finditer(
+        rf"\bо\s+включении\s+в\s+реестр\s+требований\s+кредиторов\s+должника\s+задолженн\w*\s+"
+        rf"в\s+(?:размере|сумме)\s+(?P<amount>{AMOUNT})\s*,\s*(?P<ground>{req.TAX_NONPAYMENT_GROUND})",
+        body, re.I,
+    ))
+    if len(filings) == 1 and money(filings[0]["amount"]) == money(claim.total.amount):
+        return filings[0]["ground"]
+    return None
+
+
 def _filing_contract_nature(body: str, claim: Claim, basis: Fact | None) -> Salary | None:
     if (not claim.total or claim.total.scope != "without_duty" or not basis or not basis.quote
             or not CONTRACT_BASIS.search(basis.quote)):
@@ -1663,6 +1689,11 @@ def extract_candidates(text: str) -> Candidates:
     if len(claims) == 1:
         claim = claims[0]
         if body_end >= 0:
+            if fields.get("creditor") and fields["creditor"].value == PUBLIC_TAX_CREDITOR and "grounds" not in fields:
+                tax_ground = _filing_tax_ground(body, claim)
+                if tax_ground:
+                    fields["grounds"] = Fact(value="Налоговая задолженность", quote=tax_ground)
+                    fields.setdefault("grounds_ocr", Fact(value=tax_ground, quote=tax_ground))
             order = _filing_court_order(body, claim)
             if order:
                 fields.setdefault("grounds_ocr", Fact(value=order.value, quote=order.value))
