@@ -1,8 +1,14 @@
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from ocr_platform.orchestration.router import load_profile
 from ocr_platform.services import rtk3_regex_jev as service
@@ -123,3 +129,123 @@ async def test_reasoning_gateway_routes_and_merges_rtk3_fields(monkeypatch, jev_
         "total_amount": "108.00", "is_salary_or_severance": False,
         "pledge_resolution": None, "secured_by_pledge": None,
     }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layout_verified", [True, False], ids=["fixed-layout", "full-fallback"])
+@pytest.mark.parametrize("partial", [False, True], ids=["empty-argon", "partial-argon"])
+async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
+    monkeypatch, tmp_path, layout_verified, partial,
+):
+    from ocr_platform.orchestration import run_processor as worker
+    from ocr_platform.storage import models, repository
+
+    act = ACT.replace("в размере 108 руб.", "как обеспеченное залогом имущества в размере 108 руб.")
+    order = act.split("ОПРЕДЕЛИЛ:\n", 1)[1]
+    unconfirmed = {"document_case_number", "inclusion_date", "grounds_ocr", "claim_1_financial_sanctions"}
+    calls = []
+
+    def gateway(**request):
+        calls.append(request)
+        if request["request_type"] == "decisions":
+            answers = {
+                name: {"type": "noul", "noul": 0.1 if name in unconfirmed else 0.99}
+                for name in request["decisions_questions"]
+            }
+            answers["claim_layout"]["noul"] = 0.99 if layout_verified else 0.1
+            return SimpleNamespace(parsed={"answers": answers})
+        if not partial:
+            return SimpleNamespace(parsed=None)
+        facts = {
+            "inclusion_date": {"value": "19.03.2026", "quote": "Полный текст определения изготовлен 19 марта 2026 года."},
+            "grounds_ocr": "Ответ без объекта Fact",
+        }
+        if layout_verified:
+            facts["claim_1_financial_sanctions"] = {"items": [PENALTY], "complete": True, "quote": order}
+        else:
+            facts["claims"] = [{
+                **MODEL_CLAIM, "decision_quote": order, "pledge_resolution": "yes",
+                "pledge_quote": "как обеспеченное залогом имущества",
+            }]
+        return SimpleNamespace(parsed=facts)
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    models.Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(repository, "get_session", sessions)
+    monkeypatch.setattr(repository, "init_db", lambda: None)
+    monkeypatch.setattr(worker, "get_pipeline_tracer", MagicMock())
+    monkeypatch.setattr(worker, "mlflow_run", lambda *args, **kwargs: nullcontext())
+    for name in ("mlflow_set_tag", "mlflow_log_metric", "mlflow_log_param", "mlflow_log_text"):
+        monkeypatch.setattr(worker, name, MagicMock())
+    webhook = AsyncMock()
+    monkeypatch.setattr(worker, "_trigger_webhook_safely", webhook)
+    path = tmp_path / "ruling.txt"
+    path.write_text(act, encoding="utf-8")
+    try:
+        with sessions() as session:
+            session.add(models.Document(id="doc-rtk3", source_type="external", document_type="rtk3"))
+            session.add(models.DocumentFile(document_id="doc-rtk3", file_type="text", storage_path=str(path)))
+            session.add(models.PipelineRun(id="run-rtk3", document_id="doc-rtk3", profile_id="rtk3", status="queued",
+                                           webhook_url="https://callback.invalid"))
+            session.commit()
+
+        await worker._process_pipeline_run_impl("run-rtk3")
+        assert [call["request_type"] for call in calls] == ["decisions", "rtk3_components"]
+        request = calls[1]["response_schema"]["json_schema"]["schema"]["properties"]
+        assert {"document_case_number", "inclusion_date", "grounds_ocr"} <= request.keys()
+        assert ("claim_1_financial_sanctions" in request) is layout_verified
+        assert ("claims" in request) is not layout_verified
+        assert "case_number" not in request
+
+        confirmed = {
+            "case_number": "А40-123/2026", "debtor_inn": "012345678901",
+            "creditor": "ПАО «Пример»", "creditor_inn": "0123456789", "grounds": "Кредитный договор",
+        }
+        with sessions() as session:
+            assert session.get(models.PipelineRun, "run-rtk3").status == "done"
+            stored = session.scalar(select(models.StructuredVersion)).data
+            for name, value in confirmed.items():
+                assert stored[name]["value"] == value
+                assert stored[name]["extraction_route"] == "regex_jev"
+            assert stored["inclusion_date"]["value"] == ("19.03.2026" if partial else None)
+            assert stored["document_case_number"]["value"] is None
+            assert stored["grounds_ocr"]["value"] is None
+            assert stored["secured_by_pledge"]["value"] is (True if layout_verified else None)
+            assert stored["total_claimed_amount"]["value"] == ("108.00" if partial and layout_verified else None)
+            rows = stored["claims"]["value"]
+            if layout_verified or partial:
+                row, = rows
+                assert (row["priority_queue"], row["contract_number"], row["principal_debt"],
+                        row["pledge_resolution"], row["secured_by_pledge"]) == (
+                            "3 очередь", "1406/ПК", "100.00", "yes", True,
+                        )
+                assert row["is_salary_or_severance"] is False
+                assert row["pau_only_amount"] == "0.00"
+                assert row["financial_sanctions"] == ("8.00" if partial else None)
+                assert row["claimed_amount"] == ("108.00" if partial else None)
+                assert row["total_amount"] == ("108.00" if partial else None)
+            else:
+                assert rows == []
+
+        from ocr_platform.api.main import create_app
+
+        with TestClient(create_app()) as client:
+            reply = client.get("/documents/doc-rtk3/result")
+        assert reply.status_code == 200
+        webhook.assert_awaited_once()
+        sent = webhook.await_args.args[1]
+        assert sent["status"] == "done"
+        for payload in (sent, reply.json()):
+            assert payload["validation_status"] == "errors"
+            assert payload["human_review_required"] is True
+            assert payload["human_review_reason"] == "rtk3_requires_review"
+            issues = {issue["field_name"] for issue in payload["validation_issues"]}
+            assert "document_case_number" in issues
+            assert ("inclusion_date" in issues) is not partial
+            for name in (*confirmed, "claims", "document_case_number", "inclusion_date",
+                         "total_claimed_amount", "secured_by_pledge"):
+                assert payload["fields"][name]["value"] == stored[name]["value"]
+    finally:
+        engine.dispose()
