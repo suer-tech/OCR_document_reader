@@ -494,7 +494,10 @@ def _amount_sum(
         if kind == "prior_cost" and not previous_cost(item.quote):
             proof = claim.cost_reference
             if not (proof and proof.value == "prior_cost" and quoted(proof.quote, text)
-                    and amount_supported(item.amount, proof.quote)):
+                    and (amount_supported(item.amount, proof.quote) or (
+                        claim.total and amount_supported(claim.total.amount, proof.quote)
+                        and item in getattr(claim.fields.get(name), "items", ())
+                    ))):
                 return None
         visited.add(key)
         result += amount
@@ -602,6 +605,12 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                   and (amounts["principal_debt"] or 0) + (amounts["financial_sanctions"] or 0) <= printed):
                 net = printed
                 gross = net + amounts["pau_only_amount"]
+                issues.append("Не подтверждён полный состав суммы требования, указанной судом.")
+            elif (net is None and queue_valid and total == claim.total and total.scope == "without_duty"
+                  and amounts["pau_only_amount"] == 0 and claim.cost_reference
+                  and claim.cost_reference.value == "prior_cost" and quoted(claim.cost_reference.quote, text)
+                  and amount_supported(total.amount, claim.cost_reference.quote)):
+                net = gross = printed
                 issues.append("Не подтверждён полный состав суммы требования, указанной судом.")
             elif (gross is None and total.scope == "with_duty" and total == claim.total
                   and sum(amount for amount in amounts.values() if amount is not None) <= printed):

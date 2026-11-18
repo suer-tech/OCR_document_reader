@@ -209,6 +209,8 @@ BASIS_PREFIX = re.compile(
 BASIS_CREDIT_LINE = re.compile(
     r"\s+о\s+предоставлени\w*\s+(?:возобновляем\w*\s+)?кредитн\w*\s+лини\w*", re.I,
 )
+BASIS_TAX_PERIOD = re.compile(r"\s+за\s+(?:19|20)\d{2}(?:\s*[-–—]\s*(?:19|20)\d{2})?\b"
+                              r"(?:\s+(?:гг?\.|год(?:ы|а)?\b))?", re.I)
 BASIS_SIGNING = re.compile(
     r"\b\d{1,2}\.\d{1,2}\.\d{4}\s+между\s+[^;]{1,140}?\s+и\s+[^;]{1,80}?\s+заключ[её]н\w*\s*$", re.I,
 )
@@ -384,6 +386,10 @@ def grounds_candidates(text: str, operative: str, claims: list[Claim]) -> dict[s
             detail = BASIS_CREDIT_LINE.match(source, match.end()) if category == "Кредитный договор" else None
             name_end = detail.end() if detail else match.end()
             suffix = re.match(rf"(?:{BASIS_REFERENCE})?", source[name_end:], re.I)[0]
+            if not suffix and category == "Налоговая задолженность" and re.search(rf"{TAX_KIND}$", match[0], re.I):
+                period = BASIS_TAX_PERIOD.match(source, name_end)
+                if period:
+                    suffix = period[0]
             if suffix:
                 continuation = re.match(
                     rf"(?:(?:\s*[;,]\s*(?:и\s+)?|\s+и\s+)(?:{BASIS_NUMBER})(?:{BASIS_DATE})?"
@@ -1273,19 +1279,39 @@ def _source_contract_reference(source: str, operative: str, claim: Claim, fields
     return None
 
 
-def _recover_embedded_cost(source: str, operative: str, claim: Claim) -> None:
+def _filing_court_order(body: str, claim: Claim) -> Fact | None:
+    """Tie an earlier order to the exact sum filed and admitted in this act."""
+    if not claim.total:
+        return None
+    filings = list(re.finditer(
+        rf"\bо\s+включении\s+требован\w*\s+(?:в\s+(?:сумме|размере)|на\s+сумму)\s+(?P<amount>{AMOUNT})",
+        body, re.I,
+    ))
+    if len(filings) != 1 or money(filings[0]["amount"]) != money(claim.total.amount):
+        return None
+    filing = filings[0]
+    following = body[filing.end():filing.end() + 820]
+    order = re.search(
+        rf"\b(?:на\s+основании|требован\w*\s+основан\w*\s+на)\s+судебн\w*\s+приказ\w*"
+        rf"[^;]{{0,180}}?{BASIS_DATE}(?:\s+по\s+делу)?{BASIS_NUMBER}",
+        following, re.I,
+    )
+    if not order or AMOUNTS.search(following[:order.start()]):
+        return None
+    return Fact(value=order[0], quote=body[filing.start():filing.end() + order.end()])
+
+
+def _recover_embedded_cost(body: str, claim: Claim, order: Fact | None) -> None:
     if "pau_only_amount" in claim.fields or len(re.findall(r"пошлин", claim.quote, re.I)) != 1:
         return
     label = r"(?:государственн\w*\s+пошлин\w*|госпошлин\w*)"
     item = re.search(rf"{label}\s*[-–—]\s*(?P<amount>{AMOUNT})", claim.quote, re.I) or re.search(
-        rf"(?P<amount>{AMOUNT})\s*[-–—]?\s*{label}", claim.quote, re.I,
+        rf"(?P<amount>{AMOUNT})\s*[-–—]?\s*(?:расход\w*\s+по\s+(?:уплате|оплате)\s+)?{label}", claim.quote, re.I,
     )
+    if not item and order:
+        item = re.search(rf"(?:задолжен\w*\s+по\s+уплате\s+)?{label}\s+(?P<amount>{AMOUNT})", claim.quote, re.I)
     if not item or excluded_component(item[0], claim.quote):
         return
-    body_end = source.rfind(operative)
-    if body_end < 0:
-        return
-    body = source[:body_end]
     historical = re.search(
         rf"(?P<amount>{AMOUNT})\s+{label},\s*основанн\w*\s+на\s+неисполнени\w*\s+"
         rf"договор\w*\s+(?:микро)?займ\w*[^;()]{{0,150}}\(судебн\w*\s+приказ\w*\s*№[^()]{{3,150}}\)",
@@ -1300,21 +1326,31 @@ def _recover_embedded_cost(source: str, operative: str, claim: Claim) -> None:
     )
     references = req.contract_numbers(historical[0]) if historical else {}
     if (historical and money(historical["amount"]) == money(item["amount"])
-            and len(references) == 1 and references.keys() == req.contract_numbers(source).keys()):
-        kind, evidence = "prior_cost", historical
+            and len(references) == 1 and references.keys() == req.contract_numbers(body + " " + claim.quote).keys()):
+        proof = Fact(value="prior_cost", quote=historical[0])
     elif current and not historical:
-        kind, evidence = "duty", current
+        proof = Fact(value="duty", quote=current[0])
+    elif order and not historical and not current:
+        proof = Fact(value="prior_cost", quote=order.quote)
     else:
         return
-    component = Component(kind=kind, amount=item["amount"], quote=item[0])
+    component = Component(kind=proof.value, amount=item["amount"], quote=item[0])
     amounts, total = claim_amounts(claim.quote, None, embedded_cost=component)
+    if (order and proof.quote == order.quote and total and total.scope == "with_duty" and "principal_debt" not in amounts
+            and re.fullmatch(rf"{AMOUNT}\s*[-–—]\s*расход\w*\s+по\s+уплате\s+{label}", item[0], re.I)):
+        # The two printed items reconcile, but «задолженность» has no internal breakdown.
+        total.scope = "without_duty"
+        claim.total = total
+        claim.fields["pau_only_amount"] = Components(items=[], complete=True, quote=claim.quote)
+        claim.cost_reference = proof
+        return
     if not all(name in amounts for name in CATEGORY_FIELDS) or not any(
         component in amount.items for amount in amounts.values()
     ):
         return
     claim.fields.update(amounts)
     claim.total = total
-    claim.cost_reference = Fact(value=kind, quote=evidence[0])
+    claim.cost_reference = proof
     if "is_salary_or_severance" not in claim.fields and not SALARY_WORDS.search(claim.quote):
         claim.fields["is_salary_or_severance"] = Salary(value=False, quote=claim.quote)
 
@@ -1350,7 +1386,13 @@ def extract_candidates(text: str) -> Candidates:
     fields.update(grounds_candidates(source, operative, claims))
     if len(claims) == 1:
         claim = claims[0]
-        _recover_embedded_cost(source, operative, claim)
+        body_end = source.rfind(operative)
+        if body_end >= 0:
+            body = source[:body_end]
+            order = _filing_court_order(body, claim)
+            if order:
+                fields.setdefault("grounds_ocr", Fact(value=order.value, quote=order.value))
+            _recover_embedded_cost(body, claim, order)
         reference = _source_contract_reference(source, operative, claim, fields)
         if reference:
             claim.contract_number = reference.value

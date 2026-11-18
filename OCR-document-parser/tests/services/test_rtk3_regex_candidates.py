@@ -261,6 +261,34 @@ def test_matching_embedded_fee_is_prior_cost_when_the_claim_cites_a_court_order(
     assert unless_equal["principal_debt"] is None
 
 
+def test_duty_inside_an_admitted_sum_based_on_a_prior_court_order():
+    filing = (
+        "Рассмотрев заявление ПАО «Пример» о включении требования в сумме 105 руб. "
+        "в реестр требований кредиторов должника на основании судебного приказа "
+        "от 15.11.2021 по делу № 2-1949/2021."
+    )
+    decision = (
+        "ОПРЕДЕЛИЛ:\nВключить требование ПАО «Пример» в сумме 105 руб., в том числе: "
+        "100 руб. – основной долг; 5 руб. – расходы по уплате государственной пошлины, в третью очередь."
+    )
+    text = f"{filing} {decision}"
+    row, = fields(text)["claims"]["value"]
+    assert (row["principal_debt"], row["claimed_amount"], row["pau_only_amount"]) == ("105.00", "105.00", "0.00")
+    grounds = extract_candidates(text).fields
+    assert grounds["grounds_ocr"].value == "на основании судебного приказа от 15.11.2021 по делу № 2-1949/2021"
+    assert "grounds" not in grounds
+
+    unitemized, = fields(text.replace("основной долг;", "задолженность;"))["claims"]["value"]
+    assert (unitemized["claimed_amount"], unitemized["total_amount"], unitemized["pau_only_amount"]) == (
+        "105.00", "105.00", "0.00",
+    )
+    assert unitemized["principal_debt"] is None and unitemized["financial_sanctions"] is None
+
+    unrelated, = fields(text.replace("в сумме 105 руб.", "в сумме 100 руб.", 1))["claims"]["value"]
+    assert unrelated["claimed_amount"] is None
+    assert unrelated["pau_only_amount"] is None
+
+
 def test_inconsistent_source_total_preserves_labelled_parts_for_review():
     text = (
         "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в размере 120 руб., из которых "
@@ -898,6 +926,17 @@ def test_tax_ground_uses_operative_obligation_not_authority_name():
         assert extract_candidates(text).fields['grounds'].value == 'Налоговая задолженность'
     text = 'ОПРЕДЕЛИЛ:\nВключить требование ФНС России в размере 100 руб. основного долга.'
     assert 'grounds' not in extract_candidates(text).fields
+
+
+def test_tax_basis_keeps_the_period_printed_with_the_tax_name():
+    text = (
+        "ОПРЕДЕЛИЛ:\nТребования ФНС России в сумме 120 руб., из которых "
+        "100 руб. – транспортный налог за 2023-2025 гг., 20 руб. – пени, "
+        "признать установленными и подлежащими включению в третью очередь."
+    )
+    candidates = extract_candidates(text)
+    assert candidates.fields["grounds_ocr"].value == "транспортный налог за 2023-2025 гг."
+    assert candidates.fields["grounds"].value == "Налоговая задолженность"
 
 
 def test_case_quote_normalizes_year_and_dispute_without_losing_identity():
