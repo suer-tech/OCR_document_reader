@@ -1,6 +1,8 @@
 """Offline regressions for independently stated RTK3 sums and fees."""
+import pytest
+
 from ocr_platform.services.rtk3_regex_candidates import (
-    claim_amounts, extract_candidates, nested_contract_amounts,
+    CourtTotal, claim_amounts, extract_candidates, nested_contract_amounts,
 )
 from ocr_platform.services.rtk3_regex_jev import _claim_key, _claim_values, _fallback_schema, _fixed_claims
 from ocr_platform.services.rtk3_requisites import explicit_ground_category, source_inn
@@ -1660,6 +1662,31 @@ def test_refusal_of_secured_creditor_status_and_separate_fee_sentence():
     assert result['secured_by_pledge']['value'] is False
     assert row['pau_only_amount'] == '5.00'
     assert row['total_amount'] == '105.00'
+
+
+@pytest.mark.parametrize("printed,expected", [("100,00,руб.", "105.00"), ("100,01,руб.", None)])
+def test_punctuated_court_total_is_reconciled_with_a_separate_fee(printed, expected):
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать обоснованными и включить в третью очередь реестра требований кредиторов "
+        f"требования ПАО «Тест» в общей сумме {printed}, из которой: "
+        "80 руб. основной долг, 17 руб. проценты, 3 руб. неустойка. "
+        "В удовлетворении требования о признании за обществом статуса залогового кредитора отказать. "
+        "Государственная пошлина по настоящему требованию в размере 5 руб. "
+        "учитывается в реестре применительно к пункту 3 статьи 137."
+    )
+    [claim] = extract_candidates(text).claims
+    model_total = CourtTotal(amount=printed, quote=printed, scope="without_duty")
+    reply = {_claim_key(0, name): value for name, value in _claim_values(claim).items()}
+    reply["claim_1_included_total"] = model_total
+    result = _fixed_claims([claim], {}, reply, text)
+    [row] = result["claims"]["value"]
+    assert row["principal_debt"] == "97.00"
+    assert row["financial_sanctions"] == "3.00"
+    assert row["pau_only_amount"] == "5.00"
+    assert row["total_amount"] == expected
+    assert row["claimed_amount"] == ("100.00" if expected is not None else None)
+    assert claim.total == model_total
+    assert ("Денежные компоненты не совпадают" in result["claims"].get("validation_issue", "")) is (expected is None)
 
 
 def test_exclusion_stops_before_independent_fee_but_still_rejects_refund():

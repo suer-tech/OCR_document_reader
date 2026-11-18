@@ -10,8 +10,9 @@ from pydantic import BaseModel, ConfigDict
 
 from ocr_platform.services import rtk3_requisites as req
 from ocr_platform.services.rtk3_evidence import (
-    Component, Fact, compact, excluded_component, money, previous_cost, remove_currency_page_marker, source_case,
+    Component, Fact, compact, excluded_component, previous_cost, remove_currency_page_marker, source_case,
 )
+from ocr_platform.services.rtk3_evidence import rtk3_money as money
 
 
 class Components(BaseModel):
@@ -103,7 +104,8 @@ AMOUNT = (
     r"(?:(?<=в размере )|(?<=в сумме ))[0-9]{1,3} [0-9]{4}, ?[0-9]{2}\s*(?:руб(?:лей|ля|ль)?\b\.?|р\.)|"
     r"(?<=в размере )\d+(?: \d{3})*[.,]\d{2}(?=,\s*из\s+(?:которых|них)\s*:)|"
     r"(?:[0-9]{1,3}(?: [0-9]{3})+|[0-9]+)"
-    r"(?:(?:[.,] ?[0-9]{1,2})?(?:\s*\([а-яё -]{3,200}\))?\s*(?:руб(?:лей|ля|ль)?\.?\b\.?|р\.)"
+    r"(?:(?:[.,] ?[0-9]{2}\s*,(?=\s*(?:руб(?:лей|ля|ль)?\b|р\.))|[.,] ?[0-9]{1,2})?"
+    r"(?:\s*\([а-яё -]{3,200}\))?\s*(?:руб(?:лей|ля|ль)?\.?\b\.?|р\.)"
     r"(?:\s*[0-9]{1,2}\s*(?:коп(?:еек|ейки|ейка)?\.?\b\.?|к\.))?"
     r"|[.,] ?[0-9]{1,2}(?=\.?\s+(?:[-–—]\s*)?(?:основн\w*\s+долг|процент\w*|неустойк\w*|пени)\b)))"
 )

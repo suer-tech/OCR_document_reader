@@ -278,6 +278,25 @@ def test_exact_money_no_rounding_or_lost_thousands(value, expected):
     assert (format(actual, ".2f") if actual is not None else None) == expected
 
 
+@pytest.mark.parametrize("literal", ["1 000,123,руб.", "1 000,12,,руб.", "1 000,1,руб."])
+def test_rtk3_rejects_ambiguous_punctuation_and_fractional_digits(literal):
+    assert service.rtk3_money(literal) is None
+
+
+def test_full_argon_ledger_accepts_literal_comma_before_rubles():
+    payload, text = fixture()
+    claim = payload["claims"][0]
+    printed = "227 065,76,руб."
+    text = text.replace("227 065,76 руб.", printed)
+    claim["decision_quote"] = claim["decision_quote"].replace("227 065,76 руб.", printed)
+    claim["included_total"] = fact(printed, printed)
+    claim["salary_quote"] = claim["decision_quote"]
+    fields = build(payload, text)
+    assert fields["total_claimed_amount"]["value"] == "227065.76"
+    assert fields["claims"]["value"][0]["total_amount"] == "235242.76"
+    assert validate_fields(fields, "rtk3", load_profile("rtk3")) == ("ok", [])
+
+
 def test_1863_all_penalties_are_added_not_just_first():
     payload, text = fixture([
         ("principal", "898864,61", "898864,61 руб. основной долг"),

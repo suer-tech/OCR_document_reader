@@ -151,6 +151,13 @@ def money(value: object) -> Decimal | None:
         return None
 
 
+def rtk3_money(value: object) -> Decimal | None:
+    """Read a redundant comma between two printed kopeck digits and the ruble unit."""
+    if isinstance(value, str):
+        value = re.sub(r"([.,]\s*[0-9]{2})\s*,(?=\s*(?:руб(?:лей|ля|ль)?\.?|р\.)\s*$)", r"\1", value, flags=re.I)
+    return money(value)
+
+
 def amount_supported(value: str | None, quote: str) -> bool:
     if not value:
         return False
@@ -458,7 +465,7 @@ def build_fields(
             if component.kind == "duty" and previous_cost(component.quote):
                 component = component.model_copy(update={"kind": "prior_cost"})
                 ledger_reasons.append("Расходы по прежнему судебному акту учтены в составе долга, не как пошлина текущего включения: " + component.quote)
-            amount = money(component.amount)
+            amount = rtk3_money(component.amount)
             key = ((number or "").casefold(), compact(component.quote), amount)
             if (amount is None or not (quoted(component.quote, claim.decision_quote)
                                       or (breakdown and quoted(component.quote, breakdown)))
@@ -494,7 +501,7 @@ def build_fields(
         total = net + amounts["duty"]
         stated = claim.included_total
         if stated.value:
-            explicit = money(stated.value)
+            explicit = rtk3_money(stated.value)
             if not quoted(stated.quote, claim.decision_quote) or not amount_supported(stated.value, stated.quote):
                 errors.append("Явный итог требования не подтверждён окончательным решением.")
             allowed = {"with_duty": {total}, "without_duty": {net}, "unknown": {net, total}}

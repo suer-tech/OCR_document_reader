@@ -18,9 +18,10 @@ from ocr_platform.services import rtk3_requisites as req
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback, decision_probabilities
 from ocr_platform.services.rtk3_evidence import (
     QUEUES, VERSION, ClaimEvidence, DocumentEvidence, Fact, PledgeFact, PriorityFact, amount_supported,
-    build_fields, compact, excluded_component, is_duty_only, money, normalize_case, previous_cost,
+    build_fields, compact, excluded_component, is_duty_only, normalize_case, previous_cost,
     publication_date_field, quoted, remove_currency_page_marker, row_pledges,
 )
+from ocr_platform.services.rtk3_evidence import rtk3_money as money
 from ocr_platform.services.rtk3_regex_candidates import (
     AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_APPLICATION_DUTY, CURRENT_DUTY, EXPIRED_REGISTRY_ACCOUNTING,
     EXPIRED_REGISTRY_ORDER, GROSS,
