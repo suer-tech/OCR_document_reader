@@ -132,6 +132,7 @@ LEGAL_NAME = (
     r"|Банк(?:а|у|ом)?\s+ВТБ(?:\s*\(ПАО\))?"
     r'|Банк(?:а|у|ом)?\s+[«"][^»"]{2,100}[»"]\s*\((?:ПАО|АО)\)'
     r"|Банк(?:а|у|ом)?\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]{1,60}\s*\((?:ПАО|АО)\)"
+    r'|[«"][^»"]{2,100}[»"]\s*\((?:ПАО|АО|(?:публичн\w*\s+)?акционерн\w*\s+обществ\w*)\)'
     r"|" + req.TAX_OFFICE + r"|" + req.FEDERAL_TAX_NAME + r")"
 )
 CREDITOR = re.compile(r"(?:\bтребован\w*|\bзаявлени\w*)\s+(?:(?:кредитор|уполномоченн\w*\s+орган)\w*"
@@ -183,7 +184,9 @@ STANDALONE_FEE_ACCOUNTING = re.compile(
     r"^требован\w*\s+об\s+оплате\s+государственн\w*\s+пошлин\w*\s+в\s+размере\s+"
     rf"{AMOUNT}\s+учитыва(?:ть|ется|ются)\b[^.]{{0,220}}\bпосле\s+погашения\b", re.I,
 )
-CREDIT_CONTRACT_NUMBER = re.compile(r"\bпо\s+кредитн\w*\s+договор\w*\s+№\s*([\w./-]+)", re.I)
+CREDIT_CONTRACT_NUMBER = re.compile(
+    r"\b(?:по|в\s+рамках)\s+кредитн\w*\s+договор\w*\s+№\s*([\w./-]+)", re.I,
+)
 EXPIRED_REGISTRY_ORDER = re.compile(
     r"\bв\s+(?:удовлетворении\s+заявлени\w*\s+кредитора\s+о\s+)?восстановлении\s+срока"
     r"\b.{0,250}\bотказать\b.{0,1300}\bв\s+порядке\s*,?\s*установленном\s+"
@@ -421,7 +424,14 @@ def pledge_candidate(quote: str) -> Fact | None:
 
 def _component_quote(text: str, match: re.Match, lower: int, upper: int, *, amount_first: bool) -> str:
     preceding = re.split(r";|,(?![0-9])|(?<!\d)\.(?!\d)", text[lower:match.start()])[-1]
-    following = re.split(r";|,(?![0-9])|(?<!\d)\.(?!\d)|\)", text[match.end():upper], maxsplit=1)[0]
+    tail = text[match.end():upper]
+    # An extra period can follow an amount with no currency before its dash label.
+    decimal_period = "." if re.match(r"\.\s*[-–—]\s*", tail) and re.fullmatch(
+        r"[0-9 ]+[.,] ?[0-9]{1,2}", match[0],
+    ) else ""
+    following = decimal_period + re.split(
+        r";|,(?![0-9])|(?<!\d)\.(?!\d)|\)", tail[len(decimal_period):], maxsplit=1,
+    )[0]
     # A parenthesis can carry the actual kind: 100 руб. (основной долг).
     following = re.split(
         r"\b(?:в том числе|из которых|из них|для удовлетворения|требован\w*\s+в\s+части|"
@@ -560,8 +570,14 @@ def claim_amounts(quote: str, fee: Component | None) -> tuple[dict[str, Componen
         # independently labelled sanctions subtotal. Require a balanced explicit
         # breakdown and one consistent direction; never guess an unlabeled sum.
         direction = True if chosen is primary else False if chosen is secondary else None
-        if direction is not None and split and declared_total is not None and declared_total == sum(
-                (money(part[0]) for part in parts), Decimal(0)):
+        if direction is None and split and len(parts) == 1 and not components:
+            part = parts[0]
+            for side in (True, False):
+                label = _component_quote(quote, part, split.end(), len(quote), amount_first=side)
+                if re.search(r"пошлин|судебн\w*\s+расход", label, re.I):
+                    direction = side
+                    break
+        if direction is not None and split and declared_total is not None:
             unknown = []
             for i, (part, component) in enumerate(zip(parts, chosen)):
                 if component is not None:
@@ -569,16 +585,21 @@ def claim_amounts(quote: str, fee: Component | None) -> tuple[dict[str, Componen
                 lower = parts[i - 1].end() if i else split.end()
                 upper = parts[i + 1].start() if i + 1 < len(parts) else len(quote)
                 label = _component_quote(quote, part, lower, upper, amount_first=direction)
-                unknown.append(bool(re.search(r"пошлин|судебн\w*\s+расход", label, re.I))
-                               and not excluded_component(label, quote))
-            if unknown and all(unknown):
-                partial["financial_sanctions"] = Components(
-                    items=[c for c in components if c.kind == "sanction"], complete=True, quote=quote,
-                )
-                if total and fee is None:
-                    # The exact sum of the printed list includes these costs
-                    # regardless of their classification as prior or current.
-                    total.scope = "with_duty"
+                if not re.search(r"пошлин|судебн\w*\s+расход", label, re.I) or excluded_component(label, quote):
+                    break
+                unknown.append((i, lower, part))
+            else:
+                listed_total = sum((money(part[0]) for part in parts), Decimal(0))
+                with_costs = declared_total == listed_total
+                separate_cost = (len(unknown) == 1 and unknown[0][0] == len(parts) - 1 and declared_total == actual
+                                 and re.search(r"\bа\s+также\s*$", quote[unknown[0][1]:unknown[0][2].start()], re.I))
+                if unknown and (with_costs or separate_cost):
+                    partial["financial_sanctions"] = Components(
+                        items=[c for c in components if c.kind == "sanction"], complete=True, quote=quote,
+                    )
+                    if with_costs and total and fee is None:
+                        # The exact sum includes the costs regardless of their origin.
+                        total.scope = "with_duty"
         return partial, total
     return {name: Components(items=[c for c in components if c.kind in kinds], complete=True, quote=quote)
             for name, kinds in CATEGORY_FIELDS.items()}, total
@@ -587,16 +608,22 @@ def claim_amounts(quote: str, fee: Component | None) -> tuple[dict[str, Componen
 def nested_contract_amounts(quote: str, fee: Component | None):
     """Flatten explicit contract subtotals only after each subtotal balances."""
     listed_contracts = re.search(r"\bкредитн\w*\s+договор\w*\s*:\s*(?=[-–—]\s+№)", quote, re.I)
+    inline_contracts = False
     if listed_contracts:
         pattern = r"(?:^|\s)[-–—]\s+№\s*[\w./-]+\s+от\s+\d{1,2}\.\d{1,2}\.\d{4}"
     else:
         pattern = r"(?:[-–—]\s+|(?:в\s+том\s+числе\s*:|;)\s*)по\s+кредитн\w*\s+договор\w*"
     starts = list(re.finditer(pattern, quote, re.I))
+    if not starts:
+        starts = list(re.finditer(r"\bв\s+рамках\s+кредитн\w*\s+договор\w*\s*№\s*[\w./-]+", quote, re.I))
+        inline_contracts = len(starts) >= 2 and all(quote[:m.start()].rstrip().endswith(";") for m in starts[1:])
     if len(starts) < 2:
         return None
     heading = quote[:starts[0].start()]
     gross = list(AMOUNTS.finditer(heading))
-    if len(gross) > 1 or (not gross and not listed_contracts):
+    if inline_contracts and not (CREDITOR.search(heading) and len(queue_candidates(heading)) == 1):
+        return None
+    if len(gross) > 1 or (not gross and not (listed_contracts or inline_contracts)):
         return None
     grouped = {name: [] for name in CATEGORY_FIELDS}
     subtotal = Decimal(0)
@@ -776,6 +803,16 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         if command in {"учесть", "учитывать"} and not AMOUNTS.search(block) and re.search(
                 r"отдельно|санкц|неустойк|пошлин|после погашения", block, re.I):
             continue
+        if command in {"учесть", "учитывать"} and len(admitted) == 1 and re.search(
+                r"неустойк\w*.{0,100}\bотдельно\b.{0,200}\bпосле\s+погашения\b", block, re.I
+        ) and not re.search(r"пошлин|залог", block, re.I) and not CREDITOR.search(block):
+            repeated = list(AMOUNTS.finditer(block))
+            if len(repeated) == 1:
+                known, _ = claim_amounts(admitted[0], None)
+                sanctions = known.get("financial_sanctions")
+                if sanctions and sanctions.items and money(repeated[0][0]) == sum(
+                        money(item.amount) for item in sanctions.items):
+                    continue
         if command == "установить" and len(admitted) == 1 and allocated is None:
             allocated = _queue_allocation(admitted[0], block)
             if allocated:
@@ -917,6 +954,14 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
             fields["priority_queue"] = queues[0]
         if len(separate_pledges) <= 1:
             own = pledge_candidate(quote)
+            if own and own.value == "yes":
+                contracts = list(CREDIT_CONTRACT_NUMBER.finditer(quote))
+                if len({item[1] for item in contracts}) > 1 and not COLLATERAL.search(quote[:contracts[0].start()]):
+                    boundaries = [*(item.start() for item in contracts), len(quote)]
+                    if not all(COLLATERAL.search(quote[start:end]) for start, end in zip(boundaries, boundaries[1:])):
+                        # A decision on one named contract cannot describe an
+                        # entire merged claim with other unconfirmed contracts.
+                        own = None
             external = separate_pledges[0] if separate_pledges else None
             if (own or external) and not (own and external and own.value != external.value):
                 fields["pledge_resolution"] = own or external

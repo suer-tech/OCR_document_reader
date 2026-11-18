@@ -98,6 +98,55 @@ def test_explicit_sanctions_subtotal_survives_unitemized_remainder_and_refund():
     assert row["principal_debt"] is None
 
 
+def test_debtor_inn_with_a_two_word_patronymic():
+    text = (
+        "В рамках дела о несостоятельности (банкротстве) Примеровой Анны Нусрат кызы "
+        "(ИНН 123456789012) рассмотрено заявление ООО «Пример». ОПРЕДЕЛИЛ:"
+    )
+    assert source_inn(text, "debtor_inn").value == "123456789012"
+
+
+def test_decimal_sanction_repeated_in_separate_accounting_is_counted_once():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 120,15 руб., "
+        "из которых: 100 руб. – основной долг, 20,15. – неустойка, "
+        "а также 5 руб. расходов по уплате государственной пошлины. "
+        "Учесть требования в размере 20,15. – неустойки отдельно в реестре требований кредиторов "
+        "после погашения основной суммы задолженности."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["financial_sanctions"] == "20.15"
+    assert row["pau_only_amount"] is None
+
+
+def test_inline_contracts_reconcile_without_applying_one_contracts_pledge_to_both():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь "
+        "в рамках кредитного договора № A-1 в размере 100 руб., "
+        "из которых: 90 руб. – основной долг, 10 руб. – проценты, как обеспеченные залогом автомобиля; "
+        "в рамках кредитного договора № A-2 в размере 20 руб., "
+        "из которых: 18 руб. – основной долг, 2 руб. – неустойка."
+    )
+    result = fields(text)
+    row, = result["claims"]["value"]
+    assert row["claimed_amount"] == "120.00"
+    assert row["financial_sanctions"] == "2.00"
+    assert result["pledge_resolution"]["value"] is None
+    assert result["secured_by_pledge"]["value"] is None
+
+
+def test_a_single_listed_cost_supports_the_gross_but_has_unknown_provenance():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь "
+        "по договору займа на сумму 5 руб., в том числе: 5 руб. – судебные расходы."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["total_amount"] == "5.00"
+    assert row["financial_sanctions"] == "0.00"
+    assert row["principal_debt"] is None
+    assert row["pau_only_amount"] is None
+
+
 def test_nested_contract_subtotals_are_not_counted_twice():
     quote = (
         "Включить 300 руб., в том числе: "
@@ -254,6 +303,7 @@ def test_creditor_legal_form_variants_and_own_inn():
         ('ООО МКК «Тест»', 'ООО МКК «Тест»'),
         ('ООО МФК «Тест»', 'ООО МФК «Тест»'),
         ('Банк «Пример» (АО)', 'АО «Банк Пример»'),
+        ('«Пример» (Акционерное общество)', 'АО «Пример»'),
         ('ПАО Банк «ВТБ»', 'Банк ВТБ'),
         ('УФНС России по Кировской области', 'ФНС России'),
     ]:

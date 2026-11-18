@@ -64,6 +64,7 @@ def normalize_creditor(value: str) -> str:
     value = re.sub(r"«\s*", "«", value)
     value = re.sub(r"\s*»", "»", value)
     value = re.sub(r"\s+([,;])", r"\1", value).strip(" ,;")
+    value = re.sub(r"^«([^»]+)»\s*\((ПАО|АО)\)$", r"\2 «\1»", value)
     if re.fullmatch(r"(?:ПАО\s+)?Банк(?:а|у|ом)?\s+«?ВТБ»?(?:\s*\(ПАО\))?", value, re.I):
         return "Банк ВТБ"
     if bank := re.fullmatch(r"Банк(?:а|у|ом)?\s+(?:«([^»]+)»|([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]{1,60}))\s*\((ПАО|АО)\)", value, re.I):
@@ -132,7 +133,8 @@ INN = re.compile(r"\bИНН\s*[:№]?\s*([0-9]{12}|[0-9]{10})(?![0-9])", re.I)
 WORD = r"[А-ЯЁ][А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)*"
 PERSON = re.compile(
     rf"\b(?!(?:ИП|ПАО|АО|ООО|ПКО)\b)({WORD})"
-    rf"(?:\s+\((?:(?i:ранее)(?:\s+(?i:фамилия))?\s*[-–—]?\s*)?{WORD}(?:,\s*{WORD})*\))?\s+({WORD})\s+({WORD})"
+    rf"(?:\s+\((?:(?i:ранее)(?:\s+(?i:фамилия))?\s*[-–—]?\s*)?{WORD}(?:,\s*{WORD})*\))?"
+    rf"\s+({WORD})\s+({WORD}(?:\s+(?i:оглы|кызы)\b)?)"
 )
 
 
@@ -144,7 +146,7 @@ def person_key(match: re.Match) -> tuple[str, str, str]:
 
 def persons(text: str):
     for match in PERSON.finditer(text):
-        if re.search(r"(?:вич[а-яё]*|вн[а-яё]+)$", match[3], re.I):
+        if re.search(r"(?:вич[а-яё]*|вн[а-яё]+|\s+(?:оглы|кызы))$", match[3], re.I):
             yield match
 
 
