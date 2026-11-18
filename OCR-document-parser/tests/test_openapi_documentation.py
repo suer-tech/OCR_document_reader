@@ -3,7 +3,7 @@ import re
 import pytest
 
 from ocr_platform.api.schemas import DocumentResultResponse
-from ocr_platform.orchestration.router import load_all_profiles
+from ocr_platform.orchestration.router import load_all_profiles, load_profile
 
 
 @pytest.fixture
@@ -35,27 +35,46 @@ def test_swagger_documents_exact_current_profile_fields(openapi):
         "contract_number", "pledge_resolution", "secured_by_pledge"}
 
 
-def test_swagger_response_examples_match_contract_and_review_rules(openapi):
-    from ocr_platform.services.extraction_agent import Rtk3Claim
-    from ocr_platform.services.quality_service import compute_quality_scores
-    from ocr_platform.services.validation_service import profile_field_issues, review_requirement
+def test_swagger_court_example_matches_response_schema(openapi):
+    examples = openapi["paths"]["/documents/{document_id}/result"]["get"]["responses"]["200"]["content"]["application/json"]["examples"]
+    DocumentResultResponse.model_validate(examples["court_decision"]["value"])
+
+
+@pytest.mark.parametrize("name,review", [("rtk3", False), ("rtk3_review", True)])
+def test_swagger_rtk3_examples_match_current_contract_and_review_rules(openapi, name, review):
+    from ocr_platform.services.quality_service import compute_rtk3_quality_scores
+    from ocr_platform.services.rtk3_evidence import VERSION
+    from ocr_platform.services.validation_service import review_requirement, validate_fields
 
     examples = openapi["paths"]["/documents/{document_id}/result"]["get"]["responses"]["200"]["content"]["application/json"]["examples"]
     assert set(examples) == {"court_decision", "rtk3", "rtk3_review"}
-    for example in examples.values():
-        DocumentResultResponse.model_validate(example["value"])
-    for name in ("rtk3", "rtk3_review"):
-        payload = examples[name]["value"]
-        fields = payload["fields"]
-        for row in fields["claims"]["value"]:
-            assert Rtk3Claim.model_validate(row).model_dump() == row
-        issues = profile_field_issues(fields, "rtk3")
-        assert (payload["human_review_required"], payload["human_review_reason"]) == review_requirement(
-            payload["overall_quality_score"], issues)
-        assert [issue.model_dump() for issue in issues] == payload["validation_issues"]
-        stored_fields = {**fields, "processing_started_at": fields["processing_started_at"]["value"]}
-        assert compute_quality_scores(payload["raw_text"], stored_fields) == (
-            payload["technical_quality_score"], payload["semantic_confidence_score"], payload["overall_quality_score"])
+    payload = examples[name]["value"]
+    DocumentResultResponse.model_validate(payload)
+    profile = load_profile("rtk3")
+    fields = payload["fields"]
+    assert set(fields) == {*profile["fields"], "processing_started_at"}
+    assert all(fields[key]["source"] == VERSION for key in profile["fields"])
+    assert fields["kad_publication_date"]["value"] is None
+    assert fields["pledge_resolution"]["value"] is None
+    assert fields["secured_by_pledge"]["value"] is None
+    assert re.fullmatch(r"\d+\.\d{2}", fields["total_claimed_amount"]["value"])
+    rows = fields["claims"]["value"]
+    assert [row["priority_queue"] for row in rows] == ["3 очередь", "3 очередь"]
+    assert [row["contract_number"] for row in rows] == ["А-1", "А-2"]
+    assert [row["pledge_resolution"] for row in rows] == ["yes", "no"]
+    assert [row["secured_by_pledge"] for row in rows] == [True, False]
+    for row in rows:
+        assert row["is_salary_or_severance"] is False
+        for field in ("principal_debt", "financial_sanctions", "pau_only_amount", "claimed_amount", "total_amount"):
+            assert re.fullmatch(r"\d+\.\d{2}", row[field])
+    status, issues = validate_fields(fields, "rtk3", profile)
+    assert payload["validation_status"] == status == ("errors" if review else "ok")
+    assert payload["human_review_required"] is review
+    assert (payload["human_review_required"], payload["human_review_reason"]) == review_requirement(
+        payload["overall_quality_score"], issues)
+    assert [issue.model_dump() for issue in issues] == payload["validation_issues"]
+    assert compute_rtk3_quality_scores(payload["raw_text"], fields, profile["fields"]) == (
+        payload["technical_quality_score"], payload["semantic_confidence_score"], payload["overall_quality_score"])
 
 
 def test_upload_type_description_distinguishes_unknown_and_auto(openapi):

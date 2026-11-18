@@ -221,36 +221,37 @@ class DocumentResultResponse(BaseModel):
 Неизвестные обязательные значения RTK2 и неоднозначность возвращаются с validation_status=errors,
 human_review_required=true и human_review_reason=rtk2_requires_review. Отсутствие заседания допустимо.
 
-Для `rtk3` (Включение кредитора ЕФРСБ), обработчик `rtk3_evidence_v2`:
+Для `rtk3` (Включение кредитора ЕФРСБ), режим `regex_jev`. Источник полей новых результатов — `rtk3_evidence_v2`.
 * `document_case_number` — Номер конкретного спора из определения, включая суффикс
 * `case_number` — Основное дело о банкротстве
 * `debtor_inn` — ИНН должника, строка из 12 цифр с ведущими нулями
-* `creditor_inn` — ИНН кредитора, строка из 10 или 12 цифр с ведущими нулями
-* `inclusion_date` — Дата определения, ДД.ММ.ГГГГ
+* `creditor_inn` — ИНН кредитора, строка из 10 или 12 цифр с ведущими нулями. Для «ФНС России в лице…» берётся ИНН названного подразделения. Если указана только «ФНС России», берётся ИНН федеральной службы. Недостающий ИНН может быть подтверждён по наименованию через справочник
+* `inclusion_date` — Дата определения, ДД.ММ.ГГГГ. При явно указанной дате изготовления полного текста используется она
 * `kad_publication_date` — Всегда null
-* `creditor` — Наименование кредитора из акта с указанной правовой формой, для налогового органа «ФНС России»
+* `creditor` — Наименование кредитора из акта с указанной правовой формой. Для налогового органа сохраняется написание из акта, включая «в лице…» с названным подразделением
 * `grounds` — Кредитный договор / Договор займа / Налоговая задолженность / Оплата коммунальных услуг. При отсутствии прямого указания в акте — null
-* `grounds_ocr` — Исходная формулировка основания из документа
-* `pledge_resolution` — Общий статус yes / no / separated, если он установлен и одинаков во всех строках требований к основному обязательству. При разных статусах — null
-* `secured_by_pledge` — true при общем статусе yes. При неизвестном или разном статусе — null
+* `grounds_ocr` — Дословная формулировка основания включённой суммы с реквизитами из документа либо null
+* `pledge_resolution` — Общий статус yes / no / separated при полном списке требований и совпадении установленных статусов. При разных или неизвестных статусах либо неполном списке — null
+* `secured_by_pledge` — true при общем статусе yes, false при no или separated, null при неизвестном или неоднородном статусе
 * `total_claimed_amount` — По актуальной подтверждённой форме ЕМУ: признанная судом сумма без отдельно выделенной пошлины по текущему спору, не первоначально запрошенная сумма
 * `claims` — Все включённые требования. Разные договоры передаются отдельными строками, в том числе в одной очереди
 
 Поля каждого объекта `claims`:
-* `priority_queue` — 1 очередь / 2 очередь / 3 очередь / 4 очередь / За реестром / Иное
+* `priority_queue` — 1 очередь / 2 очередь / 3 очередь / 4 очередь / За реестром / Иное. При неизвестной очереди возвращается null
 * `contract_number` — Номер договора из акта или null
-* `pledge_resolution` — yes / no / separated или null для отдельного требования
+* `pledge_resolution` — yes при признании залога, no при прямом отказе или указании на необеспеченность, separated при отдельном рассмотрении вопроса, null когда статус не установлен
 * `secured_by_pledge` — true при статусе yes, false при no или separated, null при неизвестном статусе
-* `principal_debt` — Основной долг, обычные проценты и ранее присуждённые расходы в составе принятого требования; без отдельно выделенной пошлины по текущему спору
+* `principal_debt` — Основной долг, обычные проценты и ранее присуждённые расходы в составе принятого требования, без пошлины по текущему спору. Если строка состоит только из санкций, передаётся "0.00"
 * `financial_sanctions` — Все неустойки, пени, штрафы и иные финансовые санкции
 * `pau_only_amount` — Отдельно присуждённая пошлина по текущему спору, без двойного счёта
 * `claimed_amount` — По подтверждённой форме ЕМУ: principal_debt + financial_sanctions
 * `total_amount` — principal_debt + financial_sanctions + pau_only_amount
-* `is_salary_or_severance` — Только явно подтверждённая зарплата/выходное пособие
+* `is_salary_or_severance` — true при подтверждённой зарплате или выходном пособии, false при подтверждённой иной природе требования, null при неопределённости
 Все денежные значения новых результатов — строки "123456.78" или null; точка, два знака,
 без разделителей тысяч. Неизвестные суммы не заменяются нулём и требуют ручной проверки.
 Ошибка суммы, цитаты, полноты или реквизитов: validation_status=errors,
 human_review_required=true, human_review_reason=rtk3_requires_review независимо от quality.
+Допустимые null в необязательных полях и подтверждённые значения false сохраняются. Оценка заполненности учитывает обязательные поля.
 Нужные внешние данные обозначаются validation_issues.code=rtk3_external_data_required
 с severity=warning; значение поля остаётся null. Если иных ошибок нет,
 validation_status=warnings. Отсутствующий ИНН участника
@@ -388,7 +389,15 @@ PDF без текста, смешанные PDF и фото отправляют
         examples=[False],
     )
     human_review_reason: Optional[str] = Field(
-        default=None, description="Причина: low_quality_or_missing_fields — низкое качество/нет оценки; court_field_requires_review — проблема дополнительных судебных полей; claimed_amount_by_queue_not_determined — не определено распределение заявленной суммы; claimed_amount_total_mismatch — суммы по очередям не совпадают с общей. Если проверка не нужна — null."
+        default=None, description=(
+            "Причина ручной проверки. low_quality_or_missing_fields означает низкую или отсутствующую оценку. "
+            "court_field_requires_review указывает на проблему дополнительных судебных полей. "
+            "rtk3_requires_review означает ошибку проверки РТК3. rtk3_external_data_required означает, "
+            "что ИНН нужно дополнить из внешнего источника. Для исторических результатов РТК3 "
+            "claimed_amount_by_queue_not_determined означает отсутствие распределения заявленной суммы по очередям. "
+            "claimed_amount_total_mismatch означает расхождение сумм по очередям с общей суммой. "
+            "Если проверка не нужна, возвращается null."
+        )
     )
 
     model_config = {'json_schema_extra': {'examples': [{'document_id': 'doc_123abc',
@@ -579,45 +588,60 @@ PDF без текста, смешанные PDF и фото отправляют
 def _rtk3_result_example(*, review: bool) -> dict:
     """Public response examples shared by Swagger's response selector."""
     values = {
+        "document_case_number": None if review else "А40-123/2026-1-2Ф",
+        "case_number": "А40-123/2026",
+        "debtor_inn": "012345678901",
+        "creditor_inn": "0123456789",
         "inclusion_date": "10.09.2026",
-        "creditor": "ООО Кредитор",
-        "total_claimed_amount": 120000.0,
+        "kad_publication_date": None,
+        "creditor": "ООО «Пример»",
+        "grounds": None,
+        "grounds_ocr": None,
+        "pledge_resolution": None,
+        "secured_by_pledge": None,
+        "total_claimed_amount": "1525.00",
         "claims": [
-            {"priority_queue": "2 очередь", "claimed_amount": None if review else "75000.00",
-             "principal_debt": 68962.0, "financial_sanctions": 0.0, "total_amount": 68962.0},
-            {"priority_queue": "3 очередь", "claimed_amount": None if review else "45000.00",
-             "principal_debt": 28914.0, "financial_sanctions": 14835.0, "total_amount": 43749.0},
+            {
+                "priority_queue": "3 очередь", "contract_number": "А-1",
+                "principal_debt": "1000.00", "financial_sanctions": "25.00", "pau_only_amount": "15.00",
+                "claimed_amount": "1025.00", "total_amount": "1040.00", "is_salary_or_severance": False,
+                "pledge_resolution": "yes", "secured_by_pledge": True,
+            },
+            {
+                "priority_queue": "3 очередь", "contract_number": "А-2",
+                "principal_debt": "500.00", "financial_sanctions": "0.00", "pau_only_amount": "0.00",
+                "claimed_amount": "500.00", "total_amount": "500.00", "is_salary_or_severance": False,
+                "pledge_resolution": "no", "secured_by_pledge": False,
+            },
         ],
-        "grounds": "Договор займа от 15.01.2025",
-        "secured_by_pledge": False,
     }
     fields = {
-        name: {"name": name, "value": value, "confidence": 0.95,
-               "reasoning": "Указано в определении", "source": "rtk3_combined"}
+        name: {"name": name, "value": value, "confidence": None,
+               "reasoning": "Извлечено из определения" if value is not None else None, "source": "rtk3_evidence_v2"}
         for name, value in values.items()
     }
-    if review:
-        fields["claims"]["reasoning"] = "Указана общая заявленная сумма без распределения по очередям"
+    fields["kad_publication_date"]["extraction_method"] = "fixed"
     fields["processing_started_at"] = {
         "name": "processing_started_at", "value": "2026-10-06T08:00:00",
         "reasoning": None, "confidence": None, "source": None,
     }
+    semantic = 7 / 8 if review else 1.0
     return {
         "document_id": "doc_rtk3", "pipeline_run_id": "run_rtk3",
         "raw_text_version_id": "1", "structured_version_id": "1",
         "raw_text": "Определение о включении требований кредитора в реестр...",
         "fields": fields,
         "technical_quality_score": 0.8,
-        "semantic_confidence_score": 5 / 7,
-        "overall_quality_score": (0.8 + 5 / 7) / 2,
+        "semantic_confidence_score": semantic,
+        "overall_quality_score": (0.8 + semantic) / 2,
         "validation_status": "errors" if review else "ok",
         "validation_issues": [{
-            "code": "claimed_amount_by_queue_not_determined",
-            "message": "Не удалось распределить заявленную сумму между очередями требований.",
-            "field_name": "claims", "severity": "error",
+            "code": "rtk3_requires_review",
+            "message": "Не установлено обязательное значение РТК3: document_case_number.",
+            "field_name": "document_case_number", "severity": "error",
         }] if review else [],
         "human_review_required": review,
-        "human_review_reason": "claimed_amount_by_queue_not_determined" if review else None,
+        "human_review_reason": "rtk3_requires_review" if review else None,
     }
 
 
@@ -627,11 +651,11 @@ DOCUMENT_RESULT_EXAMPLES = {
         "value": DocumentResultResponse.model_config["json_schema_extra"]["examples"][0],
     },
     "rtk3": {
-        "summary": "РТК3: первоначально заявленные и фактически включённые суммы",
+        "summary": "РТК3: два договора одной очереди с разным залоговым статусом",
         "value": _rtk3_result_example(review=False),
     },
     "rtk3_review": {
-        "summary": "РТК3: распределение неизвестно, нужна ручная проверка",
+        "summary": "РТК3: отсутствует номер определения, нужна ручная проверка",
         "value": _rtk3_result_example(review=True),
     },
 }
