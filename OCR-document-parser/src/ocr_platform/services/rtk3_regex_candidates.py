@@ -141,10 +141,10 @@ CREDITOR = re.compile(r"(?:\bтребован\w*|\bзаявлени\w*)\s+(?:(?:
                       r"(?:\s+Российск\w*\s+Федераци\w*)?(?:\s+в\s+лице)?\s*[-–—]?\s+)?(?P<name>" + LEGAL_NAME + ")", re.I)
 PAYEE = re.compile(r"\bв\s+пользу\s+(?:кредитора\s+)?(?P<name>" + LEGAL_NAME + ")", re.I)
 TAX_REPRESENTATION = re.compile(
-    r"\s*(?:,\s*г\.\s*[а-яё-]+)?\s*(?:\([^()]{0,320}\)\s*)?,?\s*в\s+лице\s+(?P<name>"
-    + req.TAX_OFFICE + ")", re.I,
+    r"\s*(?:,\s*г\.\s*[а-яё-]+)?\s*(?:\([^()]{0,320}\)\s*)?,?\s*(?P<representation>в\s+лице\s+(?P<name>"
+    + req.TAX_OFFICE + "))", re.IGNORECASE,
 )
-PUBLIC_TAX_CREDITOR = "ФНС России"
+TAX_NAME = re.compile(r"(?P<name>" + req.TAX_OFFICE + "|" + req.FEDERAL_TAX_NAME + ")", re.IGNORECASE)
 CATEGORY_FIELDS = {
     "principal_debt": {"principal", "interest", "prior_cost"},
     "financial_sanctions": {"sanction"},
@@ -379,7 +379,7 @@ def creditor_candidate(text: str, operative: str) -> Fact | None:
 
 
 def tax_creditor_subject(creditor: Fact, text: str, operative: str) -> tuple[str | None, str]:
-    """Select the named INN owner separately from the public tax creditor name."""
+    """Select the named INN owner and the clause establishing its role."""
     if req.tax_identity(creditor.value) != "фнс":
         return creditor.value, creditor.quote
     intro = re.split(r"\b(?:у\s*с\s*т\s*а\s*н\s*о\s*в\s*и\s*л|"
@@ -401,6 +401,18 @@ def tax_creditor_subject(creditor: Fact, text: str, operative: str) -> tuple[str
         if offices:
             return next(iter(offices.values()))
     return creditor.value, creditor.quote
+
+
+def tax_claimant_parts(quote: str) -> tuple[str, str] | None:
+    """Read the name as printed and identify the body whose INN belongs to it."""
+    quote = re.sub(r"\s+", " ", quote).strip()
+    match = next(claimant_matches(quote), None) or TAX_NAME.match(quote)
+    if not match or not (identity := req.tax_identity(match["name"])):
+        return None
+    name = match["name"]
+    if identity == "фнс" and (office := TAX_REPRESENTATION.match(quote, match.end())):
+        return f"{name} {office['representation']}", office["name"]
+    return name, name
 
 
 def _listed_contract_wording(operative: str, claims: list[Claim]) -> str | None:
@@ -1990,8 +2002,11 @@ def extract_candidates(text: str) -> Candidates:
     if creditor:
         if req.tax_identity(creditor.value):
             tax_subject, creditor_quote = tax_creditor_subject(creditor, source, operative)
+            name, owner = tax_claimant_parts(creditor_quote) or (creditor.value, creditor.value)
+            if tax_subject and req.tax_identity(owner) == req.tax_identity(tax_subject):
+                tax_subject = owner
             creditor_subject = tax_subject
-            fields["creditor"] = Fact(value=PUBLIC_TAX_CREDITOR, quote=creditor_quote)
+            fields["creditor"] = Fact(value=name, quote=creditor_quote)
         else:
             fields["creditor"] = creditor
     debtor = req.source_inn(text, "debtor_inn")
@@ -2011,7 +2026,7 @@ def extract_candidates(text: str) -> Candidates:
     if len(claims) == 1:
         claim = claims[0]
         if body_end >= 0:
-            if fields.get("creditor") and fields["creditor"].value == PUBLIC_TAX_CREDITOR and "grounds" not in fields:
+            if fields.get("creditor") and req.tax_identity(fields["creditor"].value) and "grounds" not in fields:
                 tax_ground = _filing_tax_ground(body, claim)
                 if tax_ground:
                     fields["grounds"] = Fact(value="Налоговая задолженность", quote=tax_ground)

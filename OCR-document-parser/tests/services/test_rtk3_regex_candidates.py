@@ -1067,13 +1067,17 @@ def test_separate_fee_has_the_queue_expressly_stated_in_subsequent_accounting():
     assert result["pledge_resolution"]["value"] is None
 
 
-def test_tax_creditors_use_the_common_public_name():
+def test_tax_creditors_keep_the_name_printed_in_the_act():
     federal = "ОПРЕДЕЛИЛ:\nВключить требования ФНС России в третью очередь в размере 100 руб. основного долга."
-    inspection = federal.replace("ФНС России", "Межрайонной инспекции Федеральной налоговой службы №7 по Омской области")
+    name = "Межрайонной инспекции Федеральной налоговой службы № 7 по Омской области"
+    inspection = federal.replace("ФНС России", name)
     assert extract_candidates(federal).fields["creditor"].value == "ФНС России"
+    assert extract_candidates(federal.replace("ФНС России", "Федеральной налоговой службы")).fields["creditor"].value == (
+        "Федеральной налоговой службы"
+    )
     candidates = extract_candidates(inspection)
-    assert candidates.fields["creditor"].value == "ФНС России"
-    assert "№7" in candidates.creditor_tax_subject
+    assert candidates.fields["creditor"].value == name
+    assert candidates.creditor_tax_subject == name
 
 
 def test_tax_creditor_picks_the_named_inspection_inn_from_the_application():
@@ -1083,7 +1087,7 @@ def test_tax_creditor_picks_the_named_inspection_inn_from_the_application():
         "ОПРЕДЕЛИЛ:\nВключить требования ФНС России (ИНН 0123456789) в третью очередь."
     )
     candidates = extract_candidates(text)
-    assert candidates.fields["creditor"].value == "ФНС России"
+    assert candidates.fields["creditor"].value == "ФНС России в лице МИФНС России №7 по Омской области"
     assert candidates.fields["creditor_inn"].value == "1111111199"
     missing = extract_candidates(text.replace("(ИНН 1111111199)", ""))
     assert "creditor_inn" not in missing.fields
@@ -1096,11 +1100,11 @@ def test_tax_creditor_merges_an_office_with_its_explicit_federal_representation(
         "Признать требование ФНС России (ИНН 0123456789) обоснованным."
     )
     candidates = extract_candidates(text)
-    assert candidates.fields["creditor"].value == "ФНС России"
+    assert candidates.fields["creditor"].value == "ФНС России в лице МИФНС России №7 по Омской области"
     assert candidates.fields["creditor_inn"].value == "1111111199"
 
 
-def test_tax_inn_fallback_checks_the_office_despite_the_common_public_name():
+def test_tax_inn_fallback_checks_the_office_named_after_v_litse():
     from ocr_platform.services.rtk3_evidence import Fact
     from ocr_platform.services.rtk3_regex_jev import _model_fact
 
@@ -1109,12 +1113,13 @@ def test_tax_inn_fallback_checks_the_office_despite_the_common_public_name():
     other_office = "МИФНС России №8 по Омской области (ИНН 2222222299)"
     text = f"{federal} в лице {office}. {other_office}"
     subject = "МИФНС России №7 по Омской области"
+    claimant = f"ФНС России в лице {subject}"
     assert _model_fact("creditor_inn", Fact(value="1111111199", quote=office),
-                       text, "ФНС России", subject) == "1111111199"
+                       text, claimant, subject) == "1111111199"
     assert _model_fact("creditor_inn", Fact(value="0123456789", quote=federal),
-                       text, "ФНС России", subject) is None
+                       text, claimant, subject) is None
     assert _model_fact("creditor_inn", Fact(value="2222222299", quote=other_office),
-                       text, "ФНС России", subject) is None
+                       text, claimant, subject) is None
 
 
 def test_tax_registry_checks_exact_office_and_registration_period(monkeypatch):
@@ -1140,6 +1145,7 @@ def test_tax_registry_checks_exact_office_and_registration_period(monkeypatch):
             entry(other, "0123456789", "ACTIVE", 2010),
             entry(office, "1111111199", "LIQUIDATED", 2010, 2020),
             entry(office, "2222222299", "ACTIVE", 2020),
+            entry("Федеральная налоговая служба", "7707329152", "ACTIVE", 2004),
         ]
 
     monkeypatch.setattr(service, "_tax_office_registrations", {})
@@ -1147,9 +1153,11 @@ def test_tax_registry_checks_exact_office_and_registration_period(monkeypatch):
     assert service.registered_tax_inn("МИФНС России №7 по Омской области", "18.11.2026") == "2222222299"
     assert service.registered_tax_inn(office, "01.01.2018") == "1111111199"
     assert service.registered_tax_inn("ФНС России №7 по Омской области", "18.11.2026") == "2222222299"
-    assert service.registered_tax_inn("ФНС России", "18.11.2026") is None
+    assert service.registered_tax_inn("ФНС России", "18.11.2026") == "7707329152"
+    assert service.registered_tax_inn("Федеральной налоговой службы России", "18.11.2026") == "7707329152"
+    assert service.registered_tax_inn("ФНС России", "01.01.2003") is None
     assert service.registered_tax_inn("МИФНС России №7", "18.11.2026") is None
-    assert queries == ["Межрайонная ИФНС России № 7 по омской области", "ИФНС № 7 по омской области"]
+    assert queries == ["Межрайонная ИФНС России № 7 по омской области", "ИФНС № 7 по омской области", "ФНС России"]
 
 
 def test_tax_registry_enrichment_yields_to_document_inns_and_marks_the_route(monkeypatch):
@@ -1164,7 +1172,7 @@ def test_tax_registry_enrichment_yields_to_document_inns_and_marks_the_route(mon
         return "1111111199"
 
     monkeypatch.setattr(service, "registered_tax_inn", lookup)
-    result = {"creditor": {"value": "ФНС России"}, "creditor_inn": {"value": None},
+    result = {"creditor": {"value": f"ФНС России в лице {office}"}, "creditor_inn": {"value": None},
               "inclusion_date": {"value": "18.11.2026"}}
     printed = f"{office} (ИНН 2222222299)"
     asyncio.run(service._enrich_tax_inn(result, printed, office))
@@ -1174,6 +1182,45 @@ def test_tax_registry_enrichment_yields_to_document_inns_and_marks_the_route(mon
     assert calls == [(office, "18.11.2026")]
     assert result["creditor_inn"]["value"] == "1111111199"
     assert result["creditor_inn"]["extraction_route"] == "dadata_party_registry"
+
+
+def test_extract_fields_preserves_tax_spelling_and_looks_up_the_named_authority(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    from ocr_platform.services import rtk3_regex_jev as service
+    from ocr_platform.services.rtk3_evidence import Fact
+
+    async def verify(text, candidates, config, context):
+        return {name: service.Verified(value, .99) for name, value in candidates.fields.items()}, False
+
+    profile = {"models": {"verification": {}, "llm_extraction": {}}, "fields": {"creditor": {}, "creditor_inn": {}}}
+    office = "МИФНС России №7 по Омской области"
+    lookup = Mock(side_effect={"ФНС России": "7707329152", office: "1111111199"}.get)
+    monkeypatch.setattr(service, "_verify", verify)
+    monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={}))
+    monkeypatch.setattr(service, "registered_tax_inn", lookup)
+
+    federal = "Арбитражный суд г. Кирова.\nОПРЕДЕЛИЛ:\nВключить требования ФНС России в третью очередь."
+    fields = asyncio.run(service.extract_fields(federal, profile))
+    assert (fields["creditor"]["value"], fields["creditor_inn"]["value"]) == ("ФНС России", "7707329152")
+    lookup.assert_called_once_with("ФНС России", None)
+    lookup.reset_mock()
+
+    printed = federal.replace("ФНС России в третью", "ФНС России (ИНН 7707329152) в третью")
+    fields = asyncio.run(service.extract_fields(printed, profile))
+    assert fields["creditor_inn"]["value"] == "7707329152"
+    lookup.assert_not_called()
+
+    representation = f"Рассмотрев заявление ФНС России (ИНН 7707329152) в лице {office}.\n{federal}"
+    monkeypatch.setattr(service, "_verify", AsyncMock(return_value=({}, False)))
+    monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={
+        "creditor": Fact(value="ФНС России", quote="требования ФНС России в третью очередь"),
+    }))
+    fields = asyncio.run(service.extract_fields(representation, profile))
+    assert fields["creditor"]["value"] == f"ФНС России в лице {office}"
+    assert fields["creditor_inn"]["value"] == "1111111199"
+    lookup.assert_called_once_with(office, None)
 
 
 def test_company_registry_checks_exact_legal_name_registration_dates_and_ambiguity(monkeypatch):
@@ -1313,7 +1360,7 @@ def test_creditor_legal_form_variants_and_own_inn():
         ('Банк «Пример» (АО)', 'АО «Банк Пример»'),
         ('«Пример» (Акционерное общество)', 'АО «Пример»'),
         ('ПАО Банк «ВТБ»', 'Банк ВТБ'),
-        ('УФНС России по Кировской области', 'ФНС России'),
+        ('УФНС России по Кировской области', 'УФНС России по Кировской области'),
     ]:
         text = f'ОПРЕДЕЛИЛ:\nВключить требования {name} в третью очередь в размере 100 руб. основного долга.'
         assert extract_candidates(text).fields['creditor'].value == expected

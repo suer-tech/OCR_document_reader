@@ -24,9 +24,10 @@ from ocr_platform.services.rtk3_evidence import (
 from ocr_platform.services.rtk3_regex_candidates import (
     AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_APPLICATION_DUTY, CURRENT_DUTY, EXPIRED_REGISTRY_ACCOUNTING,
     EXPIRED_REGISTRY_ORDER, GROSS,
-    LEGAL_NAME, PUBLIC_TAX_CREDITOR,
+    LEGAL_NAME,
     SALARY_WORDS, SECTION_ACCOUNTED_DUTY, SEPARATE_SANCTIONS, STANDALONE_FEE_ACCOUNTING,
     Claim, Components, CourtTotal, Salary, extract_candidates, interest_with_repeated_unit, penalty_from_itemized_total,
+    tax_claimant_parts,
 )
 
 from ocr_platform.services.rtk3_gemini_prompts import build_gemini_prompt
@@ -40,10 +41,10 @@ SCALAR_QUESTIONS = {
     "document_case_number": "Это полный номер текущего определения со всеми индексами обособленного спора, если они напечатаны?",
     "debtor_inn": "Этот ИНН принадлежит именно должнику текущего дела, а не супругу, поручителю или иному участнику?",
     "creditor": "Это наименование кредитора, чьё требование суд включил или признал для удовлетворения за реестром? "
-    "Для налогового органа единое выходное наименование — «ФНС России», включая территориальные подразделения.",
+    "Для налогового органа проверь написание наименования в акте, включая формулировку «в лице», если она указана.",
     "creditor_inn": "Этот ИНН принадлежит надлежащему субъекту текущего требования? Если кредитор налоговый и "
-    "в акте указана инспекция или управление, проверь ИНН именно этого подразделения. Имя «ФНС России» для "
-    "налогового кредитора унифицировано. Для остальных кредиторов проверь собственный ИНН кредитора.",
+    "в акте указана инспекция или управление, проверь ИНН этого подразделения. Если указана только ФНС России, "
+    "проверь ИНН федеральной службы. Для остальных кредиторов проверь собственный ИНН кредитора.",
     "inclusion_date": "Это дата текущего определения? Если указана дата изготовления в полном объёме, используй её.",
     "grounds": "Это категория основания задолженности, которую суд признал в текущем акте?",
     "grounds_ocr": "Это дословная формулировка из документа, которая относится к включённой сумме "
@@ -228,11 +229,12 @@ def _model_fact(
     if not fact or not fact.value or not quoted(fact.quote, text):
         return None
     if name == "creditor":
-        if tax_subject and req.tax_identity(fact.value) and (
-                req.tax_name_matches(tax_subject, fact.quote) or req.tax_name_matches(PUBLIC_TAX_CREDITOR, fact.quote)):
-            return PUBLIC_TAX_CREDITOR
-        value = req.creditor_value(fact.value, fact.quote, text).value
-        return PUBLIC_TAX_CREDITOR if value and req.tax_identity(value) else value
+        if identity := req.tax_identity(fact.value):
+            parts = tax_claimant_parts(fact.quote)
+            if parts and identity in {req.tax_identity(part) for part in parts}:
+                return parts[0]
+            return None
+        return req.creditor_value(fact.value, fact.quote, text).value
     if name in {"case_number", "document_case_number"}:
         document, main = normalize_case(fact.value)
         value = main if name == "case_number" else document
@@ -247,8 +249,8 @@ def _model_fact(
         if set(req.INN.findall(fact.quote)) != {fact.value}:
             return None
         if name == "creditor_inn":
-            if creditor == PUBLIC_TAX_CREDITOR:
-                if tax_subject and req.source_inn(fact.quote, name, tax_subject).value == fact.value:
+            if req.tax_identity(creditor or ""):
+                if _same_tax_owner(creditor, tax_subject) and req.source_inn(fact.quote, name, tax_subject).value == fact.value:
                     return fact.value
                 return None
             return fact.value if req.creditor_value(creditor, fact.quote, text).value else None
@@ -266,6 +268,11 @@ def _model_fact(
     return None
 
 
+def _same_tax_owner(creditor: str, subject: str | None) -> bool:
+    parts = tax_claimant_parts(creditor)
+    return bool(parts and subject and req.tax_identity(parts[1]) == req.tax_identity(subject))
+
+
 def _scalar_fields(
     text: str, configured: dict, verified: dict, response: dict, proposals: dict,
     tax_subject: str | None = None,
@@ -278,9 +285,15 @@ def _scalar_fields(
         fact = approved.value if approved else response.get(name)
         creditor = result.get("creditor", {}).get("value")
         value = fact.value if approved else _model_fact(name, fact, text, creditor, tax_subject)
-        if name == "creditor" and not approved and fact and value != PUBLIC_TAX_CREDITOR:
+        if name == "creditor" and not approved and fact:
             original = proposals.get(name)
-            if (original and original.value and original.value != PUBLIC_TAX_CREDITOR
+            if original and original.value and req.tax_identity(original.value):
+                cited = tax_claimant_parts(fact.quote)
+                if cited and req.tax_identity(fact.value or "") and (
+                        _same_tax_owner(cited[0], tax_subject)
+                        or req.tax_identity(cited[1]) == "фнс" and _same_tax_owner(original.value, tax_subject)):
+                    value, fact = original.value, original
+            elif (original and original.value and not req.tax_identity(value or "")
                     and (value is None or req.identity(value)[1] <= req.identity(original.value)[1])
                     and req.creditor_value(original.value, fact.quote, text).value):
                 value = original.value
@@ -336,6 +349,8 @@ def _tax_registrations(subject: str, identity: str) -> list[tuple[str, dict]]:
         return _tax_office_registrations[cache_key]
     query = subject
     identities = {identity}
+    if identity == "фнс":
+        query = "ФНС России"
     inspection = re.fullmatch(r"(мифнс|ифнс) №(\d+) по (.+)", identity)
     if inspection:
         organization = "Межрайонная ИФНС России" if inspection[1] == "мифнс" else "ИФНС России"
@@ -392,9 +407,10 @@ def _unique_registered_inn(registrations: list[tuple[str, dict]], act_date: str 
 
 
 def registered_tax_inn(subject: str, act_date: str | None = None) -> str | None:
-    if not re.fullmatch(req.TAX_OFFICE, subject, re.I) or not re.search(r"\bпо\s+\S+", subject, re.I):
-        return None
     identity = req.tax_identity(subject)
+    if identity != "фнс" and (
+            not re.fullmatch(req.TAX_OFFICE, subject, re.IGNORECASE) or not re.search(r"\bпо\s+\S+", subject, re.IGNORECASE)):
+        return None
     return _unique_registered_inn(_tax_registrations(subject, identity), act_date) if identity else None
 
 
@@ -427,8 +443,7 @@ def registered_company_inn(subject: str, act_date: str | None) -> str | None:
 async def _enrich_tax_inn(fields: dict, text: str, subject: str | None) -> None:
     creditor_inn = fields.get("creditor_inn")
     if (not subject or creditor_inn is None or creditor_inn["value"]
-            or fields.get("creditor", {}).get("value") != PUBLIC_TAX_CREDITOR
-            or req.tax_identity(subject) == "фнс"):
+            or not _same_tax_owner(fields.get("creditor", {}).get("value") or "", subject)):
         return
     source = req.source_inn(text, "creditor_inn", subject)
     if source.value or source.ambiguous:
@@ -444,7 +459,7 @@ async def _enrich_tax_inn(fields: dict, text: str, subject: str | None) -> None:
 
 async def _enrich_creditor_inn(fields: dict, text: str, tax_subject: str | None) -> None:
     creditor = fields.get("creditor", {}).get("value")
-    if creditor == PUBLIC_TAX_CREDITOR:
+    if req.tax_identity(creditor or ""):
         await _enrich_tax_inn(fields, text, tax_subject)
         return
     creditor_inn = fields.get("creditor_inn")
