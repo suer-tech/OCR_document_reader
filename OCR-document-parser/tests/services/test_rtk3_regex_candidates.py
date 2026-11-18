@@ -428,6 +428,74 @@ def test_tax_registry_enrichment_yields_to_document_inns_and_marks_the_route(mon
     assert result["creditor_inn"]["extraction_route"] == "dadata_party_registry"
 
 
+def test_company_registry_checks_exact_legal_name_registration_dates_and_ambiguity(monkeypatch):
+    from datetime import datetime, timezone
+    from unittest.mock import Mock
+    from requests.exceptions import ReadTimeout
+    from ocr_platform.services import rtk3_regex_jev as service
+
+    def timestamp(year):
+        return int(datetime(year, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+
+    def entry(name, inn, *, branch="MAIN", closed=None, ogrn="1000000000000"):
+        return {"value": name, "data": {"inn": inn, "ogrn": ogrn, "type": "LEGAL", "branch_type": branch, "state": {
+            "status": "LIQUIDATED" if closed else "ACTIVE",
+            "registration_date": timestamp(2010),
+            "liquidation_date": timestamp(closed) if closed else None,
+        }}}
+
+    matches = [
+        entry('ООО "Пример-Регион"', "1111111111"),
+        entry('ООО "Пример"', "2222222222", branch="BRANCH"),
+        entry('ООО "Пример"', "9999999999", ogrn=None),
+        entry('ООО "Пример"', "3333333333", closed=2019),
+        entry('Общество с ограниченной ответственностью "ПРИМЕР"', "4444444444"),
+    ]
+    lookup = Mock(side_effect=[ReadTimeout(), matches, matches, matches])
+    monkeypatch.setattr(service, "dadata_party_suggestions", lookup)
+    assert service.registered_company_inn("ООО «Пример»", "18.11.2026") == "4444444444"
+    assert lookup.call_count == 2
+    assert service.registered_company_inn("ООО «Пример»", "18.11.2017") is None
+    matches.append(entry('ООО "Пример"', "5555555555"))
+    assert service.registered_company_inn("ООО «Пример»", "18.11.2026") is None
+    matches[:] = [entry('НЕПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО "ПРИМЕР-БАНК"', "4444444444")]
+    lookup.side_effect = None
+    lookup.return_value = matches
+    assert service.registered_company_inn("НАО «Пример - Банк»", "18.11.2026") == "4444444444"
+    lookup.assert_called_with("НАО «Пример-Банк»")
+
+
+def test_extract_fields_looks_up_only_the_company_without_a_document_inn(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+    from ocr_platform.services import rtk3_regex_jev as service
+
+    async def verify(text, candidates, config, context):
+        return {name: service.Verified(value, .99) for name, value in candidates.fields.items()}, False
+
+    company = "ООО «Пример»"
+    text = f"ОПРЕДЕЛИЛ:\nВключить требования {company} в третью очередь в размере 100 руб. основного долга."
+    profile = {"models": {"verification": {}, "llm_extraction": {}}, "fields": {"creditor": {}, "creditor_inn": {}}}
+    monkeypatch.setattr(service, "_verify", verify)
+    monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={}))
+    lookup = Mock(return_value="1111111111")
+    monkeypatch.setattr(service, "registered_company_inn", lookup)
+
+    printed = text.replace(company, f"{company} (ИНН 2222222222)")
+    result = asyncio.run(service.extract_fields(printed, profile))
+    assert result["creditor_inn"]["value"] == "2222222222"
+    ambiguous = f"{printed}\n{company} (ИНН 3333333333)."
+    result = asyncio.run(service.extract_fields(ambiguous, profile))
+    assert result["creditor_inn"]["value"] is None
+    lookup.assert_not_called()
+
+    result = asyncio.run(service.extract_fields(text, profile))
+    lookup.assert_called_once_with(company, None)
+    assert result["creditor_inn"]["value"] == "1111111111"
+    assert result["creditor_inn"]["extraction_route"] == "dadata_party_registry"
+    assert "external_data_required" not in result["creditor_inn"]
+
+
 def test_explicit_uncertain_fee_origin_does_not_become_zero():
     text = (
         "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» в третью очередь в размере 105 руб., "

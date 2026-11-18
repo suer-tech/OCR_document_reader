@@ -9,7 +9,7 @@ import json
 import re
 
 import httpx
-from requests import RequestException
+from requests.exceptions import ConnectionError, RequestException, Timeout
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
 
 from ocr_platform.observability.logging import get_logger
@@ -22,7 +22,7 @@ from ocr_platform.services.rtk3_evidence import (
     publication_date_field, quoted, row_pledges,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
-    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, GROSS, PUBLIC_TAX_CREDITOR,
+    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, GROSS, LEGAL_NAME, PUBLIC_TAX_CREDITOR,
     SALARY_WORDS, SEPARATE_SANCTIONS,
     Claim, Components, CourtTotal, Salary, extract_candidates,
 )
@@ -31,6 +31,7 @@ from ocr_platform.services.rtk3_gemini_prompts import build_gemini_prompt
 
 logger = get_logger(__name__)
 _tax_office_registrations: dict[tuple[str, bool], list[tuple[str, dict]]] = {}
+_NAME_DASH = re.compile(r"\s*[-–—−]\s*")
 
 SCALAR_QUESTIONS = {
     "case_number": "Это номер основного дела о банкротстве, без индекса обособленного спора?",
@@ -304,6 +305,17 @@ def _scalar_fields(
     return result
 
 
+def _registry_suggestions(subject: str) -> list[dict]:
+    for can_retry in (True, False):
+        try:
+            return dadata_party_suggestions(subject)
+        except (RequestException, ValueError) as exc:
+            if not can_retry or not isinstance(exc, (ConnectionError, Timeout)):
+                logger.warning("rtk3_party_registry_failed", error=type(exc).__name__)
+                break
+    return []
+
+
 def _tax_registrations(subject: str, identity: str) -> list[tuple[str, dict]]:
     numbered_fns = bool(re.match(req.FEDERAL_TAX_NAME + r"\s*№", subject, re.I))
     cache_key = (identity, numbered_fns)
@@ -320,13 +332,8 @@ def _tax_registrations(subject: str, identity: str) -> list[tuple[str, dict]]:
             organization = "ИФНС"
             identities.add(f"мифнс №{inspection[2]} по {inspection[3]}")
         query = f"{organization} № {inspection[2]} по {inspection[3]}"
-    try:
-        suggestions = dadata_party_suggestions(query)
-    except (RequestException, ValueError) as exc:
-        logger.warning("rtk3_tax_registry_failed", error=type(exc).__name__)
-        return []
     registrations = []
-    for suggestion in suggestions:
+    for suggestion in _registry_suggestions(query):
         data = suggestion.get("data")
         if not isinstance(data, dict):
             continue
@@ -353,15 +360,13 @@ def _registry_date(timestamp: int | None) -> date | None:
         return None
 
 
-def registered_tax_inn(subject: str, act_date: str | None = None) -> str | None:
-    if not re.fullmatch(req.TAX_OFFICE, subject, re.I) or not re.search(r"\bпо\s+\S+", subject, re.I):
+def _unique_registered_inn(registrations: list[tuple[str, dict]], act_date: str | None) -> str | None:
+    try:
+        effective_date = datetime.strptime(act_date, "%d.%m.%Y").date() if act_date else None
+    except ValueError:
         return None
-    identity = req.tax_identity(subject)
-    if not identity:
-        return None
-    effective_date = datetime.strptime(act_date, "%d.%m.%Y").date() if act_date else None
     matches = set()
-    for inn, state in _tax_registrations(subject, identity):
+    for inn, state in registrations:
         active = state.get("status") == "ACTIVE"
         if effective_date:
             opened = _registry_date(state.get("registration_date"))
@@ -371,6 +376,39 @@ def registered_tax_inn(subject: str, act_date: str | None = None) -> str | None:
         if active:
             matches.add(inn)
     return next(iter(matches)) if len(matches) == 1 else None
+
+
+def registered_tax_inn(subject: str, act_date: str | None = None) -> str | None:
+    if not re.fullmatch(req.TAX_OFFICE, subject, re.I) or not re.search(r"\bпо\s+\S+", subject, re.I):
+        return None
+    identity = req.tax_identity(subject)
+    return _unique_registered_inn(_tax_registrations(subject, identity), act_date) if identity else None
+
+
+def _registry_company_name(name: str) -> str:
+    name = req.normalize_creditor(_NAME_DASH.sub("-", name))
+    name = re.sub(r"^НАО\b", "АО", name, flags=re.I)
+    return compact(re.sub(r'[«»"“”„]', "", name))
+
+
+def registered_company_inn(subject: str, act_date: str | None) -> str | None:
+    identity = _registry_company_name(subject)
+    registrations = []
+    for suggestion in _registry_suggestions(_NAME_DASH.sub("-", subject)):
+        data = suggestion.get("data")
+        if not isinstance(data, dict) or data.get("type") != "LEGAL" or data.get("branch_type") != "MAIN":
+            continue
+        ogrn = data.get("ogrn")
+        if not isinstance(ogrn, str) or not re.fullmatch(r"[0-9]{13}", ogrn):
+            continue
+        inn, names, state = data.get("inn"), data.get("name"), data.get("state")
+        names = names if isinstance(names, dict) else {}
+        if (isinstance(inn, str) and re.fullmatch(r"[0-9]{10}", inn) and isinstance(state, dict)
+                and any(_registry_company_name(name) == identity for name in (
+                    suggestion.get("value"), names.get("full_with_opf"), names.get("short_with_opf"),
+                ) if isinstance(name, str))):
+            registrations.append((inn, state))
+    return _unique_registered_inn(registrations, act_date)
 
 
 async def _enrich_tax_inn(fields: dict, text: str, subject: str | None) -> None:
@@ -387,6 +425,27 @@ async def _enrich_tax_inn(fields: dict, text: str, subject: str | None) -> None:
     if inn:
         fields["creditor_inn"] = _field(
             inn, quote=f"ИНН найден в DaData по полному наименованию «{subject}».",
+            route="dadata_party_registry",
+        )
+
+
+async def _enrich_creditor_inn(fields: dict, text: str, tax_subject: str | None) -> None:
+    creditor = fields.get("creditor", {}).get("value")
+    if creditor == PUBLIC_TAX_CREDITOR:
+        await _enrich_tax_inn(fields, text, tax_subject)
+        return
+    creditor_inn = fields.get("creditor_inn")
+    if (not creditor or creditor_inn is None or creditor_inn["value"] or req.tax_identity(creditor)
+            or not re.fullmatch(LEGAL_NAME, creditor, re.I)):
+        return
+    source = req.source_inn(text, "creditor_inn", creditor)
+    if source.value or source.ambiguous:
+        return
+    act_date = fields.get("inclusion_date", {}).get("value") or req.ruling_date(text).value
+    inn = await asyncio.to_thread(registered_company_inn, creditor, act_date)
+    if inn:
+        fields["creditor_inn"] = _field(
+            inn, quote=f"ИНН найден в DaData по наименованию кредитора «{creditor}».",
             route="dadata_party_registry",
         )
 
@@ -591,6 +650,6 @@ async def extract_fields(
     fields = _scalar_fields(
         text, profile["fields"], verified, response, candidates.fields, candidates.creditor_tax_subject,
     )
-    await _enrich_tax_inn(fields, text, candidates.creditor_tax_subject)
+    await _enrich_creditor_inn(fields, text, candidates.creditor_tax_subject)
     fields.update(_fixed_claims(layout, verified, response, text) if layout else _model_claims(text, profile, response, fields))
     return {name: fields[name] for name in profile["fields"] if name in fields}
