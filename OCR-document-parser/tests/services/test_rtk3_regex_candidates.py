@@ -2,7 +2,7 @@
 from ocr_platform.services.rtk3_regex_candidates import (
     claim_amounts, extract_candidates, nested_contract_amounts,
 )
-from ocr_platform.services.rtk3_regex_jev import _claim_key, _claim_values, _fixed_claims
+from ocr_platform.services.rtk3_regex_jev import _claim_key, _claim_values, _fallback_schema, _fixed_claims
 from ocr_platform.services.rtk3_requisites import explicit_ground_category, source_inn
 from ocr_platform.services.rtk3_validation import rtk3_issues
 
@@ -240,6 +240,83 @@ def test_gross_is_computable_without_classifying_an_itemized_court_cost():
     assert row["financial_sanctions"] == "10.00"
     assert row["principal_debt"] is None and row["claimed_amount"] is None
     assert (row["pau_only_amount"], row["total_amount"]) == ("7.00", "141.00")
+
+
+def test_embedded_fee_is_historical_when_the_award_matches_the_cited_order():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать обоснованным и включить требование ООО «Пример» в третью очередь "
+        "реестра требований кредиторов должника на основании судебного приказа мирового судьи "
+        "судебного участка № 17 от 06.04.2026 по делу № 2-18/2026 в размере 110 руб. "
+        "по кредитному договору № 175 от 14.06.2024, в том числе: 100 руб. основного долга, "
+        "3 руб. неустойки, 7 руб. расходов по оплате госпошлины. Требования в части неустойки "
+        "и государственной пошлины учитываются отдельно в реестре требований кредиторов третьей очереди."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["principal_debt"], row["financial_sanctions"]) == ("107.00", "3.00")
+    assert (row["pau_only_amount"], row["total_amount"]) == ("0.00", "110.00")
+
+
+def test_payment_from_remaining_property_after_registry_claims():
+    text = (
+        "ОПРЕДЕЛИЛ:\nТребование АО КБ «Пример» в размере 100 руб. признать обоснованным и "
+        "подлежащим удовлетворению за счет имущества, оставшегося после погашения требований "
+        "кредиторов, включенных в реестр требований кредиторов должника. "
+        "Признать требование в размере 7 руб. судебных расходов по оплате государственной "
+        "пошлины за рассмотрение настоящего заявления подлежащим удовлетворению в порядке пункта 3 статьи 137."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["priority_queue"] == "За реестром"
+    assert (row["claimed_amount"], row["pau_only_amount"], row["total_amount"]) == ("100.00", "7.00", "107.00")
+    assert row["principal_debt"] is None
+
+
+def test_common_award_includes_court_expense_without_assuming_its_type():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требование ПАО «Пример» задолженности по кредитным договорам "
+        "от 20.11.2023 №123, 21.11.2024 №456 в размере 105 руб., из которых: "
+        "100 руб. – основной долг, 5 руб. – неустойка, в третью очередь реестра требований кредиторов. "
+        "В соответствии с пунктом 3 статьи 137 Федерального закона «О несостоятельности (банкротстве)» "
+        "требования об установлении 5 руб. – неустойка учесть отдельно в реестре требований кредиторов. "
+        "Признать требования кредитора в размере 7 руб. судебных расходов подлежащими удовлетворению "
+        "применительно к пункту 3 статьи 137 Федерального закона."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["contract_number"] is None
+    assert (row["financial_sanctions"], row["claimed_amount"], row["total_amount"]) == ("5.00", "105.00", "112.00")
+    assert row["pau_only_amount"] is None
+    assert _claim_key(0, "included_total") not in _fallback_schema(extract_candidates(text).claims, {}, set())
+    assert not extract_candidates(text.replace("105 руб.", "106 руб.", 1)).claims
+
+
+def test_malformed_penalty_requires_the_printed_total_to_corroborate_the_cents():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать обоснованным и включить требование ФНС России в размере "
+        "121,59 руб., из которых: 100,01 руб. основного долга, 21,587 руб. пеней "
+        "в третью очередь реестра требований кредиторов."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["principal_debt"], row["financial_sanctions"]) == ("100.01", "21.58")
+    assert (row["claimed_amount"], row["total_amount"]) == ("121.59", "121.59")
+    wrong_total = text.replace("121,59", "121,60")
+    row, = fields(wrong_total)["claims"]["value"]
+    assert row["financial_sanctions"] is None
+    assert row["claimed_amount"] is None and row["total_amount"] == "121.60"
+
+
+def test_labeled_commission_is_in_the_award_but_not_a_penalty():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» по соглашению о кредитовании № 123 "
+        "в третью очередь реестра требований кредиторов в размере 130 руб., а именно: "
+        "основной долг: 100 руб., проценты: 20 руб., штрафы и неустойки: 3 руб., "
+        "комиссию за обслуживание счета: 7 руб. Взыскать в пользу ПАО «Пример» "
+        "государственную пошлину в размере 5 руб. за рассмотрение настоящего заявления."
+    )
+    candidate, = extract_candidates(text).claims
+    assert candidate.total.scope == "without_duty"
+    assert _claim_key(0, "included_total") in _fallback_schema([candidate], {}, set())
+    row, = fields(text)["claims"]["value"]
+    assert (row["financial_sanctions"], row["claimed_amount"], row["total_amount"]) == ("3.00", "130.00", "135.00")
+    assert row["principal_debt"] is None
 
 
 def test_enforcement_fee_is_preserved_as_literal_basis():

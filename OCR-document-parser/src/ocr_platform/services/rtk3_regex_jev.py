@@ -25,7 +25,7 @@ from ocr_platform.services.rtk3_regex_candidates import (
     AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_APPLICATION_DUTY, CURRENT_DUTY, EXPIRED_REGISTRY_ORDER, GROSS,
     LEGAL_NAME, PUBLIC_TAX_CREDITOR,
     SALARY_WORDS, SECTION_ACCOUNTED_DUTY, SEPARATE_SANCTIONS, STANDALONE_FEE_ACCOUNTING,
-    Claim, Components, CourtTotal, Salary, extract_candidates,
+    Claim, Components, CourtTotal, Salary, extract_candidates, penalty_from_itemized_total,
 )
 
 from ocr_platform.services.rtk3_gemini_prompts import build_gemini_prompt
@@ -146,6 +146,9 @@ def _fallback_schema(layout: list[Claim], accepted: dict, scalar_names: set[str]
     for index, claim in enumerate(layout):
         for name, kind in CLAIM_TYPES.items():
             key = _claim_key(index, name)
+            if (name == "included_total" and claim.total is None
+                    and (claim.itemized_admission is not None or claim.itemized_gross is not None)):
+                continue
             if key not in accepted and (name != "included_total" or claim.total is not None
                                        or any(_claim_key(index, group) not in accepted for group in CATEGORY_FIELDS)):
                 schema[key] = (kind | None, ...)
@@ -563,7 +566,8 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
         )
         if queue_valid and queue.value == "За реестром":
             queue_valid = bool(re.search(
-                r"за\s+реестр|после\s+(?:полного\s+)?удовлетворения\s+требований\s+кредиторов.{0,100}(?:включ[её]н|реестр)",
+                r"за\s+реестр|(?:после\s+(?:полного\s+)?удовлетворения|оставш\w*\s+после\s+погашения)"
+                r"\s+требований\s+кредиторов.{0,100}(?:включ[её]н|реестр)",
                 compact(queue.quote), re.I) or (
                     queue == claim.fields.get("priority_queue") and EXPIRED_REGISTRY_ORDER.search(queue.quote)
                 ))
@@ -599,6 +603,14 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                                      verified=_claim_key(index, name) in verified,
                                      reserved=reserved, sole_claim=len(layout) == 1)
                    for name in CATEGORY_FIELDS}
+        if (amounts["financial_sanctions"] is None and "financial_sanctions" not in claim.fields
+                and total and total == claim.total and total.scope == "with_duty"
+                and amounts["pau_only_amount"] == 0 and amounts["principal_debt"] is not None
+                and selected("principal_debt") == claim.fields.get("principal_debt")):
+            penalty = penalty_from_itemized_total(claim, total, amounts["principal_debt"])
+            if penalty is not None:
+                amounts["financial_sanctions"] = penalty
+                issues.append("Пени рассчитаны из указанного судом итога и основного долга: в сумме пеней напечатано три знака после запятой.")
         net = (amounts["principal_debt"] + amounts["financial_sanctions"]
                if all(amounts[name] is not None for name in ("principal_debt", "financial_sanctions")) else None)
         gross = (net + amounts["pau_only_amount"]
@@ -610,6 +622,11 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                     or (total.scope == "unknown" and gross is not None and printed not in {net, gross})):
                 issues.append("Денежные компоненты не совпадают с итогом, указанным судом.")
                 net, gross = None, None
+            elif (net is None and queue_valid and total == claim.total and total.scope == "without_duty"
+                  and amounts["pau_only_amount"] is not None and printed == claim.itemized_admission):
+                net = printed
+                gross = net + amounts["pau_only_amount"]
+                issues.append("Категория указанной в акте комиссии требует проверки.")
             elif (net is None and len(layout) == 1
                   and amounts["pau_only_amount"] is not None and amounts["pau_only_amount"] > 0
                   and _separately_priced_admission(claim, total, selected("pau_only_amount"))
@@ -639,8 +656,9 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
             elif net != claim.itemized_admission:
                 issues.append("Денежные компоненты не совпадают с суммой перечисленных в акте платежей.")
                 net, gross = None, None
-        elif (claim.itemized_gross is not None and queue_valid and amounts["pau_only_amount"] is not None
-              and selected("pau_only_amount") == claim.fields.get("pau_only_amount")):
+        elif (claim.itemized_gross is not None and queue_valid
+              and selected("pau_only_amount") == claim.fields.get("pau_only_amount")
+              and ("pau_only_amount" not in claim.fields or amounts["pau_only_amount"] is not None)):
             if gross is not None and gross != claim.itemized_gross:
                 issues.append("Денежные компоненты не совпадают с суммой перечисленных в акте платежей.")
                 net = None

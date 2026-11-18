@@ -164,7 +164,7 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
     for match in persons(intro):
         prefix = intro[max(0, match.start()-140):match.start()]
         if re.search(r"\bв\s+рамках\s+дела\s+(?:№\s*[АAаa][0-9/-]+\s+)?о\s+несостоятельности"
-                     r"\s*\(банкротстве\)\s*(?:гр\.\s*)?$", prefix, re.I):
+                     r"\s*\(банкротстве\)\s*(?:гр\.\s*|индивидуальн\w*\s+предпринимател\w*\s+)?$", prefix, re.I):
             anchors.add(person_key(match))
             continue
         if re.search(r"(?:супруг[а-яё]*|поручител[а-яё]*|гарант|управляющ[а-яё]*)[^.;]{0,60}$", prefix, re.I):
@@ -185,10 +185,17 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
                 anchors.add(person_key(match))
                 continue
         if re.search(
-            r"\bв\s+рамках\s+дела\s*№\s*[АAаa][0-9/-]+\s+о\s+признании\s*$", prefix, re.I,
+            r"\bв\s+рамках\s+дела\s*№\s*[АAаa][0-9/-]+(?:\s+FORMTEXT\s+\d{4})?\s+о\s+признании\s*$",
+            prefix, re.I,
         ) and re.match(
             r"\s*(?:\([^()]{0,450}\)\s*)?несостоятельн\w*\s*\(банкрот\w*\)", intro[match.end():], re.I,
         ):
+            anchors.add(person_key(match))
+            continue
+        if re.search(r"\bрассмотрев\s+заявлени\w*\s+[^;]{0,135}\(\s*ИНН\s*[:№]?\s*\d{10}\b[^()]*\)"
+                     r"\s+к\s*$", prefix, re.I) and re.match(
+                r"\s*\(\s*ИНН\b[^()]{0,200}\)\s+об\s+установлении\s+требований\s+кредитора\b",
+                intro[match.end():], re.I):
             anchors.add(person_key(match))
             continue
         if re.search(rf"(?:{REGISTRY_CREDITORS}|о\s+банкротстве|(?:о\s+)?несостоятельности\s*\(банкротстве\)|"
