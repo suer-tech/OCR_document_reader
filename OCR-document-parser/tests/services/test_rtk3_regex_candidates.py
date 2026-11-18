@@ -238,6 +238,65 @@ def test_tax_inn_fallback_checks_the_office_despite_the_common_public_name():
                        text, "ФНС России", subject) is None
 
 
+def test_tax_registry_checks_exact_office_and_registration_period(monkeypatch):
+    from datetime import datetime, timezone
+    from ocr_platform.services import rtk3_regex_jev as service
+
+    def timestamp(year):
+        return int(datetime(year, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+
+    def entry(name, inn, status, registered, liquidated=None):
+        return {"value": name, "data": {"inn": inn, "state": {
+            "status": status, "registration_date": timestamp(registered),
+            "liquidation_date": timestamp(liquidated) if liquidated else None,
+        }}}
+
+    office = "Межрайонная ИФНС России № 7 по Омской области"
+    other = "Межрайонная ИФНС России № 8 по Омской области"
+    queries = []
+
+    def suggestions(query):
+        queries.append(query)
+        return [
+            entry(other, "0123456789", "ACTIVE", 2010),
+            entry(office, "1111111199", "LIQUIDATED", 2010, 2020),
+            entry(office, "2222222299", "ACTIVE", 2020),
+        ]
+
+    monkeypatch.setattr(service, "_tax_office_registrations", {})
+    monkeypatch.setattr(service, "dadata_party_suggestions", suggestions)
+    assert service.registered_tax_inn("МИФНС России №7 по Омской области", "18.11.2026") == "2222222299"
+    assert service.registered_tax_inn(office, "01.01.2018") == "1111111199"
+    assert service.registered_tax_inn("ФНС России №7 по Омской области", "18.11.2026") == "2222222299"
+    assert service.registered_tax_inn("ФНС России", "18.11.2026") is None
+    assert service.registered_tax_inn("МИФНС России №7", "18.11.2026") is None
+    assert queries == ["Межрайонная ИФНС России № 7 по омской области", "ИФНС № 7 по омской области"]
+
+
+def test_tax_registry_enrichment_yields_to_document_inns_and_marks_the_route(monkeypatch):
+    import asyncio
+    from ocr_platform.services import rtk3_regex_jev as service
+
+    office = "МИФНС России №7 по Омской области"
+    calls = []
+
+    def lookup(subject, act_date):
+        calls.append((subject, act_date))
+        return "1111111199"
+
+    monkeypatch.setattr(service, "registered_tax_inn", lookup)
+    result = {"creditor": {"value": "ФНС России"}, "creditor_inn": {"value": None},
+              "inclusion_date": {"value": "18.11.2026"}}
+    printed = f"{office} (ИНН 2222222299)"
+    asyncio.run(service._enrich_tax_inn(result, printed, office))
+    asyncio.run(service._enrich_tax_inn(result, f"{printed}. {office} (ИНН 3333333399)", office))
+    assert not calls
+    asyncio.run(service._enrich_tax_inn(result, office, office))
+    assert calls == [(office, "18.11.2026")]
+    assert result["creditor_inn"]["value"] == "1111111199"
+    assert result["creditor_inn"]["extraction_route"] == "dadata_party_registry"
+
+
 def test_explicit_uncertain_fee_origin_does_not_become_zero():
     text = (
         "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» в третью очередь в размере 105 руб., "

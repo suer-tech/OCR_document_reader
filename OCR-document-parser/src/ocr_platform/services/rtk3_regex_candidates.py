@@ -274,12 +274,15 @@ def tax_creditor_subject(creditor: Fact, text: str, operative: str) -> tuple[str
     for part in (operative, intro):
         offices = {}
         for match in claimant_matches(part):
-            if req.tax_identity(match["name"]) != "фнс":
-                continue
-            office = TAX_REPRESENTATION.match(part, match.end())
-            if office:
-                name = req.normalize_creditor(office["name"])
-                offices[req.tax_identity(name)] = (name, part[match.start():office.end()])
+            name, quote = match["name"], match[0]
+            if req.tax_identity(name) == "фнс":
+                office = TAX_REPRESENTATION.match(part, match.end())
+                if not office:
+                    continue
+                name, quote = office["name"], part[match.start():office.end()]
+            if re.fullmatch(req.TAX_OFFICE, name, re.I):
+                name = req.normalize_creditor(name)
+                offices[req.tax_identity(name)] = (name, quote)
         if len(offices) > 1:
             return None, creditor.quote
         if offices:

@@ -50,6 +50,26 @@ def _fetch_page_text(url: str, timeout: int = 8) -> str | None:
     return None
 
 
+def dadata_party_suggestions(creditor_name: str) -> list[dict]:
+    """Return structured party suggestions so callers can check the legal name."""
+    from ocr_platform.config.settings import get_settings
+
+    api_key = get_settings().dadata_api_key
+    if not api_key:
+        return []
+    response = requests.post(
+        "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/party",
+        json={"query": creditor_name},
+        headers={"Accept": "application/json", "Authorization": f"Token {api_key}"},
+        timeout=5,
+    )
+    if response.status_code != 200:
+        return []
+    body = response.json()
+    suggestions = body.get("suggestions") if isinstance(body, dict) else None
+    return [item for item in suggestions if isinstance(item, dict)] if isinstance(suggestions, list) else []
+
+
 def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
     """Search for the INN of a creditor by their name using zachestnyibiznes.ru and DuckDuckGo fallback."""
     cached = _inn_search_cache.get(creditor_name)
@@ -75,17 +95,9 @@ def search_creditor_inn(ctx: RunContext[str], creditor_name: str) -> str:
             return BeautifulSoup(resp.text, "html.parser").get_text(separator=" ")
 
         def _do_dadata_search_inn(q: str) -> str:
-            from ocr_platform.config.settings import get_settings
-            import requests
-            api_key = get_settings().dadata_api_key
-            if not api_key:
-                return ""
-            headers = {"Content-Type": "application/json", "Accept": "application/json", "Authorization": f"Token {api_key}"}
-            resp = requests.post("https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/party", json={"query": q}, headers=headers, timeout=5)
-            if resp.status_code == 200:
-                results = resp.json().get("suggestions", [])
-                if results and results[0].get("data", {}).get("inn"):
-                    return results[0]["data"]["inn"]
+            results = dadata_party_suggestions(q)
+            if results:
+                return results[0].get("data", {}).get("inn") or ""
             return ""
 
         query = f"{creditor_name} ИНН"

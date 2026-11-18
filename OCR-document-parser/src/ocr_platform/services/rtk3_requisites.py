@@ -15,6 +15,7 @@ class Requisite:
     value: str | None
     quote: str = ""
     problem: str = ""
+    ambiguous: bool = False
 
 
 LEGAL_FORMS = [
@@ -234,7 +235,9 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
     if len(candidates) == 1:
         value, quote = next(iter(candidates.items()))
         return Requisite(value, quote)
-    return Requisite(None, problem="ИНН не связан однозначно с участником текущего дела.")
+    return Requisite(
+        None, problem="ИНН не связан однозначно с участником текущего дела.", ambiguous=len(candidates) > 1,
+    )
 
 
 MONTHS = {"января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
