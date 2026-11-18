@@ -109,6 +109,7 @@ def test_claim_contract_number_after_credit_purpose_and_after_colon():
     for contract, number in (
         ("по договору о предоставлении потребительского кредита (займа) № 1005927201/15 от 29.04.2025", "1005927201/15"),
         ("на основании договора займа: № 9801021703 от 09 марта 2024 года", "9801021703"),
+        ("по договору займа от 14.04.2025 № 123-456", "123-456"),
         ("по договору займа от 29.04.2025", None),
     ):
         row, = fields(text.format(contract=contract))["claims"]["value"]
@@ -138,6 +139,57 @@ def test_written_admission_and_separately_awarded_current_duty_survive_unknown_b
     unsupported, = fields(prior)["claims"]["value"]
     assert unsupported["claimed_amount"] is None
     assert unsupported["total_amount"] is None
+
+
+def test_page_header_between_currency_and_interest_label_keeps_the_printed_amount():
+    from ocr_platform.services.rtk3_evidence import amount_supported
+
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 120 руб., "
+        "из которых 100 руб. – основной долг, 20 руб.\n5\n36_20510388\n– проценты."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["principal_debt"] == "120.00"
+    assert row["claimed_amount"] == "120.00"
+    assert not amount_supported("20 руб.", "20 руб. 15 коп. — проценты")
+    assert not amount_supported("20", "200 руб. — проценты")
+
+
+def test_separate_fee_under_article_137_keeps_the_admission_amount():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в размере 100 руб. задолженности в третью очередь. "
+        "Признать требования ПАО «Пример» к должнику в размере 5 руб. расходов по уплате государственной "
+        "пошлины подлежащими удовлетворению в порядке п. 3 ст. 137 Закона о банкротстве."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["claimed_amount"], row["total_amount"]) == ("100.00", "105.00")
+    assert row["principal_debt"] is None
+
+
+def test_inconsistent_source_total_preserves_labelled_parts_for_review():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в размере 120 руб., из которых "
+        "100 руб. – основной долг, 19 руб. – неустойка, в третью очередь. "
+        "Признать требования ПАО «Пример» в размере 5 руб. государственной пошлины "
+        "за рассмотрение настоящего заявления подлежащими удовлетворению в порядке п. 3 ст. 137."
+    )
+    result = fields(text)
+    row, = result["claims"]["value"]
+    assert (row["principal_debt"], row["financial_sanctions"], row["pau_only_amount"]) == ("100.00", "19.00", "5.00")
+    assert row["claimed_amount"] is None
+    assert row["total_amount"] is None
+    assert "не совпадают" in result["claims"]["validation_issue"]
+
+
+def test_unitemized_award_publishes_gross_without_inventing_components():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать обоснованным и включить требование ООО «Пример» "
+        "в состав третьей очереди реестра требований кредиторов в размере 100 руб."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["total_amount"] == "100.00"
+    assert row["principal_debt"] is None
+    assert row["claimed_amount"] is None
 
 
 def test_explicit_sanctions_subtotal_survives_unitemized_remainder_and_refund():
@@ -268,6 +320,53 @@ def test_nested_contract_subtotals_are_not_counted_twice():
     assert len(data["principal_debt"].items) == 4
     assert data["financial_sanctions"].items == []
     assert nested_contract_amounts(quote.replace("300 руб.", "301 руб.", 1), None) is None
+
+
+def test_numbered_contracts_are_preserved_when_the_printed_parent_total_disagrees(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from ocr_platform.services import rtk3_regex_jev as service
+
+    text = (
+        "ОПРЕДЕЛИЛ:\n1. Включить требования ПАО «Пример» в третью очередь в сумме 121 руб., в том числе: "
+        "1.1. требования по кредитному договору № A-1 в размере 100 руб., "
+        "из которых 100 руб. – основной долг, как обеспеченные залогом; "
+        "1.2. требования по кредитному договору № A-2 в размере 20 руб., из которых 20 руб. – основной долг."
+    )
+    result = fields(text)
+    first, second = result["claims"]["value"]
+    assert [(row["contract_number"], row["claimed_amount"], row["pledge_resolution"]) for row in (first, second)] == [
+        ("A-1", "100.00", "yes"), ("A-2", "20.00", None),
+    ]
+    assert result["total_claimed_amount"]["value"] is None
+    assert "Общий итог в акте расходится" in result["claims"]["validation_issue"]
+    balanced = fields(text.replace("121 руб.", "120 руб.", 1))
+    assert balanced["total_claimed_amount"]["value"] == "120.00"
+    profile = {
+        "models": {"verification": {}, "llm_extraction": {}},
+        "fields": {"claims": {}, "total_claimed_amount": {}},
+    }
+    monkeypatch.setattr(service, "_verify", AsyncMock(return_value=({}, False)))
+    monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={}))
+    monkeypatch.setattr(service, "_model_claims", lambda *args: balanced)
+    fallback = asyncio.run(service.extract_fields(text, profile))
+    assert fallback["total_claimed_amount"]["value"] is None
+    assert "Общий итог в акте расходится" in fallback["claims"]["validation_issue"]
+
+
+def test_contract_list_with_date_before_number_and_unreconciled_itemization():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать установленным и подлежащим включению в третью очередь реестра требований "
+        "кредиторов требование ПАО «Пример» на общую сумму 120 руб., в том числе: "
+        "по кредитному договору от 01.01.2025 № A-1 на сумму 100 руб., в том числе "
+        "90 руб. – основной долг, 9 руб. – неустойка; "
+        "по кредитному договору от 02.02.2025 № A-2 на сумму 20 руб., из которых 20 руб. – основной долг."
+    )
+    result = fields(text)
+    first, second = result["claims"]["value"]
+    assert (first["contract_number"], first["total_amount"], first["claimed_amount"]) == ("A-1", "100.00", None)
+    assert (second["contract_number"], second["total_amount"], second["claimed_amount"]) == ("A-2", "20.00", "20.00")
+    assert result["total_claimed_amount"]["value"] is None
 
 
 def test_embedded_current_fee_and_net_total():
@@ -463,6 +562,8 @@ def test_company_registry_checks_exact_legal_name_registration_dates_and_ambigui
     lookup.return_value = matches
     assert service.registered_company_inn("НАО «Пример - Банк»", "18.11.2026") == "4444444444"
     lookup.assert_called_with("НАО «Пример-Банк»")
+    matches[:] = [entry('ООО "ПКО "ФИНТРАСТ"', "4444444444")]
+    assert service.registered_company_inn("ООО ПКО «Финтраст»", "18.11.2026") == "4444444444"
 
 
 def test_extract_fields_looks_up_only_the_company_without_a_document_inn(monkeypatch):
@@ -717,6 +818,8 @@ def test_literal_basis_keeps_bare_identifiers_and_printed_dates():
         'по кредитному договору № 123 от 23.10.2019г.',
         'по кредитному договору от 29.11.2022 (кредитная карта)',
         'по кредитному договору № 123 от О5.1О.2О24',
+        'задолженность, основанную на кредитных договорах о предоставлении '
+        'возобновляемой кредитной линии от 08.12.2023 и от 23.12.2021',
     ):
         text = f'ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» {basis} в размере 100 руб.'
         fact = extract_candidates(text).fields['grounds_ocr']

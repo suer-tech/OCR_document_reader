@@ -22,7 +22,7 @@ from ocr_platform.services.rtk3_evidence import (
     publication_date_field, quoted, row_pledges,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
-    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, GROSS, LEGAL_NAME, PUBLIC_TAX_CREDITOR,
+    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_DUTY, EXPIRED_REGISTRY_ORDER, GROSS, LEGAL_NAME, PUBLIC_TAX_CREDITOR,
     SALARY_WORDS, SEPARATE_SANCTIONS,
     Claim, Components, CourtTotal, Salary, extract_candidates,
 )
@@ -389,7 +389,7 @@ def registered_tax_inn(subject: str, act_date: str | None = None) -> str | None:
 def _registry_company_name(name: str) -> str:
     name = req.normalize_creditor(_NAME_DASH.sub("-", name))
     name = re.sub(r"^НАО\b", "АО", name, flags=re.I)
-    return compact(re.sub(r'[«»"“”„]', "", name))
+    return compact(re.sub(r'[«»"“”„]', " ", name))
 
 
 def registered_company_inn(subject: str, act_date: str | None) -> str | None:
@@ -501,18 +501,24 @@ def _separately_priced_admission(claim: Claim, total: CourtTotal, duty: Componen
         return False
     if duty is None or len(duty.items) != 1:
         return False
+    if re.search(r"\bранее\b|по\s+(?:другому|иному)\s+(?:делу|спору)", duty.quote, re.I):
+        return False
     quote = compact(claim.quote)
     amounts = list(AMOUNTS.finditer(quote))
+    current_duty = re.search(
+        r"пошлин\w*\s*,?\s*уплаченн\w*\s+при\s+подаче\s+настоящ\w*\s+заявлени\w*",
+        compact(duty.quote), re.I,
+    ) or (
+        CURRENT_DUTY.search(duty.quote)
+        and re.search(r"подлеж\w*\s+(?:удовлетворению|возмещению|уч[её]ту)", duty.quote, re.I)
+    )
     return (
         len(amounts) == 1
         and bool(GROSS.search(quote[:amounts[0].start()]))
         and not BREAKDOWN.search(quote)
         and not re.search(r"пошлин|судебн\w*\s+расход", quote, re.I)
         and not quoted(duty.quote, claim.quote)
-        and bool(re.search(
-            r"пошлин\w*\s*,?\s*уплаченн\w*\s+при\s+подаче\s+настоящ\w*\s+заявлени\w*",
-            compact(duty.quote), re.I,
-        ))
+        and bool(current_duty)
     )
 
 
@@ -604,7 +610,20 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
         row["pledge_resolution"] = pledge_value
         row["secured_by_pledge"] = pledge_value == "yes" if pledge_value else None
         rows.append(row)
-    return _claim_outputs(rows, issues)
+    return _flag_parent_total_conflict(_claim_outputs(rows, issues), layout)
+
+
+def _flag_parent_total_conflict(fields: dict, claims: list[Claim]) -> dict:
+    if not any(claim.parent_total_conflict for claim in claims):
+        return fields
+    conflict = "Общий итог в акте расходится с суммой по договорам."
+    summary = fields.get("claims")
+    if summary is not None:
+        existing = summary.get("validation_issue")
+        summary["validation_issue"] = f"{existing} {conflict}" if existing else conflict
+        summary["reasoning"] = summary["validation_issue"]
+    fields["total_claimed_amount"] = _field(issue=conflict, route="computed")
+    return fields
 
 
 def _claim_outputs(rows: list[dict], issues: list[str]) -> dict:
@@ -652,5 +671,7 @@ async def extract_fields(
         text, profile["fields"], verified, response, candidates.fields, candidates.creditor_tax_subject,
     )
     await _enrich_creditor_inn(fields, text, candidates.creditor_tax_subject)
-    fields.update(_fixed_claims(layout, verified, response, text) if layout else _model_claims(text, profile, response, fields))
+    claims = (_fixed_claims(layout, verified, response, text) if layout else
+              _flag_parent_total_conflict(_model_claims(text, profile, response, fields), candidates.claims))
+    fields.update(claims)
     return {name: fields[name] for name in profile["fields"] if name in fields}

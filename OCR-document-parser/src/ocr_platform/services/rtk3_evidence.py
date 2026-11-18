@@ -141,9 +141,17 @@ def amount_supported(value: str | None, quote: str) -> bool:
     def normalize(s):
         return re.sub(r"\s+", "", s).casefold().replace(",", ".")
     token, source = normalize(value), normalize(quote)
-    return any((m.start() == 0 or not source[m.start() - 1].isdigit())
-               and (m.end() == len(source) or not source[m.end()].isdigit())
-               for m in re.finditer(re.escape(token), source))
+    if not token:
+        return False
+    currency_ended = re.search(r"[а-яё]\.?$", token) is not None
+    for match in re.finditer(re.escape(token), source):
+        if match.start() and source[match.start() - 1].isdigit():
+            continue
+        tail = source[match.end():]
+        if tail and tail[0].isdigit() and (not currency_ended or re.match(r"\d{1,2}(?:коп|к\.)", tail)):
+            continue
+        return True
+    return False
 
 
 def excluded_component(quote: str, text: str) -> bool:

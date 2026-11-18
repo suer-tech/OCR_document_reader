@@ -369,7 +369,8 @@ def contract_numbers(quote: str) -> dict[str, str]:
         r"\s+(?:потребительск\w*\s+)?(?:микро)?займ\w*|"
         r"\s+о\s+предоставлени\w*\s+(?:потребительск\w*\s+)?"
         r"(?:кредит\w*(?:\s*\(\s*займ\w*\s*\))?|(?:микро)?займ\w*))?"
-        r"|^[-–—])(?:\s*:?\s*№\s*|\s+(?=[\w./-]*\d))([\w/-]+(?:\.[\w/-]+)*)"
+        r"|^[-–—])(?:\s*:?\s*(?:от\s+\d{1,2}\.\d{1,2}\.\d{4}\s*(?:г\.\s*)?)?№\s*"
+        r"|\s+(?=[\w./-]*\d))([\w/-]+(?:\.[\w/-]+)*)"
     )
     return {match[1].casefold(): match[1] for match in re.finditer(pattern, quote.strip(), re.I)
             if not re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{4}", match[1])}
