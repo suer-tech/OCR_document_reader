@@ -28,6 +28,42 @@ def test_debtor_inn_in_current_application_and_bankruptcy_reference():
     assert source_inn(reference.replace("несостоятельным (банкротом)", "кредитором"), "debtor_inn").value is None
 
 
+def test_personal_inn_in_case_application_requires_the_same_registry_debtor():
+    filing = (
+        "Рассмотрев заявление ПАО «Пример» о включении требований в реестр требований кредиторов "
+        "должника, по делу №А60-123/2026 по заявлению Петрова Ивана Ивановича "
+        "17.04.1990 г.р., место рождения г. Североуральск ИНН: 012345678901."
+    )
+    order = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в реестр требований кредиторов Петрова "
+        "Ивана Ивановича в размере 100 руб. основного долга в третью очередь."
+    )
+    result = extract_candidates(f"{filing} {order}").fields
+    assert result["debtor_inn"].value == "012345678901"
+    different = f"{filing} {order.replace('Петрова', 'Сидорова')}"
+    assert "debtor_inn" not in extract_candidates(different).fields
+
+
+def test_registry_debtor_inn_with_a_line_break_inside_creditors():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить в третью очередь реестра требований кредито-\nров гражданина "
+        "Петрова Ивана Ивановича (01.01.1990 года рождения, ИНН 012345678901) "
+        "требование ПАО «Пример» (ИНН 0123456789) в размере 100 руб. основного долга."
+    )
+    result = extract_candidates(text).fields
+    assert result["debtor_inn"].value == "012345678901"
+    assert result["creditor_inn"].value == "0123456789"
+
+
+def test_enforcement_fee_is_preserved_as_literal_basis():
+    result = extract_candidates(
+        "ОПРЕДЕЛИЛ:\nВключить требования ФНС России в третью очередь в размере "
+        "2626 руб. недоимки по исполнительскому сбору."
+    ).fields
+    assert result["grounds_ocr"].value == "недоимки по исполнительскому сбору"
+    assert "grounds" not in result
+
+
 def test_queue_allocation_requires_an_exact_reconciled_breakdown():
     text = (
         "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в размере 120 руб. в реестр требований кредиторов. "

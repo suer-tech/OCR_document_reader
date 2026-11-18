@@ -456,6 +456,9 @@ def grounds_candidates(text: str, operative: str, claims: list[Claim]) -> dict[s
         operative, re.I,
     ):
         references.setdefault(compact(match[0]), match[0])
+    for match in re.finditer(r"\b(?:недоимк\w*|задолженност\w*)\s+по\s+исполнительск\w*\s+сбор\w*",
+                             operative, re.I):
+        references.setdefault(compact(match[0]), match[0])
     if len(references) == 1:
         quote = next(iter(references.values()))
         return {"grounds_ocr": Fact(value=quote, quote=quote)}
@@ -465,7 +468,7 @@ def grounds_candidates(text: str, operative: str, claims: list[Claim]) -> dict[s
 def operative_debtor_inn(operative: str) -> req.Requisite:
     """Read a unique INN from an explicitly named debtor's own operative record."""
     role = (
-        r"(?i:\b(?:реестр\w*\s+требован\w*(?:\s+кредитор\w*)?\s+"
+        r"(?i:\b(?:реестр\w*\s+требован\w*(?:\s+(?:кредитор\w*|кредито-\s*ров))?\s+"
         r"(?:должник\w*|граждан\w*)?|должник\w*\s+(?:граждан\w*)?)"
         r"\s*[-–—,:]?\s*)"
     )

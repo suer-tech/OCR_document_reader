@@ -151,11 +151,15 @@ def persons(text: str):
             yield match
 
 
+REGISTRY_CREDITORS = r"реестр[а-яё]*\s+требований\s+кредито(?:-\s*)?ров"
+
+
 def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
     """Use current-act introduction, before historical reasons/settlement parties."""
     text = re.sub(r"\s+", " ", text)
     stop = re.search(r"\b(?:у\s*с\s*т\s*а\s*н\s*о\s*в\s*и\s*л|о\s*п\s*р\s*е\s*д\s*е\s*л\s*и\s*л)\s*:", text, re.I)
     intro = text[:stop.start() if stop else min(len(text), 6000)]
+    operative = re.search(r"\bо\s*п\s*р\s*е\s*д\s*е\s*л\s*и\s*л\s*:", text, re.I)
     anchors = set()
     for match in persons(intro):
         prefix = intro[max(0, match.start()-140):match.start()]
@@ -164,6 +168,18 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
         if re.match(r"\s*\(\s*должник\b", intro[match.end():], re.I):
             anchors.add(person_key(match))
             continue
+        if operative and re.search(
+            r"\bпо\s+делу\s*№\s*[АAаa][0-9/-]+\s+по\s+заявлению\s*$", prefix, re.I,
+        ):
+            decision = text[operative.end():]
+            if any(
+                person_key(candidate) == person_key(match)
+                and re.search(rf"{REGISTRY_CREDITORS}\s+(?:(?:должник|граждан)\w*\s+)?$",
+                              decision[max(0, candidate.start() - 120):candidate.start()], re.I)
+                for candidate in persons(decision)
+            ):
+                anchors.add(person_key(match))
+                continue
         if re.search(
             r"\bв\s+рамках\s+дела\s*№\s*[АAаa][0-9/-]+\s+о\s+признании\s*$", prefix, re.I,
         ) and re.match(
@@ -171,7 +187,7 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
         ):
             anchors.add(person_key(match))
             continue
-        if re.search(r"(?:реестр[а-яё]*\s+требований\s+кредиторов|о\s+банкротстве|(?:о\s+)?несостоятельности\s*\(банкротстве\)|"
+        if re.search(rf"(?:{REGISTRY_CREDITORS}|о\s+банкротстве|(?:о\s+)?несостоятельности\s*\(банкротстве\)|"
                      r"включени\w*\s+в\s+реестр\s+требований\s+кредиторов\s+задолженности|"
                      r"в\s+рамках\s+дел[а-яё]*\s+(?:№\s*[АAаa][0-9/-]+\s+)?по\s+заявлению|"
                      r"должник[а-яё]*|должниц[а-яё]*|гражданин[а-яё]*(?:\(ки\))?|гражданк[а-яё]*)"
