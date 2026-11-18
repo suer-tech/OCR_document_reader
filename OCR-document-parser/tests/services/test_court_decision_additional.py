@@ -161,7 +161,7 @@ def test_api_retains_values_and_review_issues(monkeypatch, ambiguous):
     session = MagicMock()
     session.get.return_value = SimpleNamespace(id="doc-test")
     session.query.return_value.filter.return_value.order_by.return_value.first.side_effect = [
-        SimpleNamespace(id="run-test"), SimpleNamespace(id=1, text=TEXT),
+        SimpleNamespace(id="run-test", profile_id="court_decision_ru"), SimpleNamespace(id=1, text=TEXT),
         SimpleNamespace(id=2, data=json.dumps(fields)),
         SimpleNamespace(technical_score=1.0, semantic_score=1.0, overall_score=1.0),
     ]
@@ -172,6 +172,7 @@ def test_api_retains_values_and_review_issues(monkeypatch, ambiguous):
     payload = response.json()
     assert payload["human_review_required"] is ambiguous
     assert bool(payload["validation_issues"]) is ambiguous
+    assert "kad_publication_date" not in payload["fields"]
     for name in ADDITIONAL_FIELDS:
         assert payload["fields"][name]["value"] == fields[name]["value"]
         assert "validation_issue" not in payload["fields"][name]
