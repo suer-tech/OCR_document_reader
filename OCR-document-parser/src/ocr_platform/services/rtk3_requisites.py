@@ -25,6 +25,23 @@ LEGAL_FORMS = [
     (r"профессиональн\w*\s+коллекторск\w*\s+организаци\w*", "ПКО"),
 ]
 GENERIC = {"пао", "ао", "ооо", "ип", "пко", "банк", "кредитор", "заявитель"}
+FEDERAL_TAX_NAME = r"(?:\bФНС(?:\s+России)?|Федеральн\w*\s+налогов\w*\s+служб\w*(?:\s+России)?)"
+TAX_REGION = (r"(?:[а-яё-]+\s+(?:област\w*|кра[юяй])|Республик\w*\s+(?-i:[А-ЯЁ][А-ЯЁа-яё-]+)"
+              r"|г\.\s*[а-яё-]+(?:\s+[а-яё-]+\s+област\w*)?)")
+TAX_INSPECTION = (
+    r"(?:(?:межрайонн\w*\s+)?(?:МИФНС|ИФНС)(?:\s+России)?|"
+    r"(?:межрайонн\w*\s+)?инспекци\w*\s+" + FEDERAL_TAX_NAME + r"|" + FEDERAL_TAX_NAME + r")"
+    r"\s*№\s*\d+(?:\s+по\s+" + TAX_REGION + r")?"
+)
+TAX_OFFICE = (
+    r"(?:" + TAX_INSPECTION
+    + r"|(?:\bУФНС(?:\s+России)?|управлени\w*\s+" + FEDERAL_TAX_NAME + r")\s+по\s+" + TAX_REGION
+    + r"|\bИФНС(?:\s+России)?\s+по\s+" + TAX_REGION + r")"
+)
+TAX_RECORD_START = re.compile(
+    r"\b(?:межрайонн\w*\s+)?(?:(?:инспекци\w*|управлени\w*)\s+" + FEDERAL_TAX_NAME + r"|"
+    + FEDERAL_TAX_NAME + r"|(?:МИФНС|ИФНС|УФНС)\b)", re.I,
+)
 
 
 def normalize_creditor(value: str) -> str:
@@ -35,7 +52,7 @@ def normalize_creditor(value: str) -> str:
         value = re.sub(pattern, replacement, value, flags=re.I)
     for form in ["ООО", "ПАО", "АО", "ПКО", "ИП"]:
         value = re.sub(r"\b" + form + r"\b", form, value, flags=re.I)
-    if re.search(r"налогов|\bФНС\b|\bИФНС\b", value, re.I):
+    if TAX_RECORD_START.search(value):
         value = re.sub(r"межрайонн[а-яё]+\s+инспекци[а-яё]+", "Межрайонная инспекция", value, flags=re.I)
     value = re.sub(r"№\s*([0-9])", r"№\1", value)
     value = re.sub(r"\s*\(?\s*(?:ИНН|ОГРН|КПП)\s*[:№]?\s*[0-9].*$", "", value, flags=re.I).rstrip(" ,;(")
@@ -65,13 +82,16 @@ def identity(value: str) -> tuple[str | None, frozenset[str]]:
 
 def tax_identity(value: str) -> str | None:
     """Equate spelling of tax bodies, retaining region and inspection number."""
-    if not re.search(r"налогов|\b(?:фнс|ифнс|мифнс)\b", value, re.I):
+    if not TAX_RECORD_START.search(value):
         return None
     value = compact(value)
     value = re.sub(r"федеральн\w*\s+налогов\w*\s+служб\w*", "фнс", value)
-    value = re.sub(r"межрайонн\w*\s+(?:инспекци\w*\s+фнс|ифнс)", "мифнс", value)
-    value = re.sub(r"инспекци\w*\s+фнс", "ифнс", value)
+    value = re.sub(r"межрайонн\w*\s+(?:инспекци\w*\s+фнс|ифнс)\b", "мифнс", value)
+    value = re.sub(r"инспекци\w*\s+фнс\b", "ифнс", value)
+    value = re.sub(r"управлени\w*\s+фнс\b", "уфнс", value)
     value = re.sub(r"\bроссии\b", "", value)
+    value = re.sub(r"\s*№\s*", " №", value)
+    value = re.sub(r"\bфнс(?=\s+№)", "ифнс", value)
     return re.sub(r"\s+", " ", value).strip()
 
 
@@ -184,9 +204,8 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
                 r"\bБанк(?:а|у|ом)?\s+ВТБ(?:\s*\((?:ПАО|публичн\w*\s+акционерн\w*\s+обществ\w*)\))?|"
                 r"\b(?:ООО|ПАО|АО|ИП)\b|" + "|".join(
                 pattern for pattern, _ in LEGAL_FORMS[:4]), prefix, re.I))
-            tax = list(re.finditer(r"(?:межрайонн\w*\s+)?(?:инспекци\w*\s+)?федеральн\w*\s+налогов\w*\s+служб\w*|(?:межрайонн\w*\s+)?\b(?:МИФНС|ИФНС|ФНС)\b", prefix, re.I))
             if tax_identity(creditor or ""):
-                starts = tax
+                starts = list(TAX_RECORD_START.finditer(prefix))
             if not starts:
                 continue
             record_prefix = prefix[starts[-1].start():]

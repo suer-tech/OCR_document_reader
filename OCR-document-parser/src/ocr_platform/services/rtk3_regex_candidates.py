@@ -45,6 +45,7 @@ class Claim:
 class Candidates:
     fields: dict[str, Fact]
     claims: list[Claim]
+    creditor_tax_subject: str | None = None
 
 
 OPERATIVE = re.compile(r"\bо\s*п\s*р\s*е\s*д\s*[еи]\s*л\s*и\s*л[аи]?\s*(?:[:：]|(?=\r?\n))", re.I)
@@ -131,18 +132,16 @@ LEGAL_NAME = (
     r"|Банк(?:а|у|ом)?\s+ВТБ(?:\s*\(ПАО\))?"
     r'|Банк(?:а|у|ом)?\s+[«"][^»"]{2,100}[»"]\s*\((?:ПАО|АО)\)'
     r"|Банк(?:а|у|ом)?\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]{1,60}\s*\((?:ПАО|АО)\)"
-    r"|УФНС\s+России\s+по\s+[а-яё-]+\s+(?:област\w*|кра[юяй])"
-    r"|(?:Межрайонн\w*\s+)?(?:МИФНС|ИФНС)(?:\s+России)?\s*№\s*\d+"
-    r"(?:\s+по\s+[^()\n,;]{2,65}?(?:\s+област\w*|\s+кра[юяй]|\s+Республик\w*\s+[А-ЯЁ][а-яё-]+))?"
-    r"|(?:межрайонн\w*\s+)?инспекци\w*\s+Федеральн\w*\s+налогов\w*\s+служб\w*"
-    r"\s*№\s*\d+\s+по\s+(?:[а-яё-]+\s+област\w*|Республик\w*\s+[а-яё-]+)"
-    r"|ИФНС\s+по\s+г\.\s+[а-яё-]+\s+[а-яё-]+\s+област\w*"
-    r"|ФНС(?:\s+России(?:\s*№\s*\d+(?:\s+по\s+[а-яё-]+\s+област\w*)?)?)?"
-    r"|Федеральн\w*\s+налогов\w*\s+служб\w*(?:\s*№\s*\d+\s+по\s+[а-яё-]+\s+област\w*)?)"
+    r"|" + req.TAX_OFFICE + r"|" + req.FEDERAL_TAX_NAME + r")"
 )
 CREDITOR = re.compile(r"(?:\bтребован\w*|\bзаявлени\w*)\s+(?:(?:кредитор|уполномоченн\w*\s+орган)\w*"
                       r"(?:\s+Российск\w*\s+Федераци\w*)?(?:\s+в\s+лице)?\s*[-–—]?\s+)?(?P<name>" + LEGAL_NAME + ")", re.I)
 PAYEE = re.compile(r"\bв\s+пользу\s+(?:кредитора\s+)?(?P<name>" + LEGAL_NAME + ")", re.I)
+TAX_REPRESENTATION = re.compile(
+    r"\s*(?:,\s*г\.\s*[а-яё-]+)?\s*(?:\([^()]{0,320}\)\s*)?,?\s*в\s+лице\s+(?P<name>"
+    + req.TAX_OFFICE + ")", re.I,
+)
+PUBLIC_TAX_CREDITOR = "ФНС России"
 CATEGORY_FIELDS = {
     "principal_debt": {"principal", "interest", "prior_cost"},
     "financial_sanctions": {"sanction"},
@@ -223,17 +222,26 @@ def queue_candidates(text: str) -> list[Fact]:
     return list(found.values())
 
 
+def claimant_matches(part: str):
+    for match in CREDITOR.finditer(part):
+        preceding = part[:match.start()]
+        explanations = list(re.finditer(r"\bРазъяснить\b", preceding, re.I))
+        decisions = list(COMMAND.finditer(preceding))
+        if not explanations or (decisions and explanations[-1].start() < decisions[-1].start()):
+            yield match
+
+
 def creditor_candidate(text: str, operative: str) -> Fact | None:
-    introduction = text[:min(len(text), 4500)]
-    for part in (operative, introduction):
+    for part in (operative, text[:4500]):
         found = {}
-        for match in CREDITOR.finditer(part):
-            preceding = part[:match.start()]
-            explanations = list(re.finditer(r"\bРазъяснить\b", preceding, re.I))
-            decisions = list(COMMAND.finditer(preceding))
-            if explanations and (not decisions or explanations[-1].start() > decisions[-1].start()):
-                continue
+        represented = set()
+        for match in claimant_matches(part):
             name = re.sub(r"^банка\s+втб", "Банк ВТБ", match["name"], flags=re.I)
+            quote = match[0]
+            if req.tax_identity(name) == "фнс" and (office := TAX_REPRESENTATION.match(part, match.end())):
+                name = office["name"]
+                quote = part[match.start():office.end()]
+                represented.add(req.tax_identity(name))
             if re.fullmatch(r"Федеральн\w*\s+налогов\w*\s+служб\w*", name, re.I):
                 # Preserve the named federal authority, independently of its representative.
                 name = "Федеральная налоговая служба"
@@ -242,12 +250,38 @@ def creditor_candidate(text: str, operative: str) -> Fact | None:
                 r'ПКО «\2»', name, flags=re.I,
             )
             value = req.normalize_creditor(name)
-            found.setdefault(req.identity(value), Fact(value=value, quote=match[0]))
+            found.setdefault(req.tax_identity(value) or req.identity(value), Fact(value=value, quote=quote))
+        if len(represented) == 1 and set(found) == {"фнс", *represented}:
+            # Repeated references to the same federal claimant may omit its
+            # representative, including when OCR splits the office's name.
+            found.pop("фнс")
         if len(found) > 1:
             return None
         if found:
             return next(iter(found.values()))
     return None
+
+
+def tax_creditor_subject(creditor: Fact, text: str, operative: str) -> tuple[str | None, str]:
+    """Select the named INN owner separately from the public tax creditor name."""
+    if req.tax_identity(creditor.value) != "фнс":
+        return creditor.value, creditor.quote
+    intro = re.split(r"\b(?:у\s*с\s*т\s*а\s*н\s*о\s*в\s*и\s*л|"
+                     r"о\s*п\s*р\s*е\s*д\s*е\s*л\s*и\s*л)[аи]?\s*:", text[:4500], maxsplit=1, flags=re.I)[0]
+    for part in (operative, intro):
+        offices = {}
+        for match in claimant_matches(part):
+            if req.tax_identity(match["name"]) != "фнс":
+                continue
+            office = TAX_REPRESENTATION.match(part, match.end())
+            if office:
+                name = req.normalize_creditor(office["name"])
+                offices[req.tax_identity(name)] = (name, part[match.start():office.end()])
+        if len(offices) > 1:
+            return None, creditor.quote
+        if offices:
+            return next(iter(offices.values()))
+    return creditor.value, creditor.quote
 
 
 def grounds_candidates(text: str, operative: str) -> dict[str, Fact]:
@@ -918,17 +952,24 @@ def extract_candidates(text: str) -> Candidates:
     if document:
         fields.update(document_case_number=Fact(value=document, quote=quote), case_number=Fact(value=main, quote=quote))
     creditor = creditor_candidate(source, operative)
+    creditor_subject = creditor.value if creditor else None
+    tax_subject = None
     if creditor:
-        fields["creditor"] = creditor
+        if req.tax_identity(creditor.value):
+            tax_subject, creditor_quote = tax_creditor_subject(creditor, source, operative)
+            creditor_subject = tax_subject
+            fields["creditor"] = Fact(value=PUBLIC_TAX_CREDITOR, quote=creditor_quote)
+        else:
+            fields["creditor"] = creditor
     debtor = req.source_inn(text, "debtor_inn")
     if not debtor.value and not req.debtor_anchors(text):
         debtor = operative_debtor_inn(operative)
     for name, result in (
         ("inclusion_date", req.ruling_date(text)),
         ("debtor_inn", debtor),
-        ("creditor_inn", req.source_inn(text, "creditor_inn", creditor.value if creditor else None)),
+        ("creditor_inn", req.source_inn(text, "creditor_inn", creditor_subject)),
     ):
         if result.value:
             fields[name] = Fact(value=result.value, quote=result.quote)
     fields.update(grounds_candidates(source, operative))
-    return Candidates(fields=fields, claims=claim_candidates(operative, creditor))
+    return Candidates(fields=fields, claims=claim_candidates(operative, creditor), creditor_tax_subject=tax_subject)

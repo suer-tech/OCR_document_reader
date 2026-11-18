@@ -55,6 +55,7 @@ fields:
   creditor_inn:
     required: true
     label_ru: "ИНН кредитора"
+    description_ru: "Для кредитора «ФНС России» используется ИНН указанной в акте инспекции или территориального управления."
     extraction_method: "llm"
   kad_publication_date:
     required: false
@@ -77,7 +78,7 @@ fields:
   creditor:
     required: true
     label_ru: "Кредитор"
-    description_ru: "ФИО или наименование кредитора, чьи требования включаются в реестр."
+    description_ru: "ФИО или наименование кредитора, чьи требования включаются в реестр. Для налогового органа наименование «ФНС России»."
     extraction_method: "llm"
   total_claimed_amount:
     required: true

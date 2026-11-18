@@ -139,11 +139,54 @@ def test_multiple_queues_do_not_allocate_an_unassigned_fee():
     assert extract_candidates(text).claims == []
 
 
-def test_creditor_federal_and_inspection_names_stay_distinct():
+def test_tax_creditors_use_the_common_public_name():
     federal = "ОПРЕДЕЛИЛ:\nВключить требования ФНС России в третью очередь в размере 100 руб. основного долга."
     inspection = federal.replace("ФНС России", "Межрайонной инспекции Федеральной налоговой службы №7 по Омской области")
     assert extract_candidates(federal).fields["creditor"].value == "ФНС России"
-    assert "№7" in extract_candidates(inspection).fields["creditor"].value
+    candidates = extract_candidates(inspection)
+    assert candidates.fields["creditor"].value == "ФНС России"
+    assert "№7" in candidates.creditor_tax_subject
+
+
+def test_tax_creditor_picks_the_named_inspection_inn_from_the_application():
+    text = (
+        "Рассмотрев заявление ФНС России (ИНН 0123456789) в лице МИФНС России №7 по Омской области "
+        "(ИНН 1111111199) о включении в реестр требований.\n"
+        "ОПРЕДЕЛИЛ:\nВключить требования ФНС России (ИНН 0123456789) в третью очередь."
+    )
+    candidates = extract_candidates(text)
+    assert candidates.fields["creditor"].value == "ФНС России"
+    assert candidates.fields["creditor_inn"].value == "1111111199"
+    missing = extract_candidates(text.replace("(ИНН 1111111199)", ""))
+    assert "creditor_inn" not in missing.fields
+
+
+def test_tax_creditor_merges_an_office_with_its_explicit_federal_representation():
+    text = (
+        "ОПРЕДЕЛИЛ:\nЗаявление ФНС России в лице МИФНС России №7 по Омской области удовлетворить. "
+        "Включить требования Межрайонной ИФНС России №7 по Омской области (ИНН 1111111199) в третью очередь. "
+        "Признать требование ФНС России (ИНН 0123456789) обоснованным."
+    )
+    candidates = extract_candidates(text)
+    assert candidates.fields["creditor"].value == "ФНС России"
+    assert candidates.fields["creditor_inn"].value == "1111111199"
+
+
+def test_tax_inn_fallback_checks_the_office_despite_the_common_public_name():
+    from ocr_platform.services.rtk3_evidence import Fact
+    from ocr_platform.services.rtk3_regex_jev import _model_fact
+
+    federal = "ФНС России (ИНН 0123456789)"
+    office = "МИФНС России №7 по Омской области (ИНН 1111111199)"
+    other_office = "МИФНС России №8 по Омской области (ИНН 2222222299)"
+    text = f"{federal} в лице {office}. {other_office}"
+    subject = "МИФНС России №7 по Омской области"
+    assert _model_fact("creditor_inn", Fact(value="1111111199", quote=office),
+                       text, "ФНС России", subject) == "1111111199"
+    assert _model_fact("creditor_inn", Fact(value="0123456789", quote=federal),
+                       text, "ФНС России", subject) is None
+    assert _model_fact("creditor_inn", Fact(value="2222222299", quote=other_office),
+                       text, "ФНС России", subject) is None
 
 
 def test_explicit_uncertain_fee_origin_does_not_become_zero():
@@ -212,7 +255,7 @@ def test_creditor_legal_form_variants_and_own_inn():
         ('ООО МФК «Тест»', 'ООО МФК «Тест»'),
         ('Банк «Пример» (АО)', 'АО «Банк Пример»'),
         ('ПАО Банк «ВТБ»', 'Банк ВТБ'),
-        ('УФНС России по Кировской области', 'УФНС России по Кировской области'),
+        ('УФНС России по Кировской области', 'ФНС России'),
     ]:
         text = f'ОПРЕДЕЛИЛ:\nВключить требования {name} в третью очередь в размере 100 руб. основного долга.'
         assert extract_candidates(text).fields['creditor'].value == expected
@@ -347,7 +390,7 @@ def test_creditor_from_admitted_claim_not_fee_explanation():
             'в размере 100 руб. основного долга обоснованным и включить в третью очередь. '
             'Взыскать с должника 5 руб. пошлины. Разъяснить, что требование МИФНС №32 по Челябинской области '
             'подлежит удовлетворению по пункту 3 статьи 137.')
-    assert '№4' in extract_candidates(text).fields['creditor'].value
+    assert '№4' in extract_candidates(text).creditor_tax_subject
     ambiguous = text + ' Включить требования МИФНС №32 по Челябинской области в третью очередь в размере 10 руб.'
     assert 'creditor' not in extract_candidates(ambiguous).fields
 

@@ -18,7 +18,7 @@ from ocr_platform.services.rtk3_evidence import (
     build_fields, compact, excluded_component, money, normalize_case, previous_cost, quoted,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
-    CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, SALARY_WORDS, SEPARATE_SANCTIONS,
+    CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, PUBLIC_TAX_CREDITOR, SALARY_WORDS, SEPARATE_SANCTIONS,
     Claim, Components, CourtTotal, Salary, extract_candidates,
 )
 
@@ -30,8 +30,11 @@ SCALAR_QUESTIONS = {
     "case_number": "Это номер основного дела о банкротстве, без индекса обособленного спора?",
     "document_case_number": "Это полный номер текущего определения со всеми индексами обособленного спора, если они напечатаны?",
     "debtor_inn": "Этот ИНН принадлежит именно должнику текущего дела, а не супругу, поручителю или иному участнику?",
-    "creditor": "Это наименование кредитора, чьё требование суд включил или признал для удовлетворения за реестром?",
-    "creditor_inn": "Этот ИНН принадлежит именно указанному кредитору, чьё требование признано судом? Проверь пару имя и ИНН, отдельно от ИНН представителя.",
+    "creditor": "Это наименование кредитора, чьё требование суд включил или признал для удовлетворения за реестром? "
+    "Для налогового органа единое выходное наименование — «ФНС России», включая территориальные подразделения.",
+    "creditor_inn": "Этот ИНН принадлежит надлежащему субъекту текущего требования? Если кредитор налоговый и "
+    "в акте указана инспекция или управление, проверь ИНН именно этого подразделения. Имя «ФНС России» для "
+    "налогового кредитора унифицировано. Для остальных кредиторов проверь собственный ИНН кредитора.",
     "inclusion_date": "Это дата текущего определения? Если указана дата изготовления в полном объёме, используй её.",
     "grounds": "Это категория основания задолженности, которую суд признал в текущем акте?",
     "grounds_ocr": "Это формулировка основания из документа, которая относится к включённой сумме и охватывает все нужные основания?",
@@ -198,11 +201,17 @@ def _case_in_quote(value: str, quote: str, *, main_case: bool = False) -> bool:
     return False
 
 
-def _model_fact(name: str, fact: Fact | None, text: str, creditor: str | None) -> str | None:
+def _model_fact(
+    name: str, fact: Fact | None, text: str, creditor: str | None, tax_subject: str | None = None,
+) -> str | None:
     if not fact or not fact.value or not quoted(fact.quote, text):
         return None
     if name == "creditor":
-        return req.creditor_value(fact.value, fact.quote, text).value
+        if tax_subject and req.tax_identity(fact.value) and (
+                req.tax_name_matches(tax_subject, fact.quote) or req.tax_name_matches(PUBLIC_TAX_CREDITOR, fact.quote)):
+            return PUBLIC_TAX_CREDITOR
+        value = req.creditor_value(fact.value, fact.quote, text).value
+        return PUBLIC_TAX_CREDITOR if value and req.tax_identity(value) else value
     if name in {"case_number", "document_case_number"}:
         document, main = normalize_case(fact.value)
         value = main if name == "case_number" else document
@@ -217,8 +226,9 @@ def _model_fact(name: str, fact: Fact | None, text: str, creditor: str | None) -
         if set(req.INN.findall(fact.quote)) != {fact.value}:
             return None
         if name == "creditor_inn":
-            if req.tax_identity(creditor or "") == "фнс" and re.search(
-                    r"инспекц|\b(?:МИФНС|ИФНС)\b", fact.quote, re.I):
+            if creditor == PUBLIC_TAX_CREDITOR:
+                if tax_subject and req.source_inn(fact.quote, name, tax_subject).value == fact.value:
+                    return fact.value
                 return None
             return fact.value if req.creditor_value(creditor, fact.quote, text).value else None
         anchors = req.debtor_anchors(text)
@@ -235,7 +245,10 @@ def _model_fact(name: str, fact: Fact | None, text: str, creditor: str | None) -
     return None
 
 
-def _scalar_fields(text: str, configured: dict, verified: dict, response: dict, proposals: dict) -> dict:
+def _scalar_fields(
+    text: str, configured: dict, verified: dict, response: dict, proposals: dict,
+    tax_subject: str | None = None,
+) -> dict:
     result = {}
     for name in SCALAR_QUESTIONS:  # Creditor name precedes its INN.
         if name not in configured:
@@ -243,7 +256,7 @@ def _scalar_fields(text: str, configured: dict, verified: dict, response: dict, 
         approved = verified.get(name)
         fact = approved.value if approved else response.get(name)
         creditor = result.get("creditor", {}).get("value")
-        value = fact.value if approved else _model_fact(name, fact, text, creditor)
+        value = fact.value if approved else _model_fact(name, fact, text, creditor, tax_subject)
         if approved and name == "creditor_inn":
             proposed_creditor = proposals.get("creditor")
             if not creditor or not proposed_creditor or req.identity(creditor) != req.identity(proposed_creditor.value):
@@ -455,6 +468,8 @@ async def extract_fields(
     layout = candidates.claims if layout_verified else []
     types = _fallback_schema(layout, verified, set(profile["fields"]))
     response = await _gemini(text, profile["models"]["llm_extraction"], context, types, layout, verified) if text.strip() else {}
-    fields = _scalar_fields(text, profile["fields"], verified, response, candidates.fields)
+    fields = _scalar_fields(
+        text, profile["fields"], verified, response, candidates.fields, candidates.creditor_tax_subject,
+    )
     fields.update(_fixed_claims(layout, verified, response, text) if layout else _model_claims(text, profile, response, fields))
     return {name: fields[name] for name in profile["fields"] if name in fields}
