@@ -3,6 +3,7 @@ from ocr_platform.services.rtk3_regex_candidates import (
     claim_amounts, extract_candidates, nested_contract_amounts,
 )
 from ocr_platform.services.rtk3_regex_jev import _claim_key, _claim_values, _fixed_claims
+from ocr_platform.services.rtk3_requisites import source_inn
 
 
 def fields(text):
@@ -10,6 +11,91 @@ def fields(text):
     patch = {_claim_key(i, name): value for i, claim in enumerate(candidates.claims)
              for name, value in _claim_values(claim).items()}
     return _fixed_claims(candidates.claims, {}, patch, text)
+
+
+def test_debtor_inn_in_current_application_and_bankruptcy_reference():
+    introduction = (
+        "Рассмотрев заявление ООО «Пример» (ИНН 0123456789) о включении в реестр требований "
+        "кредиторов задолженности Примерова Ивана Ивановича (ИНН 012345678901). ОПРЕДЕЛИЛ:"
+    )
+    assert source_inn(introduction, "debtor_inn").value == "012345678901"
+    reference = (
+        "В рамках дела № А00-123/2026 о признании Примерова Ивана Ивановича "
+        "(ИНН 012345678901) несостоятельным (банкротом). ОПРЕДЕЛИЛ:"
+    )
+    assert source_inn(reference, "debtor_inn").value == "012345678901"
+    assert source_inn(reference.replace("несостоятельным (банкротом)", "кредитором"), "debtor_inn").value is None
+
+
+def test_queue_allocation_requires_an_exact_reconciled_breakdown():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в размере 120 руб. в реестр требований кредиторов. "
+        "Установить следующую очередность удовлетворения требований: "
+        "100 руб. – требования кредиторов третьей очереди. "
+        "20 руб. – требования кредиторов третьей очереди, учитывающиеся отдельно "
+        "и подлежащие удовлетворению после погашения основной суммы долга."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["priority_queue"], row["principal_debt"], row["financial_sanctions"]) == (
+        "3 очередь", "100.00", "20.00",
+    )
+    invalid = fields(text.replace("120 руб.", "121 руб."))["claims"]["value"]
+    assert all(row["financial_sanctions"] is None for row in invalid)
+
+
+def test_outside_registry_order_after_express_refusal_to_restore_term():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВ удовлетворении заявления кредитора о восстановлении срока отказать. "
+        "Финансовому управляющему имуществом Примерова Ивана Ивановича включить установленные требования "
+        "ООО «Пример» в сумме 100 руб. основного долга, в порядке, установленном пунктом 4 статьи 142."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["priority_queue"] == "За реестром"
+    without_refusal = text.replace("В удовлетворении заявления кредитора о восстановлении срока отказать. ", "")
+    unsupported, = fields(without_refusal)["claims"]["value"]
+    assert unsupported["priority_queue"] is None
+
+
+def test_express_outside_registry_disposition_resolves_previous_registry_refusal():
+    text = (
+        "ОПРЕДЕЛИЛ:\nТребование ООО «Пример» признать обоснованным в размере 100 руб. "
+        "Отказать во включении данных требований в реестр требований кредиторов должника. "
+        "Признать данные требования подлежащими удовлетворению за счет имущества должника, оставшегося "
+        "после удовлетворения требований кредиторов, включенных в реестр требований кредиторов."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["priority_queue"] == "За реестром"
+    assert row["principal_debt"] is None
+    assert fields(text.split("Признать данные")[0])["claims"]["value"] == []
+
+
+def test_payment_order_fee_with_separate_operative_accounting_is_current():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 120 руб., "
+        "из которых: 100 руб. – основной долг, 20 руб. – неустойка, "
+        "а также 5 руб. расходов по оплате государственной пошлины, "
+        "уплаченной платежным поручением от 01.01.2026 № 8. Требования в части неустойки "
+        "и государственной пошлины учитываются отдельно в реестре требований кредиторов третьей очереди "
+        "и подлежат удовлетворению после погашения основной суммы задолженности."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["claimed_amount"] == "120.00"
+    assert row["pau_only_amount"] == "5.00"
+    assert row["total_amount"] == "125.00"
+    without_accounting, = fields(text.split(" Требования в части")[0])["claims"]["value"]
+    assert without_accounting["pau_only_amount"] is None
+
+
+def test_explicit_sanctions_subtotal_survives_unitemized_remainder_and_refund():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 120 руб., "
+        "из которых штрафные санкции в размере 20 руб. "
+        "Возвратить из федерального бюджета 5 руб. государственной пошлины."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["financial_sanctions"] == "20.00"
+    assert row["pau_only_amount"] is None
+    assert row["principal_debt"] is None
 
 
 def test_nested_contract_subtotals_are_not_counted_twice():
@@ -169,7 +255,7 @@ def test_ground_is_explicit_obligation_not_creditor_brand():
     assert 'grounds' not in extract_candidates(mixed).fields
 
 
-def test_uncertain_cost_does_not_erase_independent_sanctions():
+def test_uncertain_cost_preserves_sanctions_and_reconciled_gross():
     text = (
         'ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» в третью очередь в размере 125 руб., '
         'из которых: 100 руб. основной долг, 20 руб. неустойка, 5 руб. судебные расходы.'
@@ -179,7 +265,9 @@ def test_uncertain_cost_does_not_erase_independent_sanctions():
     assert row['principal_debt'] is None
     assert row['pau_only_amount'] is None
     assert row['claimed_amount'] is None
-    assert row['total_amount'] is None
+    assert row['total_amount'] == '125.00'
+    mismatched, = fields(text.replace('125 руб.', '126 руб.'))["claims"]["value"]
+    assert mismatched["total_amount"] is None
     for bad in [text.replace('125 руб.', '126 руб.'), text.replace('судебные расходы', 'задолженность')]:
         assert fields(bad)['claims']['value'][0]['financial_sanctions'] is None
 

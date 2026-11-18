@@ -18,7 +18,8 @@ from ocr_platform.services.rtk3_evidence import (
     build_fields, compact, excluded_component, money, normalize_case, previous_cost, quoted,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
-    CATEGORY_FIELDS, SALARY_WORDS, Claim, Components, CourtTotal, Salary, extract_candidates,
+    CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, SALARY_WORDS, SEPARATE_SANCTIONS,
+    Claim, Components, CourtTotal, Salary, extract_candidates,
 )
 
 from ocr_platform.services.rtk3_gemini_prompts import build_gemini_prompt
@@ -305,7 +306,9 @@ def _amount_sum(
                 return None
         if kind == "interest" and re.search(r"пен[ияеь]|неустойк|штраф", item.quote, re.I):
             return None
-        if kind == "sanction" and not re.search(r"пен[ияеь]|неустойк|штраф|санкц|мораторн", item.quote, re.I):
+        if kind == "sanction" and not (re.search(r"пен[ияеь]|неустойк|штраф|санкц|мораторн", item.quote, re.I)
+                                       or item in getattr(claim.fields.get(name), "items", ())
+                                       and SEPARATE_SANCTIONS.search(item.quote)):
             return None
         if kind == "duty" and not re.search(r"пошлин", item.quote, re.I):
             return None
@@ -341,7 +344,9 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
         if queue_valid and queue.value == "За реестром":
             queue_valid = bool(re.search(
                 r"за\s+реестр|после\s+(?:полного\s+)?удовлетворения\s+требований\s+кредиторов.{0,100}(?:включ[её]н|реестр)",
-                compact(queue.quote), re.I))
+                compact(queue.quote), re.I) or (
+                    queue == claim.fields.get("priority_queue") and EXPIRED_REGISTRY_ORDER.search(queue.quote)
+                ))
         salary = selected("is_salary_or_severance")
         salary_value = None
         if salary and type(salary.value) is bool and quoted(salary.quote, claim.quote):
@@ -380,6 +385,11 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                     or (total.scope == "unknown" and gross is not None and printed not in {net, gross})):
                 issues.append("Денежные компоненты не совпадают с итогом, указанным судом.")
                 net, gross = None, None
+            elif (gross is None and total.scope == "with_duty" and total == claim.total
+                  and sum(amount for amount in amounts.values() if amount is not None) <= printed):
+                # The regex balanced this printed list before assigning scope.
+                # The gross is independent of how its unclassified costs split.
+                gross = printed
         if not queue_valid or net is None or gross is None or salary_value is None:
             issues.append("Часть полей строки требования не подтверждена.")
         rows.append({"priority_queue": queue.value if queue_valid else None,

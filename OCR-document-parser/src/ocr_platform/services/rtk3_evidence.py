@@ -101,6 +101,9 @@ def money(value: object) -> Decimal | None:
     if isinstance(value, bool) or value is None:
         return None
     s = re.sub(r"\s+", "", str(value)).casefold()
+    grouped = re.fullmatch(r"([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{1,2})?)(?:руб(?:лей|ля|ль)?\.?|р\.)", s)
+    if grouped:
+        s = grouped[1].replace(".", "")
     s = re.sub(r"(?<=\d)\([а-яё-]{3,200}\)(?=руб)", "", s)
     m = re.fullmatch(r"([0-9]+)(?:руб(?:лей|ля|ль)?\.?|р\.)([0-9]{1,2})(?:коп(?:еек|ейки|ейка)?\.?|к\.)", s)
     if m:
