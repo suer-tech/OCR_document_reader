@@ -486,14 +486,19 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
         with tracer.span(
             "quality_scoring", metadata={"profile_id": profile_id}
         ) as quality_span:
-            quality_options = {}
-            if profile_config.get("quality", {}).get("score_required_fields"):
-                from ocr_platform.services.field_retries import required_names
+            if profile_id == "rtk3" and validation_service.is_v2(fields):
+                technical, semantic, overall = quality_service.compute_rtk3_quality_scores(
+                    text, fields, profile_config["fields"],
+                )
+            else:
+                quality_options = {}
+                if profile_config.get("quality", {}).get("score_required_fields"):
+                    from ocr_platform.services.field_retries import required_names
 
-                quality_options["required_fields"] = required_names(profile_config["fields"])
-            scored_fields = ({name: info for name, info in fields.items() if name != "kad_publication_date"}
-                             if profile_id == "rtk3" else fields)
-            technical, semantic, overall = quality_service.compute_quality_scores(text, scored_fields, **quality_options)
+                    quality_options["required_fields"] = required_names(profile_config["fields"])
+                scored_fields = ({name: info for name, info in fields.items() if name != "kad_publication_date"}
+                                 if profile_id == "rtk3" else fields)
+                technical, semantic, overall = quality_service.compute_quality_scores(text, scored_fields, **quality_options)
             if quality_span is not None:
                 quality_span.update(
                     output={

@@ -18,7 +18,7 @@ from ocr_platform.services import rtk3_requisites as req
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback, decision_probabilities
 from ocr_platform.services.rtk3_evidence import (
     QUEUES, VERSION, ClaimEvidence, DocumentEvidence, Fact, PledgeFact, PriorityFact, amount_supported,
-    build_fields, compact, excluded_component, is_duty_only, normalize_case, previous_cost,
+    build_fields, compact, excluded_component, is_duty_only, itemized_debt_excludes_salary, normalize_case, previous_cost,
     publication_date_field, quoted, remove_currency_page_marker, row_pledges,
 )
 from ocr_platform.services.rtk3_evidence import rtk3_money as money
@@ -686,6 +686,12 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
             gross = claim.itemized_gross
         if claim.standalone_expense and total and total == claim.total and gross == money(total.amount):
             net = Decimal(0)
+        principal = selected("principal_debt")
+        if (salary_value is None and (salary is None or salary.value is not True)
+                and queue_valid and gross is not None
+                and amounts["principal_debt"] is not None and principal
+                and itemized_debt_excludes_salary(claim.quote, principal.items)):
+            salary_value = False
         row = {"priority_queue": queue.value if queue_valid else None, "contract_number": claim.contract_number,
                **{name: _decimal(amount) for name, amount in amounts.items()},
                "claimed_amount": _decimal(net), "total_amount": _decimal(gross),

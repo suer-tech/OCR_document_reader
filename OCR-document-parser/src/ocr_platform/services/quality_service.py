@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Dict, Tuple
 
+from ocr_platform.services.field_retries import empty_value, required_names
+
 
 def compute_quality_scores(
-    text: str, fields: Dict[str, dict], *, required_fields: set[str] | None = None,
+    text: str, fields: Dict[str, dict], *,
+    required_fields: set[str] | None = None, required_value_fields: set[str] | None = None,
 ) -> Tuple[float, float, float]:
     """
     Простейшая эвристика качества для MVP:
@@ -15,6 +18,16 @@ def compute_quality_scores(
     technical = 0.2
     if text.strip():
         technical = 0.8
+
+    if required_value_fields is not None:
+        filled = sum(
+            isinstance(info := fields.get(name), dict)
+            and not empty_value(info.get("value"))
+            and not info.get("validation_issue")
+            for name in required_value_fields
+        )
+        semantic = filled / len(required_value_fields) if required_value_fields else 0.0
+        return technical, semantic, (technical + semantic) / 2.0
 
     if required_fields:
         scores = []
@@ -38,3 +51,7 @@ def compute_quality_scores(
 
     overall = (technical + semantic) / 2.0
     return technical, semantic, overall
+
+
+def compute_rtk3_quality_scores(text: str, fields: dict, fields_config: dict) -> tuple[float, float, float]:
+    return compute_quality_scores(text, fields, required_value_fields=required_names(fields_config))

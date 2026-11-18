@@ -368,7 +368,7 @@ PDF без текста, смешанные PDF и фото отправляют
     )
     semantic_confidence_score: Optional[float] = Field(
         default=None,
-        description="Для procedure_completion — средняя confidence обязательных полей, пропуск или ошибка считается за 0. Для других профилей — доля заполненных полей, включая служебные.",
+        description="Для текущего РТК3 — доля заполненных обязательных полей без замечания в самом поле. Для procedure_completion — средняя confidence обязательных полей, пропуск или ошибка считается за 0. Для других профилей и исторических форматов — доля заполненных полей, включая служебные.",
         examples=[0.8],
     )
     overall_quality_score: Optional[float] = Field(

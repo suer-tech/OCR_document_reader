@@ -897,6 +897,8 @@ async def test_v2_worker_storage_webhook_and_get_share_validation(monkeypatch, t
         payload["kad_publication_date"] = fact(None, "")
         text = text.replace("Дата публикации в КАД: 05.10.2026", "")
     original = build(payload, text)
+    for optional in ("grounds", "grounds_ocr"):
+        original[optional]["value"] = None
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     models.Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
@@ -921,12 +923,22 @@ async def test_v2_worker_storage_webhook_and_get_share_validation(monkeypatch, t
     try:
         await worker._process_pipeline_run_impl("run-v2")
         sent = webhook.await_args.args[1]
+        if not unknown_pledge:
+            assert sent["fields"]["secured_by_pledge"]["value"] is False
+            assert sent["semantic_confidence_score"] == 1.0
+            assert sent["overall_quality_score"] == 0.9
+        with sessions() as session:
+            score = session.query(models.QualityScore).one()
+            assert score.overall_score == sent["overall_quality_score"]
+            score.overall_score = 0.746
+            session.commit()
         from ocr_platform.api.main import app
         with TestClient(app) as client:
             response = client.get("/documents/doc-v2/result")
         assert response.status_code == 200
         returned = response.json()
-        for key in ["validation_status", "validation_issues", "human_review_required", "human_review_reason"]:
+        for key in ["overall_quality_score", "validation_status", "validation_issues",
+                    "human_review_required", "human_review_reason"]:
             assert sent[key] == returned[key]
         assert returned["human_review_required"] is unknown_pledge
         assert returned["validation_status"] == ("errors" if unknown_pledge else "ok")
@@ -936,6 +948,7 @@ async def test_v2_worker_storage_webhook_and_get_share_validation(monkeypatch, t
         assert returned["fields"]["claims"]["value"][0]["total_amount"] == "235242.76"
         assert returned["fields"]["debtor_inn"]["value"] == "012345678901"
         with sessions() as session:
+            assert session.query(models.QualityScore).one().overall_score == 0.746
             assert session.query(models.StructuredVersion).one().data == {
                 **original, "processing_started_at": sent["fields"]["processing_started_at"]["value"]}
     finally:

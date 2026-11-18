@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from ocr_platform.orchestration.router import load_profile
 from ocr_platform.services import rtk3_regex_jev as service
+from ocr_platform.services.rtk3_regex_candidates import Salary, extract_candidates
 
 
 ACT = """Дело № А40-123/2026-1-2Ф
@@ -42,6 +43,41 @@ MODEL_CLAIM = {
     "salary_quote": "по кредитному договору № 1406/ПК от 21.11.2025",
     "uncertainty": "",
 }
+
+
+@pytest.mark.parametrize("mode", ["fixed", "full"])
+@pytest.mark.parametrize(
+    "principal,interest,expected",
+    [
+        ("90 руб. основного долга", "10 руб. процентов", False),
+        ("90 руб. основного долга по оплате труда", "10 руб. процентов", None),
+        ("100 руб. основного долга", "", None),
+    ],
+)
+def test_unknown_salary_is_recovered_only_from_itemized_non_wage_debt(mode, principal, interest, expected):
+    breakdown = ", ".join(filter(None, (principal, interest, PENALTY["quote"])))
+    text = ACT.replace("по кредитному договору № 1406/ПК от 21.11.2025 ", "")
+    text = text.replace("100 руб. основного долга и 8 руб. пеней", breakdown)
+    [claim] = extract_candidates(text).claims
+    if mode == "fixed":
+        response = {service._claim_key(0, name): value for name, value in service._claim_values(claim).items()}
+        response["claim_1_is_salary_or_severance"] = Salary(value=None, quote="")
+        result = service._fixed_claims([claim], {}, response, text)
+    else:
+        components = [{"kind": "principal", "amount": principal.split(" основного")[0], "quote": principal}]
+        if interest:
+            components.append({"kind": "interest", "amount": "10 руб.", "quote": interest})
+        evidence = service.ClaimEvidence.model_validate({
+            **MODEL_CLAIM, "decision_quote": claim.quote, "components": [*components, PENALTY],
+            "is_salary_or_severance": None, "salary_quote": "",
+        })
+        result = service._model_claims(
+            text, load_profile("rtk3"), {"claims": [evidence], "claims_complete": True}, {},
+        )
+    [row] = result["claims"]["value"]
+    assert row["principal_debt"] == "100.00"
+    assert row["total_amount"] == "108.00"
+    assert row["is_salary_or_severance"] is expected
 
 
 @pytest.mark.asyncio

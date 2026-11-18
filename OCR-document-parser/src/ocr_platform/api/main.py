@@ -21,9 +21,12 @@ from ocr_platform.observability.metrics import (
     observe_http_request,
 )
 from ocr_platform.orchestration.mlflow_backfill import backfill_pipeline_runs_to_mlflow
+from ocr_platform.orchestration.router import load_profile
 from ocr_platform.queueing.rabbitmq import IngestJob, publish_ingest_job
 from ocr_platform.storage import file_storage, models, repository
+from ocr_platform.services.quality_service import compute_rtk3_quality_scores
 from ocr_platform.services.rtk3_evidence import publication_date_field
+from ocr_platform.services.rtk3_validation import is_v2
 from ocr_platform.services.validation_service import profile_field_issues, review_requirement
 from ocr_platform.services.document_content_validation import validate_document_content
 
@@ -590,6 +593,10 @@ def create_app() -> FastAPI:
         technical = quality.technical_score if quality else None
         semantic = quality.semantic_score if quality else None
         overall = quality.overall_score if quality else None
+        if run.profile_id == "rtk3" and text_version and isinstance(data_dict, dict) and is_v2(data_dict):
+            technical, semantic, overall = compute_rtk3_quality_scores(
+                text_version.text or "", data_dict, load_profile("rtk3")["fields"],
+            )
 
         validation_status = "ok" if fields else "errors"
         validation_issues = (

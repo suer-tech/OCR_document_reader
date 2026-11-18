@@ -179,6 +179,20 @@ def amount_supported(value: str | None, quote: str) -> bool:
     return False
 
 
+def itemized_debt_excludes_salary(quote: str, components: list[Component]) -> bool:
+    """Require affirmative principal and interest evidence within this claim."""
+    if re.search(r"заработн|зарплат|выходн\w*\s+пособ|оплат\w*\s+труд|трудов\w*\s+договор|работник",
+                 compact(quote), re.I):
+        return False
+    labels = {"principal": r"\bосновн\w*\s+долг", "interest": r"\bпроцент"}
+    supported = {
+        item.kind for item in components
+        if item.kind in labels and rtk3_money(item.amount) and quoted(item.quote, quote)
+        and re.search(labels[item.kind], compact(item.quote), re.I)
+    }
+    return supported == labels.keys()
+
+
 def excluded_component(quote: str, text: str) -> bool:
     """Reject facts quoted from an operative exclusion, not all mentions of a sum.
 
@@ -543,8 +557,12 @@ def build_fields(
             bool(breakdown) and quoted(claim.salary_quote, breakdown))
         if salary is not None and (not salary_supported or salary is True and not re.search(
                 r"заработн|зарплат|выходн", claim.salary_quote, re.IGNORECASE)):
-            problems.append("Не подтверждён признак зарплаты или выходного пособия.")
             salary = None
+        if salary is None and claim.is_salary_or_severance is not True and not errors and itemized_debt_excludes_salary(
+                claim.decision_quote + " " + breakdown, claim.components):
+            salary = False
+        if salary is None and claim.is_salary_or_severance is not None:
+            problems.append("Не подтверждён признак зарплаты или выходного пособия.")
         # Unknown salary status must not erase independently supported money.
         # Hold uncertain amounts instead of exporting a partial sum as complete.
         def fmt(amount):
