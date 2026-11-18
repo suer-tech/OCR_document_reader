@@ -19,7 +19,7 @@ from ocr_platform.services.llm_gateway import call_llm_json_with_fallback, decis
 from ocr_platform.services.rtk3_evidence import (
     QUEUES, VERSION, ClaimEvidence, DocumentEvidence, Fact, PledgeFact, PriorityFact, amount_supported,
     build_fields, compact, excluded_component, is_duty_only, money, normalize_case, previous_cost,
-    publication_date_field, quoted, row_pledges,
+    publication_date_field, quoted, remove_currency_page_marker, row_pledges,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
     AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_APPLICATION_DUTY, CURRENT_DUTY, EXPIRED_REGISTRY_ORDER, GROSS,
@@ -639,6 +639,12 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
             elif net != claim.itemized_admission:
                 issues.append("Денежные компоненты не совпадают с суммой перечисленных в акте платежей.")
                 net, gross = None, None
+        elif (claim.itemized_gross is not None and queue_valid and amounts["pau_only_amount"] is not None
+              and selected("pau_only_amount") == claim.fields.get("pau_only_amount")):
+            if gross is not None and gross != claim.itemized_gross:
+                issues.append("Денежные компоненты не совпадают с суммой перечисленных в акте платежей.")
+                net = None
+            gross = claim.itemized_gross
         row = {"priority_queue": queue.value if queue_valid else None, "contract_number": claim.contract_number,
                **{name: _decimal(amount) for name, amount in amounts.items()},
                "claimed_amount": _decimal(net), "total_amount": _decimal(gross),
@@ -702,6 +708,7 @@ def _model_claims(text: str, profile: dict, response: dict, scalar: dict) -> dic
 async def extract_fields(
     text: str, profile: dict, *, document_id: str | None = None, pipeline_run_id: str | None = None,
 ) -> dict:
+    text = remove_currency_page_marker(text)
     candidates = extract_candidates(text)
     context = {"profile_id": "rtk3", "document_id": document_id, "pipeline_run_id": pipeline_run_id}
     verified, layout_verified = await _verify(text, candidates, profile["models"]["verification"], context)

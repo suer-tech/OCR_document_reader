@@ -163,13 +163,17 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
     anchors = set()
     for match in persons(intro):
         prefix = intro[max(0, match.start()-140):match.start()]
+        if re.search(r"\bв\s+рамках\s+дела\s+(?:№\s*[АAаa][0-9/-]+\s+)?о\s+несостоятельности"
+                     r"\s*\(банкротстве\)\s*(?:гр\.\s*)?$", prefix, re.I):
+            anchors.add(person_key(match))
+            continue
         if re.search(r"(?:супруг[а-яё]*|поручител[а-яё]*|гарант|управляющ[а-яё]*)[^.;]{0,60}$", prefix, re.I):
             continue
         if re.match(r"\s*\(\s*должник\b", intro[match.end():], re.I):
             anchors.add(person_key(match))
             continue
         if operative and re.search(
-            r"\b(?:по\s+делу\s*№\s*[АAаa][0-9/-]+|в\s+деле)\s+по\s+заявлению\s*$", prefix, re.I,
+            r"\b(?:по\s+делу(?:\s*№\s*[АAаa][0-9/-]+)?|в\s+деле)\s+по\s+заявлению\s*$", prefix, re.I,
         ):
             decision = text[operative.end():]
             if any(
@@ -231,6 +235,13 @@ def source_inn(text: str, role: str, creditor: str | None = None) -> Requisite:
             # Never carry an organization's name across the closing of its
             # requisites into the next debtor/manager's tax ID.
             boundary_check = re.sub(r"\((?:ПАО|АО|публичн\w*\s+акционерн\w*\s+обществ\w*)\)", "", record_prefix, flags=re.I)
+            if starts[-1].start() and prefix[starts[-1].start() - 1] == "(":
+                # The corporate abbreviation can close immediately before its
+                # own parenthesized registration details.
+                boundary_check = re.sub(
+                    r'(?<=[»"])\)\s*(?=\(\s*(?:(?:ОГРН|КПП)\s*[:№]?\s*\d+\s*[,;]?\s*)?$)',
+                    "", boundary_check, flags=re.I,
+                )
             if ")" in boundary_check or re.search(
                     r"должник|должниц|граждан|поручител|управляющ|требований\s+кредиторов", record_prefix, re.I):
                 continue

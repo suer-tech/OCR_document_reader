@@ -107,8 +107,19 @@ def compact(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
+def remove_currency_page_marker(text: str) -> str:
+    """A stand-alone page number can split a decimal amount from its currency."""
+    return re.sub(
+        r"(?<=\d[.,]\d{2})[ \t]*\r?\n[ \t]*\d{1,2}[ \t]*\r?\n(?=[ \t]*руб(?:лей|ля|ль)?\b)",
+        " ", text, flags=re.I,
+    )
+
+
 def quoted(quote: str, text: str) -> bool:
-    return bool(quote.strip()) and compact(quote) in compact(text)
+    if not quote.strip():
+        return False
+    value = compact(quote)
+    return value in compact(text) or "\n" in text and value in compact(remove_currency_page_marker(text))
 
 
 def money(value: object) -> Decimal | None:
