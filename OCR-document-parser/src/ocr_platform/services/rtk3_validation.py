@@ -75,14 +75,18 @@ def rtk3_issues(fields: dict) -> list[ValidationIssue]:
             if (raw not in (None, "") and amount is None) or (modern and (
                     not isinstance(raw, str) or re.fullmatch(r"[0-9]+\.[0-9]{2}", raw) is None)):
                 add(field, f"Некорректная или неизвестная сумма: {name}.")
-        if all(amount is not None for amount in parsed.values()):
+        if parsed["principal_debt"] is not None and parsed["financial_sanctions"] is not None:
             net = parsed["principal_debt"] + parsed["financial_sanctions"]
-            nets.append(net)
-            # Confirmed EMU convention: total_amount is the PAU-inclusive total.
-            if net + parsed.get("pau_only_amount", Decimal(0)) != parsed["total_amount"]:
-                add(field, "Сумма долга, санкций и пошлины не совпадает с итогом строки.")
             if modern and money(row.get("claimed_amount")) != net:
                 add(field, "claimed_amount не соответствует включённой сумме без пошлины.")
+        else:
+            net = money(row.get("claimed_amount")) if modern else None
+        if net is not None:
+            nets.append(net)
+            # Confirmed EMU convention: total_amount is the PAU-inclusive total.
+            duty, total = parsed.get("pau_only_amount", Decimal(0)), parsed["total_amount"]
+            if duty is not None and total is not None and net + duty != total:
+                add(field, "Сумма долга, санкций и пошлины не совпадает с итогом строки.")
         if modern and row.get("priority_queue") not in QUEUES and not is_duty_only(row):
             add(field, "Не установлена очередь требования.")
         if modern and not isinstance(row.get("is_salary_or_severance"), bool):

@@ -365,8 +365,11 @@ def explicit_ground_category(quote: str) -> str | None:
 def contract_numbers(quote: str) -> dict[str, str]:
     """Return named contract references with a case-insensitive lookup key."""
     pattern = (
-        r"(?:\b(?:кредитн\w*\s+)?договор\w*(?:\s+(?:потребительск\w*\s+)?(?:микро)?займ\w*)?"
-        r"|^[-–—])(?:\s*№\s*|\s+(?=[\w./-]*\d))([\w/-]+(?:\.[\w/-]+)*)"
+        r"(?:\b(?:кредитн\w*\s+)?договор\w*(?:"
+        r"\s+(?:потребительск\w*\s+)?(?:микро)?займ\w*|"
+        r"\s+о\s+предоставлени\w*\s+(?:потребительск\w*\s+)?"
+        r"(?:кредит\w*(?:\s*\(\s*займ\w*\s*\))?|(?:микро)?займ\w*))?"
+        r"|^[-–—])(?:\s*:?\s*№\s*|\s+(?=[\w./-]*\d))([\w/-]+(?:\.[\w/-]+)*)"
     )
     return {match[1].casefold(): match[1] for match in re.finditer(pattern, quote.strip(), re.I)
             if not re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{4}", match[1])}

@@ -4,6 +4,7 @@ from ocr_platform.services.rtk3_regex_candidates import (
 )
 from ocr_platform.services.rtk3_regex_jev import _claim_key, _claim_values, _fixed_claims
 from ocr_platform.services.rtk3_requisites import source_inn
+from ocr_platform.services.rtk3_validation import rtk3_issues
 
 
 def fields(text):
@@ -66,7 +67,21 @@ def test_express_outside_registry_disposition_resolves_previous_registry_refusal
     row, = fields(text)["claims"]["value"]
     assert row["priority_queue"] == "За реестром"
     assert row["principal_debt"] is None
+    assert row["claimed_amount"] is None
+    assert row["total_amount"] == "100.00"
     assert fields(text.split("Признать данные")[0])["claims"]["value"] == []
+
+
+def test_express_judicial_order_is_literal_basis_without_a_category():
+    text = (
+        "ОПРЕДЕЛИЛ:\nТребование ООО «Пример», основанное на судебном приказе № 12-34/2025 "
+        "от 16.10.2025, признать обоснованным в размере 100 руб."
+    )
+    candidates = extract_candidates(text).fields
+    assert candidates["grounds_ocr"].value == "основанное на судебном приказе № 12-34/2025 от 16.10.2025"
+    assert "grounds" not in candidates
+    mentioned = text.replace("основанное на", "указанное в")
+    assert "grounds_ocr" not in extract_candidates(mentioned).fields
 
 
 def test_payment_order_fee_with_separate_operative_accounting_is_current():
@@ -86,6 +101,45 @@ def test_payment_order_fee_with_separate_operative_accounting_is_current():
     assert without_accounting["pau_only_amount"] is None
 
 
+def test_claim_contract_number_after_credit_purpose_and_after_colon():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере "
+        "120 руб. основного долга {contract}."
+    )
+    for contract, number in (
+        ("по договору о предоставлении потребительского кредита (займа) № 1005927201/15 от 29.04.2025", "1005927201/15"),
+        ("на основании договора займа: № 9801021703 от 09 марта 2024 года", "9801021703"),
+        ("по договору займа от 29.04.2025", None),
+    ):
+        row, = fields(text.format(contract=contract))["claims"]["value"]
+        assert row["contract_number"] == number
+
+
+def test_written_admission_and_separately_awarded_current_duty_survive_unknown_breakdown():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать обоснованным заявление и включить в третью очередь реестра требований "
+        "кредиторов должника требование ПАО «Пример» в размере 120 руб. 60 коп. "
+        "Признать обоснованными требования ПАО «Пример» в размере 5 руб. – госпошлины, "
+        "уплаченной при подаче настоящего заявления, и подлежащими удовлетворению применительно "
+        "к п. 3 ст. 137 Закона о банкротстве."
+    )
+    result = fields(text)
+    row, = result["claims"]["value"]
+    assert (row["claimed_amount"], row["total_amount"], row["pau_only_amount"]) == ("120.60", "125.60", "5.00")
+    assert row["principal_debt"] is None
+    assert row["financial_sanctions"] is None
+    assert result["claims"]["validation_issue"]
+    assert result["total_claimed_amount"]["value"] == "120.60"
+    assert not any(issue.field_name == "total_claimed_amount" for issue in rtk3_issues(result))
+    result["total_claimed_amount"]["value"] = "120.59"
+    assert any(issue.field_name == "total_claimed_amount" for issue in rtk3_issues(result))
+
+    prior = text.replace("при подаче настоящего заявления", "ранее по другому делу")
+    unsupported, = fields(prior)["claims"]["value"]
+    assert unsupported["claimed_amount"] is None
+    assert unsupported["total_amount"] is None
+
+
 def test_explicit_sanctions_subtotal_survives_unitemized_remainder_and_refund():
     text = (
         "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 120 руб., "
@@ -96,6 +150,10 @@ def test_explicit_sanctions_subtotal_survives_unitemized_remainder_and_refund():
     assert row["financial_sanctions"] == "20.00"
     assert row["pau_only_amount"] is None
     assert row["principal_debt"] is None
+    assert row["claimed_amount"] is None
+    assert row["total_amount"] == "120.00"
+    without_refund, = fields(text.split(" Возвратить")[0])["claims"]["value"]
+    assert without_refund["total_amount"] is None
 
 
 def test_debtor_inn_with_a_two_word_patronymic():
@@ -187,6 +245,16 @@ def test_a_single_listed_cost_supports_the_gross_but_has_unknown_provenance():
     assert row["pau_only_amount"] is None
 
 
+def test_loan_interest_confirms_non_salary_claim_with_unclassified_cost():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 100 руб., "
+        "из которых: 95 руб. – проценты за пользование займом, 5 руб. – судебные расходы."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["is_salary_or_severance"] is False
+    assert row["pau_only_amount"] is None
+
+
 def test_nested_contract_subtotals_are_not_counted_twice():
     quote = (
         "Включить 300 руб., в том числе: "
@@ -226,6 +294,29 @@ def test_multiple_queues_do_not_allocate_an_unassigned_fee():
         "Взыскать в пользу ПАО «Тест» 5 руб. государственной пошлины по настоящему заявлению."
     )
     assert extract_candidates(text).claims == []
+
+
+def test_separate_fee_has_the_queue_expressly_stated_in_subsequent_accounting():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь "
+        "в размере 120 руб., в том числе: "
+        "- по кредитному договору № A-1 в размере 100 руб., из которых 100 руб. – основной долг; "
+        "- по кредитному договору № A-2 в размере 20 руб., из которых 20 руб. – основной долг. "
+        "Взыскать в пользу ПАО «Пример» 5 руб. расходов по оплате государственной пошлины. "
+        "Учесть требование в части штрафа, судебных расходов по уплате государственной пошлины "
+        "в составе третьей очереди реестра требований кредиторов после погашения основной суммы задолженности."
+    )
+    first, second, fee = fields(text)["claims"]["value"]
+    assert (first["pau_only_amount"], second["pau_only_amount"]) == ("0.00", "0.00")
+    assert (fee["priority_queue"], fee["pau_only_amount"], fee["contract_number"]) == ("3 очередь", "5.00", None)
+    assert fee["pledge_resolution"] is None
+    without_queue = text.split(" Учесть")[0]
+    assert fields(without_queue)["claims"]["value"][-1]["priority_queue"] is None
+    secured_fee = text.replace("пошлины. ", "пошлины, учесть как обеспеченные залогом. ", 1)
+    result = fields(secured_fee)
+    assert result["claims"]["value"][-1]["pledge_resolution"] == "yes"
+    assert result["claims"]["value"][-1]["secured_by_pledge"] is True
+    assert result["pledge_resolution"]["value"] is None
 
 
 def test_tax_creditors_use_the_common_public_name():

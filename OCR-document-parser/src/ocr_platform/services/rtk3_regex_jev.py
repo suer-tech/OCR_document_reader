@@ -22,7 +22,8 @@ from ocr_platform.services.rtk3_evidence import (
     publication_date_field, quoted, row_pledges,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
-    CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, PUBLIC_TAX_CREDITOR, SALARY_WORDS, SEPARATE_SANCTIONS,
+    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, GROSS, PUBLIC_TAX_CREDITOR,
+    SALARY_WORDS, SEPARATE_SANCTIONS,
     Claim, Components, CourtTotal, Salary, extract_candidates,
 )
 
@@ -435,6 +436,26 @@ def _decimal(value: Decimal | None) -> str | None:
     return format(value, ".2f") if value is not None else None
 
 
+def _separately_priced_admission(claim: Claim, total: CourtTotal, duty: Components | None) -> bool:
+    if total != claim.total or total.scope != "without_duty" or duty != claim.fields.get("pau_only_amount"):
+        return False
+    if duty is None or len(duty.items) != 1:
+        return False
+    quote = compact(claim.quote)
+    amounts = list(AMOUNTS.finditer(quote))
+    return (
+        len(amounts) == 1
+        and bool(GROSS.search(quote[:amounts[0].start()]))
+        and not BREAKDOWN.search(quote)
+        and not re.search(r"пошлин|судебн\w*\s+расход", quote, re.I)
+        and not quoted(duty.quote, claim.quote)
+        and bool(re.search(
+            r"пошлин\w*\s*,?\s*уплаченн\w*\s+при\s+подаче\s+настоящ\w*\s+заявлени\w*",
+            compact(duty.quote), re.I,
+        ))
+    )
+
+
 def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str) -> dict:
     rows, issues, seen = [], [], set()
     reserved = {
@@ -499,17 +520,25 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                     or (total.scope == "unknown" and gross is not None and printed not in {net, gross})):
                 issues.append("Денежные компоненты не совпадают с итогом, указанным судом.")
                 net, gross = None, None
+            elif (net is None and queue_valid and len(layout) == 1
+                  and amounts["pau_only_amount"] is not None and amounts["pau_only_amount"] > 0
+                  and _separately_priced_admission(claim, total, selected("pau_only_amount"))
+                  and (amounts["principal_debt"] or 0) + (amounts["financial_sanctions"] or 0) <= printed):
+                net = printed
+                gross = net + amounts["pau_only_amount"]
+                issues.append("Не подтверждён полный состав суммы требования, указанной судом.")
             elif (gross is None and total.scope == "with_duty" and total == claim.total
                   and sum(amount for amount in amounts.values() if amount is not None) <= printed):
-                # The regex balanced this printed list before assigning scope.
-                # The gross is independent of how its unclassified costs split.
+                # The operative text establishes the gross even when the
+                # components or their classification are incomplete.
                 gross = printed
         row = {"priority_queue": queue.value if queue_valid else None, "contract_number": claim.contract_number,
                **{name: _decimal(amount) for name, amount in amounts.items()},
                "claimed_amount": _decimal(net), "total_amount": _decimal(gross),
                "is_salary_or_severance": salary_value}
         if is_duty_only(row):
-            pledge_value = None
+            if pledge != claim.fields.get("pledge_resolution"):
+                pledge_value = None
         elif not queue_valid or net is None or gross is None or salary_value is None:
             issues.append("Часть полей строки требования не подтверждена.")
         row["pledge_resolution"] = pledge_value

@@ -171,8 +171,9 @@ EXPIRED_REGISTRY_ORDER = re.compile(
     r"(?:пунктом\s+4\s+статьи|п\.\s*4\s+ст\.)\s*142\b", re.I,
 )
 CONTRACT_BASIS = re.compile(
-    r"\b(?:по|на\s+основании|в\s+рамках)\s+(?:" + CONTRACTS["Кредитный договор"]
-    + "|" + CONTRACTS["Договор займа"] + ")", re.I,
+    r"\b(?:(?:по|на\s+основании|в\s+рамках|основанн\w*\s+на)\s+(?:"
+    + CONTRACTS["Кредитный договор"] + "|" + CONTRACTS["Договор займа"] + ")"
+    r"|процент\w*\s+за\s+пользование\s+займом\b)", re.I,
 )
 
 
@@ -320,8 +321,7 @@ def grounds_candidates(text: str, operative: str) -> dict[str, Fact]:
         if len(wording) == 1:
             result["grounds_ocr"] = Fact(value=wording[0], quote=wording[0])
         return result
-    # A literal contract reference is useful independently of its category.
-    # Do not infer a credit/loan type merely from the creditor's name.
+    # A literal reference can establish the wording without a supported category.
     number = r"\s*(?:№|N)\s*[\w./-]+"
     date = r'\s+от\s+(?:\d{1,2}\.\d{1,2}\.\d{4}|[«"]?\d{1,2}[»"]?\s+[а-яё]+\s+\d{4}(?:\s+года)?)'
     references = {}
@@ -332,6 +332,11 @@ def grounds_candidates(text: str, operative: str) -> dict[str, Fact]:
         prefix = operative[max(0, match.start() - 90):match.start()]
         if re.search(r"залог|поручител|уступк", prefix, re.I):
             continue
+        references.setdefault(compact(match[0]), match[0])
+    for match in re.finditer(
+        rf"\bоснованн\w*\s+на\s+судебн\w*\s+приказ\w*{number}(?:{date})?",
+        operative, re.I,
+    ):
         references.setdefault(compact(match[0]), match[0])
     if len(references) == 1:
         quote = next(iter(references.values()))
@@ -726,6 +731,25 @@ def split_queue_items(quote: str) -> list[tuple[str, list[Fact]]]:
     return rows if sum(totals, Decimal(0)) == money(printed[0][0]) else []
 
 
+def _is_final_unitemized_total(
+    quote: str, total: CourtTotal, sanctions: Components | None, queue: str, *, refunded_duty: bool,
+) -> bool:
+    """Recognize the award without assigning unknown amounts to individual components."""
+    if re.search(r"пошлин|судебн\w*\s+расход", quote, re.I):
+        return False
+    admission, *parts = AMOUNTS.finditer(quote)
+    prefix = quote[:admission.start()]
+    if money(admission[0]) != money(total.amount) or not GROSS.search(prefix):
+        return False
+    if queue == "За реестром" and not parts:
+        return bool(re.search(r"\bпризнать\s+обоснованным\s+в\s+размере\s*$", prefix, re.I))
+    return (
+        refunded_duty and len(parts) == 1 and sanctions is not None and len(sanctions.items) == 1
+        and money(parts[0][0]) == money(sanctions.items[0].amount)
+        and bool(BREAKDOWN.match(quote[admission.end():parts[0].start()].lstrip(", ")))
+    )
+
+
 def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
     if re.match(r"Утвердить\s+локальн\w*\s+план\s+реструктуризации\b", operative, re.I):
         # Quoted repayment-plan terms are not registry admissions. A separate
@@ -745,10 +769,12 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
     blocks = [operative[m.start():(starts[i + 1].start() if i + 1 < len(starts) else len(operative))].strip()
               for i, m in enumerate(starts)]
     admitted, fees, separate_pledges, unknown_fees = [], [], [], []
+    fee_queues = {}
     allocated = None
     collateral_confirmation = None
     restoration_refusal = None
     registry_refusal = False
+    refunded_duty = False
     for match, block in zip(starts, blocks):
         command = compact(match["verb"])
         if registry_refusal:
@@ -796,6 +822,12 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
             continue
         if command in {"учесть", "учитывать"} and not AMOUNTS.search(block) and re.search(
                 r"отдельно|санкц|неустойк|пошлин|после погашения", block, re.I):
+            if len(fees) == 1 and re.match(
+                r"уч(?:есть|итывать)\s+требован\w*\s+в\s+части[^.;]{0,100}?"
+                r"(?:государственн\w*\s+пошлин\w*|госпошлин\w*)\s+в\s+составе",
+                block, re.I,
+            ):
+                fee_queues.update((queue.value, queue) for queue in queue_candidates(block))
             continue
         if command in {"учесть", "учитывать"} and len(admitted) == 1 and re.search(
                 r"неустойк\w*.{0,100}\bотдельно\b.{0,200}\bпосле\s+погашения\b", block, re.I
@@ -888,6 +920,7 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
             # independently admitted principal claim in an earlier paragraph.
             continue
         elif command in {"вернуть", "возвратить"} and re.search(r"пошлин", block, re.I):
+            refunded_duty = True
             continue
         elif command == "учесть" and re.search(r"отдельно.*основн", block, re.I) and not AMOUNTS.search(block):
             continue
@@ -977,6 +1010,11 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         fields, total = claim_amounts(quote, single_fee)
         if queues:
             fields["priority_queue"] = queues[0]
+            if (len(partitions) == 1 and not fees and not unknown_fees and total and total.scope == "unknown"
+                    and _is_final_unitemized_total(
+                        quote, total, fields.get("financial_sanctions"), queues[0].value, refunded_duty=refunded_duty,
+                    )):
+                total.scope = "with_duty"
         contracts = req.contract_numbers(quote)
         own = pledge_candidate(quote)
         external = mapped_pledges.get(index)
@@ -1008,8 +1046,12 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         fee = fees[0]
         fields = {name: Components(items=[fee] if "duty" in kinds else [], complete=True, quote=fee.quote)
                   for name, kinds in CATEGORY_FIELDS.items()}
-        if len(queues := queue_candidates(fee.quote)) == 1:
-            fields["priority_queue"] = queues[0]
+        fee_queues.update((queue.value, queue) for queue in queue_candidates(fee.quote))
+        if len(fee_queues) == 1:
+            fields["priority_queue"] = next(iter(fee_queues.values()))
+        if (pledge := pledge_candidate(fee.quote)) and re.search(
+                r"\bуч(?:есть|итывать)\s+как\s+обеспеченн\w*\s+залог", pledge.quote, re.I):
+            fields["pledge_resolution"] = pledge
         fields["is_salary_or_severance"] = Salary(value=False, quote=fee.quote)
         rows.append(Claim(fee.quote, fields, CourtTotal(amount=fee.amount, scope="with_duty", quote=fee.amount)))
     return rows
