@@ -22,10 +22,11 @@ from ocr_platform.services.rtk3_evidence import (
     publication_date_field, quoted, remove_currency_page_marker, row_pledges,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
-    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_APPLICATION_DUTY, CURRENT_DUTY, EXPIRED_REGISTRY_ORDER, GROSS,
+    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_APPLICATION_DUTY, CURRENT_DUTY, EXPIRED_REGISTRY_ACCOUNTING,
+    EXPIRED_REGISTRY_ORDER, GROSS,
     LEGAL_NAME, PUBLIC_TAX_CREDITOR,
     SALARY_WORDS, SECTION_ACCOUNTED_DUTY, SEPARATE_SANCTIONS, STANDALONE_FEE_ACCOUNTING,
-    Claim, Components, CourtTotal, Salary, extract_candidates, penalty_from_itemized_total,
+    Claim, Components, CourtTotal, Salary, extract_candidates, interest_with_repeated_unit, penalty_from_itemized_total,
 )
 
 from ocr_platform.services.rtk3_gemini_prompts import build_gemini_prompt
@@ -472,6 +473,9 @@ def _amount_sum(
     result = Decimal(0)
     for item in value.items:
         amount = money(item.amount)
+        if (amount is None and item.kind == "interest" and total and total == claim.total
+                and item in getattr(claim.fields.get(name), "items", ())):
+            amount = interest_with_repeated_unit(item.amount)
         kind = "prior_cost" if item.kind == "duty" and previous_cost(item.quote) else item.kind
         key = ((claim.contract_number or "").casefold(), compact(item.quote), amount)
         if (amount is None or kind not in CATEGORY_FIELDS[name] or key in visited or key in seen
@@ -569,7 +573,8 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                 r"за\s+реестр|(?:после\s+(?:полного\s+)?удовлетворения|оставш\w*\s+после\s+погашения)"
                 r"\s+требований\s+кредиторов.{0,100}(?:включ[её]н|реестр)",
                 compact(queue.quote), re.I) or (
-                    queue == claim.fields.get("priority_queue") and EXPIRED_REGISTRY_ORDER.search(queue.quote)
+                    queue == claim.fields.get("priority_queue")
+                    and (EXPIRED_REGISTRY_ORDER.search(queue.quote) or EXPIRED_REGISTRY_ACCOUNTING.fullmatch(queue.quote))
                 ))
         salary = selected("is_salary_or_severance")
         salary_value = None
@@ -663,6 +668,8 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                 issues.append("Денежные компоненты не совпадают с суммой перечисленных в акте платежей.")
                 net = None
             gross = claim.itemized_gross
+        if claim.standalone_expense and total and total == claim.total and gross == money(total.amount):
+            net = Decimal(0)
         row = {"priority_queue": queue.value if queue_valid else None, "contract_number": claim.contract_number,
                **{name: _decimal(amount) for name, amount in amounts.items()},
                "claimed_amount": _decimal(net), "total_amount": _decimal(gross),

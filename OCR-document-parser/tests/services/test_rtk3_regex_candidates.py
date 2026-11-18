@@ -319,6 +319,100 @@ def test_labeled_commission_is_in_the_award_but_not_a_penalty():
     assert row["principal_debt"] is None
 
 
+def test_numbered_contract_subtotals_are_kept_separate_and_reconciled():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать обоснованными и включить в третью очередь реестра требований кредиторов "
+        "требования ПАО «Пример» в размере 150 руб., из которых: "
+        "1) 100 руб. – по кредитному договору от 18.03.2025 №123, из них: "
+        "95 руб. – основной долг, 5 руб. – пени, "
+        "2) 50 руб. – по кредитному договору от 23.08.2024 №456, из них: "
+        "45 руб. – основной долг, 5 руб. – проценты. "
+        "Взыскать в пользу ПАО «Пример» государственную пошлину в размере 7 руб."
+    )
+    result = fields(text)
+    first, second, fee = result["claims"]["value"]
+    assert (first["contract_number"], first["claimed_amount"]) == ("123", "100.00")
+    assert (second["contract_number"], second["claimed_amount"]) == ("456", "50.00")
+    assert (fee["contract_number"], fee["pau_only_amount"]) == (None, "7.00")
+    assert result["total_claimed_amount"]["value"] == "150.00"
+    assert not extract_candidates(text.replace("150 руб.", "151 руб.", 1)).claims
+
+
+def test_secured_contract_does_not_transfer_pledge_or_court_cost_to_another_contract():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить в третью очередь реестра требований кредиторов требования ПАО «Пример»: "
+        "- в рамках кредитного договора: № 123 от 21.01.2025, обеспеченное залогом автомобиля, "
+        "в размере 100.00, из которых: 95 руб. – основной долг, 5 руб. – пени; "
+        "- в рамках кредитного договора: № 456 от 03.09.2025 в размере 50.00, "
+        "из которых: 45 руб. – основной долг, 5 руб. – проценты, "
+        "Признать обоснованными понесенные ПАО «Пример» судебные расходы по делу № А01-123/2026 "
+        "в размере 7 руб., и подлежащими удовлетворению применительно к пункту 3 статьи 137."
+    )
+    result = fields(text)
+    first, second, expense = result["claims"]["value"]
+    assert (first["contract_number"], first["pledge_resolution"], first["claimed_amount"]) == ("123", "yes", "100.00")
+    assert (second["contract_number"], second["pledge_resolution"], second["claimed_amount"]) == ("456", None, "50.00")
+    assert (expense["priority_queue"], expense["pau_only_amount"], expense["total_amount"]) == (None, None, "7.00")
+    assert result["total_claimed_amount"]["value"] == "150.00"
+
+
+def test_nested_queue_subtotals_reconcile_both_tax_and_penalties():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить в реестр требований кредиторов требования ФНС России "
+        "в сумме 125 руб., в том числе: "
+        "- во вторую очередь реестра требований кредиторов в сумме 100 руб., в том числе: по налогу – 100 руб.; "
+        "- в третью очередь реестра требований кредиторов в сумме 25 руб., в том числе: "
+        "по налогу – 20 руб., по пени – 5 руб."
+    )
+    second, third = fields(text)["claims"]["value"]
+    assert (second["priority_queue"], second["principal_debt"]) == ("2 очередь", "100.00")
+    assert (third["priority_queue"], third["principal_debt"], third["financial_sanctions"]) == ("3 очередь", "20.00", "5.00")
+    assert not extract_candidates(text.replace("25 руб.", "26 руб.", 1)).claims
+
+
+def test_trailing_local_plan_and_its_refund_are_separate_from_the_registry_award():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требование ПАО «Пример» в размере 100 руб.: 90 руб. основного долга "
+        "и 10 руб. неустойки в третью очередь реестра требований кредиторов. "
+        "Судебные расходы по уплате государственной пошлины в размере 7 руб., подлежащие взысканию "
+        "с должника в пользу ПАО «Пример», учитываются в реестре по пункту 3 статьи 137. "
+        "Утвердить локальный план реструктуризации задолженности в следующей редакции: "
+        "1. Задолженность по кредитному договору №321 составляет 900 руб. "
+        "Прекратить производство по заявлению ПАО «Пример» о включении в реестр требования, "
+        "обеспеченного залогом имущества, по кредитному договору №321. "
+        "Возвратить ПАО «Пример» из федерального бюджета государственную пошлину в размере 50 руб."
+    )
+    candidates = extract_candidates(text)
+    assert "grounds" not in candidates.fields
+    row, = fields(text)["claims"]["value"]
+    assert (row["contract_number"], row["pledge_resolution"]) == (None, None)
+    assert (row["claimed_amount"], row["pau_only_amount"], row["total_amount"]) == ("100.00", "7.00", "107.00")
+
+
+def test_prior_fee_in_printed_award_cites_a_previous_decision_after_the_breakdown():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать требование ПАО «Пример» обоснованным в размере 120 руб., из них "
+        "основной долг – 100 руб., проценты – 15 руб., госпошлина – 5 руб., "
+        "по кредитному договору №123 от 09.11.2022, взысканной решением Арбитражного суда "
+        "Удмуртской Республики от 27.06.2023 по делу № А71-8630/2023, и подлежащим включению "
+        "в реестр требований кредиторов по третьей очереди удовлетворения."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["principal_debt"], row["pau_only_amount"], row["total_amount"]) == ("120.00", "0.00", "120.00")
+
+
+def test_repeated_ruble_unit_in_interest_requires_a_balanced_award():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать требование ПАО «Пример» в размере 122 руб. 08 коп., из которых: "
+        "100 руб. – основного долга, 20 руб. 08 руб. – процентов, 2 руб. – штрафных санкций "
+        "обоснованным и подлежащим включению в третью очередь реестра требований кредиторов."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["principal_debt"], row["financial_sanctions"], row["total_amount"]) == ("120.08", "2.00", "122.08")
+    row, = fields(text.replace("122 руб. 08 коп.", "122 руб. 09 коп."))["claims"]["value"]
+    assert row["principal_debt"] is None
+
+
 def test_enforcement_fee_is_preserved_as_literal_basis():
     result = extract_candidates(
         "ОПРЕДЕЛИЛ:\nВключить требования ФНС России в третью очередь в размере "
