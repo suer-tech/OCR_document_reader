@@ -175,6 +175,32 @@ CONTRACT_BASIS = re.compile(
     + CONTRACTS["Кредитный договор"] + "|" + CONTRACTS["Договор займа"] + ")"
     r"|процент\w*\s+за\s+пользование\s+займом\b)", re.I,
 )
+BASIS_INTRO = r"(?:по|из|на\s+основании|в\s+рамках|основанн\w*\s+на)"
+BASIS_NUMBER = r"\s*:?\s*(?:№|N|#)\s*[\w/-]+(?:\.[\w/-]+)*"
+BASIS_DATE_DIGIT = r"[0-9ОоOo]"
+# A quotation keeps the printed date even when the calendar date is unreadable or invalid.
+BASIS_DATE = (
+    rf'\s+от\s+(?:{BASIS_DATE_DIGIT}{{1,3}}\s*[./-]\s*{BASIS_DATE_DIGIT}{{1,3}}\s*[./-]\s*'
+    rf'{BASIS_DATE_DIGIT}{{2,4}}|[«"]?{BASIS_DATE_DIGIT}{{1,2}}[»"]?\s+[а-яё]+\s+{BASIS_DATE_DIGIT}{{4}})'
+    r'(?:\s*г\.(?!\w)|\s+года\b|\b)(?![./-][0-9])'
+)
+BASIS_BARE_NUMBER = (
+    rf"\s+(?=[\w./-]*[0-9])[\w/-]+(?:\.[\w/-]+)*(?={BASIS_DATE}|\s+(?:в\s+размере|на\s+сумму)\b)"
+)
+BASIS_REFERENCE = rf"(?:(?:{BASIS_NUMBER}|{BASIS_BARE_NUMBER})(?:{BASIS_DATE})?|(?:{BASIS_DATE})(?:{BASIS_NUMBER})?)"
+BASIS_PREFIX = re.compile(
+    rf"\b(?:(?:(?:задолжен\w*|требован\w*|долг\w*)\s+|задолжен\w*,\s+(?=основанн))?"
+    rf"{BASIS_INTRO}|неисполнени\w*)\s*$", re.I,
+)
+BASIS_QUALIFIER = re.compile(
+    rf"\s*\(\s*кредитн\w*\s+карт\w*\s*\)|\s+пут[её]м\s+подписани\w*\s+"
+    rf"(?:эмиссионн\w*(?:{BASIS_DATE})?\s+)?контракт\w*{BASIS_REFERENCE}", re.I,
+)
+OCR_CONTRACT_REFERENCE = re.compile(
+    rf"\b{BASIS_INTRO}\s+(?:[кk][рp][еe]д[иi]?тн\w*\s+)?"
+    rf"д[оo]?г[оo]в[оo]?[рp]\w*(?:\s+(?:микро)?з[аa]йм\w*)?{BASIS_REFERENCE}", re.I,
+)
+BASIS_LIST_SEPARATOR = re.compile(r"\s*(?:[,;]\s*(?:(?:и|а\s+также)\s*)?|(?:и|а\s+также)\s+)\s*", re.I)
 
 
 def operative_part(text: str) -> str:
@@ -269,7 +295,45 @@ def tax_creditor_subject(creditor: Fact, text: str, operative: str) -> tuple[str
     return creditor.value, creditor.quote
 
 
-def grounds_candidates(text: str, operative: str) -> dict[str, Fact]:
+def _listed_contract_wording(operative: str, claims: list[Claim]) -> str | None:
+    contracts = [claim for claim in claims if claim.contract_number]
+    if len(contracts) < 2 or len({claim.contract_number.casefold() for claim in contracts}) != len(contracts):
+        return None
+    if any(not claim.contract_number and not _separate_fee(claim.quote) for claim in claims):
+        return None
+    start, end, cursor = None, 0, 0
+    for claim in contracts:
+        offset = operative.find(claim.quote, cursor)
+        reference = re.match(
+            rf"(?:[-–—]\s+)?(?P<basis>{CONTRACT_BASIS.pattern}\s*:?\s*)?"
+            rf"(?:№|N|#)?\s*{re.escape(claim.contract_number)}(?![\w./-])(?:{BASIS_DATE})?",
+            claim.quote, re.I,
+        )
+        if offset < 0 or reference is None:
+            return None
+        if cursor and operative[cursor:offset].strip(" ,;.-–—"):
+            return None
+        if start is None:
+            if reference["basis"]:
+                start = offset + reference.start("basis")
+            else:
+                left = max(0, offset - 150)
+                introduction = operative[left:offset]
+                heading = re.search(rf"{CONTRACT_BASIS.pattern}\s*:\s*$", introduction, re.I)
+                if heading is None:
+                    return None
+                start = left + heading.start()
+                for named_claim in CREDITOR.finditer(introduction, endpos=heading.start()):
+                    if not introduction[named_claim.end():heading.start()].strip():
+                        start = left + named_claim.start()
+        end = offset + reference.end()
+        cursor = offset + len(claim.quote)
+    return operative[start:end]
+
+
+def grounds_candidates(text: str, operative: str, claims: list[Claim]) -> dict[str, Fact]:
+    listed = _listed_contract_wording(operative, claims)
+    result = {"grounds_ocr": Fact(value=listed, quote=listed)} if listed else {}
     for is_operative, raw_source in ((True, operative), (False, text)):
         source = req.GENERAL_SANCTIONS_NOTICE.sub(lambda match: " " * len(match[0]), raw_source)
         matches = [(category, m) for category, pattern in CONTRACTS.items()
@@ -288,53 +352,60 @@ def grounds_candidates(text: str, operative: str) -> dict[str, Fact]:
             continue
         categories = {category for category, _ in matches}
         if len(categories) != 1:
-            return {}
+            return result
         category, first = matches[0]
-        number = r"\s*:?\s*(?:№|N)\s*[\w./-]+"
-        date = r'\s+от\s+(?:\d{1,2}\.\d{1,2}\.\d{4}|[«"]?\d{1,2}[»"]?\s+[а-яё]+\s+\d{4}(?:\s+года)?)'
+        result["grounds"] = Fact(value=category, quote=first[0])
+        if listed:
+            return result
         references = {}
         for _, match in matches:
-            suffix = re.match(rf"(?:(?:{number})(?:{date})?|(?:{date})(?:{number})?)?", source[match.end():], re.I)[0]
+            suffix = re.match(rf"(?:{BASIS_REFERENCE})?", source[match.end():], re.I)[0]
             if suffix:
                 continuation = re.match(
-                    rf"(?:(?:\s*[;,]\s*(?:и\s+)?|\s+и\s+)(?:{number})(?:{date})?)*",
+                    rf"(?:(?:\s*[;,]\s*(?:и\s+)?|\s+и\s+)(?:{BASIS_NUMBER})(?:{BASIS_DATE})?)*",
                     source[match.end() + len(suffix):], re.I,
                 )[0]
                 suffix += continuation
-            prefix = re.search(
-                r"\b(?:(?:задолжен\w*|требован\w*|долг\w*)\s+)?"
-                r"(?:по|из|на\s+основании|в\s+рамках)\s*$",
-                source[max(0, match.start() - 80):match.start()], re.I,
-            )
+            qualifier = BASIS_QUALIFIER.match(source, match.end() + len(suffix))
+            if qualifier:
+                suffix += qualifier[0]
+            preceding = source[max(0, match.start() - 80):match.start()]
+            prefix = BASIS_PREFIX.search(preceding)
+            if not prefix and re.match(r"процент\w*\s+за\s+пользование\s+займом\b", match[0], re.I):
+                prefix = re.search(rf"{AMOUNT}\s*$", preceding, re.I)
+            if not prefix and category in {"Кредитный договор", "Договор займа"}:
+                prefix = re.search(
+                    rf"\bо\s+включении\s+требован\w*\s+в\s+размере\s+{AMOUNT}\s*$", preceding, re.I,
+                )
             key = compact(match[0] + suffix)
-            wording = (prefix[0] if prefix else "") + match[0] + suffix
-            if key not in references or len(wording) > len(references[key]):
-                references[key] = wording
-        evidence = Fact(value=category, quote=first[0])
-        detailed = [phrase for phrase in references.values() if re.search(r"\d", phrase)]
-        wording = detailed or list(references.values())
+            start = match.start() - (len(prefix[0]) if prefix else 0)
+            end = match.end() + len(suffix)
+            if key not in references or end - start > references[key][1] - references[key][0]:
+                references[key] = start, end
+        detailed = [(start, end) for start, end in references.values() if re.search(r"\d", source[start:end])]
+        wording = sorted(detailed or references.values())
         if category == "Налоговая задолженность":
-            general = [phrase for phrase in wording if re.search(r"обязательн\w*\s+платеж", phrase, re.I)]
+            general = [(start, end) for start, end in wording if re.search(
+                r"обязательн\w*\s+платеж", source[start:end], re.I,
+            )]
             if general:
-                wording = [max(general, key=len)]
-        result = {"grounds": evidence}
-        if len(wording) == 1:
-            result["grounds_ocr"] = Fact(value=wording[0], quote=wording[0])
+                wording = [max(general, key=lambda span: span[1] - span[0])]
+        if wording and all(BASIS_LIST_SEPARATOR.fullmatch(source[end:start])
+                           for (_, end), (start, _) in zip(wording, wording[1:])):
+            quote = raw_source[wording[0][0]:wording[-1][1]]
+            result["grounds_ocr"] = Fact(value=quote, quote=quote)
+        return result
+    if listed:
         return result
     # A literal reference can establish the wording without a supported category.
-    number = r"\s*(?:№|N)\s*[\w./-]+"
-    date = r'\s+от\s+(?:\d{1,2}\.\d{1,2}\.\d{4}|[«"]?\d{1,2}[»"]?\s+[а-яё]+\s+\d{4}(?:\s+года)?)'
     references = {}
-    for match in re.finditer(
-        rf"\b(?:на\s+основании|в\s+рамках|по)\s+договор\w*\s*:?(?:(?:{number})(?:{date})?|(?:{date})(?:{number})?)",
-        operative, re.I,
-    ):
+    for match in OCR_CONTRACT_REFERENCE.finditer(operative):
         prefix = operative[max(0, match.start() - 90):match.start()]
         if re.search(r"залог|поручител|уступк", prefix, re.I):
             continue
         references.setdefault(compact(match[0]), match[0])
     for match in re.finditer(
-        rf"\bоснованн\w*\s+на\s+судебн\w*\s+приказ\w*{number}(?:{date})?",
+        rf"\bоснованн\w*\s+на\s+судебн\w*\s+приказ\w*{BASIS_NUMBER}(?:{BASIS_DATE})?",
         operative, re.I,
     ):
         references.setdefault(compact(match[0]), match[0])
@@ -1084,5 +1155,6 @@ def extract_candidates(text: str) -> Candidates:
     ):
         if result.value:
             fields[name] = Fact(value=result.value, quote=result.quote)
-    fields.update(grounds_candidates(source, operative))
-    return Candidates(fields=fields, claims=claim_candidates(operative, creditor), creditor_tax_subject=tax_subject)
+    claims = claim_candidates(operative, creditor)
+    fields.update(grounds_candidates(source, operative, claims))
+    return Candidates(fields=fields, claims=claims, creditor_tax_subject=tax_subject)

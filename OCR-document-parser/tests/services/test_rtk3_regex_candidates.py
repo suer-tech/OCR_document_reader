@@ -710,6 +710,56 @@ def test_contract_list_keeps_every_reference():
     assert all(ref in value for ref in ['A-1', 'B-2', 'C-3'])
 
 
+def test_literal_basis_keeps_bare_identifiers_and_printed_dates():
+    for basis in (
+        'задолженность, основанную на договоре займа №2844 от 05.098.2024',
+        'по кредитному договору ABC-123456 от 15.03.2018',
+        'по кредитному договору № 123 от 23.10.2019г.',
+        'по кредитному договору от 29.11.2022 (кредитная карта)',
+        'по кредитному договору № 123 от О5.1О.2О24',
+    ):
+        text = f'ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» {basis} в размере 100 руб.'
+        fact = extract_candidates(text).fields['grounds_ocr']
+        assert fact.value == fact.quote == basis
+    text = 'ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» по кредитному договору 100,00 руб.'
+    assert extract_candidates(text).fields['grounds_ocr'].value == 'по кредитному договору'
+
+
+def test_typo_in_literal_basis_does_not_set_a_category():
+    basis = 'по кредтному дoговoру А-123 от 05.098.2024'
+    text = f'ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» {basis} в размере 100 руб.'
+    result = extract_candidates(text).fields
+    assert result['grounds_ocr'].value == basis
+    assert 'grounds' not in result
+    collateral = text.replace('по кредтному', 'обеспеченные залогом по кредтному')
+    assert 'grounds_ocr' not in extract_candidates(collateral).fields
+
+
+def test_itemized_contracts_share_a_single_literal_basis_with_both_references():
+    basis = (
+        'по кредитному договору A-1 от 01.01.2025 в размере 100 руб., '
+        'из которых 100 руб. – основной долг; - по кредитному договору B-2 от 02.02.2025'
+    )
+    text = (
+        'ОПРЕДЕЛИЛ:\nВключить требования ПАО «Тест» в третью очередь '
+        'в размере 120 руб., в том числе: - '
+        + basis + ' в размере 20 руб., из которых 20 руб. – основной долг.'
+    )
+    result = extract_candidates(text)
+    assert [row.contract_number for row in result.claims] == ['A-1', 'B-2']
+    assert result.fields['grounds_ocr'].value == basis
+
+
+def test_credit_line_and_credit_contract_in_a_single_list():
+    basis = (
+        'по договору на предоставление возобновляемой кредитной линии путем подписания '
+        'эмиссионного контракт от 25.03.2022 №A-1, кредитному договору от 03.02.2023 №B-2'
+    )
+    text = f'ОПРЕДЕЛИЛ:\nПризнать требование ПАО «Тест» {basis} обоснованным.'
+    fact = extract_candidates(text).fields['grounds_ocr']
+    assert fact.value == fact.quote == basis
+
+
 def test_unquoted_bank_and_former_surname_requisites():
     from ocr_platform.services.rtk3_requisites import source_inn
     text = ('Рассмотрев заявление БАНК ГПБ (АО) (ИНН 7744001497) в рамках дела о банкротстве '
