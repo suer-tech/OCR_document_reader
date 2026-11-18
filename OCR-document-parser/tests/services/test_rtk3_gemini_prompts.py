@@ -83,16 +83,15 @@ def ledger(statuses):
     return evidence, text
 
 
-@pytest.mark.parametrize('statuses,expected', [([None], None), ([False], False),
-                                               ([None, False], None), ([None, None], None)])
-def test_unknown_salary_preserves_money_and_survives_queue_merge(statuses, expected):
+@pytest.mark.parametrize('statuses', [[None], [False], [None, False], [None, None]])
+def test_salary_status_and_money_are_preserved_per_claim(statuses):
     evidence, text = ledger(statuses)
     profile = load_profile('rtk3')
     result = build_fields(evidence, text, profile, recover_from_source=False)
-    row = result['claims']['value'][0]
-    assert row['is_salary_or_severance'] is expected
-    assert row['principal_debt'] == f'{sum(100 * i for i in range(1, len(statuses) + 1))}.00'
-    assert result['total_claimed_amount']['value'] == row['principal_debt']
+    rows = result['claims']['value']
+    assert [row['is_salary_or_severance'] for row in rows] == statuses
+    assert [row['principal_debt'] for row in rows] == [f'{100 * i}.00' for i in range(1, len(statuses) + 1)]
+    assert result['total_claimed_amount']['value'] == f'{sum(100 * i for i in range(1, len(statuses) + 1))}.00'
 
 
 def test_unsupported_salary_true_is_unknown_not_false_and_does_not_erase_money():
@@ -126,5 +125,5 @@ def test_profile_has_one_prompt_source_and_no_legacy_amount_instruction():
     for config in profile['fields'].values():
         assert 'prompt_instruction' not in config
         assert 'claimed_amount_instruction' not in config
-    assert profile['fields']['kad_publication_date']['extraction_method'] == 'external'
+    assert profile['fields']['kad_publication_date']['extraction_method'] == 'fixed'
     assert profile['fields']['total_claimed_amount']['extraction_method'] == 'computed'

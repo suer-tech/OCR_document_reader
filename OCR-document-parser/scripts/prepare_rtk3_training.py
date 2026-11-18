@@ -119,9 +119,8 @@ def prepare(source: Path, output: Path):
 
         document, main, case_quote = source_case(text)
         resolved = {"document_case_number": (document, case_quote), "case_number": (main, case_quote)}
-        for name, fn in [("inclusion_date", req.ruling_date), ("kad_publication_date", req.publication_date)]:
-            r = fn(text)
-            resolved[name] = (r.value, r.quote)
+        ruling_date = req.ruling_date(text)
+        resolved["inclusion_date"] = (ruling_date.value, ruling_date.quote)
         for name in ("debtor_inn", "creditor_inn"):
             # Evaluation must not give the extractor the human creditor target.
             r = req.source_inn(text, name, original_fields.get("creditor", {}).get("value"))
@@ -141,8 +140,8 @@ def prepare(source: Path, output: Path):
             status, quote = "", ""
             if name == "processing_started_at":
                 external[name] = {"value": value, "origin": "processing_metadata"}
-            elif name == "kad_publication_date" and not resolved[name][0]:
-                external[name] = {"value": value, "origin": "confirmed_emu_value", "reason": "Дата публикации не установлена в PDF; источник автоподстановки отдельно не указан."}
+            elif name == "kad_publication_date":
+                external[name] = {"value": value, "origin": "confirmed_emu_value", "reason": "Дата публикации не входит в результат извлечения РТК-3."}
                 labels[name] = {"value": None, "status": "not_present_in_document", "quote": ""}
             elif name in ("debtor_inn", "creditor_inn") and value and str(value) not in re.sub(r"\s", "", text):
                 external[name] = {"value": value, "origin": "confirmed_emu_value", "reason": "Подтверждённые цифры отсутствуют в исходном тексте."}

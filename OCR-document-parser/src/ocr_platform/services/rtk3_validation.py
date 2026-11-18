@@ -5,11 +5,14 @@ import re
 from decimal import Decimal
 
 from ocr_platform.api.schemas import ValidationIssue
-from ocr_platform.services.rtk3_evidence import GROUNDS, QUEUES, VERSION, date_value, money, normalize_case
+from ocr_platform.services.rtk3_evidence import (
+    GROUNDS, PLEDGE_STATUSES, QUEUES, VERSION, date_value, is_duty_only, money, normalize_case, row_pledges,
+)
 
 
 def is_v2(fields: dict) -> bool:
-    return any(isinstance(info, dict) and info.get("source") == VERSION for info in fields.values())
+    return any(name != "kad_publication_date" and isinstance(info, dict) and info.get("source") == VERSION
+               for name, info in fields.items())
 
 
 def rtk3_issues(fields: dict) -> list[ValidationIssue]:
@@ -26,27 +29,26 @@ def rtk3_issues(fields: dict) -> list[ValidationIssue]:
 
     if modern:
         required = ["document_case_number", "case_number", "debtor_inn", "creditor", "creditor_inn",
-                    "inclusion_date", "grounds", "claims", "pledge_resolution"]
+                    "inclusion_date", "claims"]
         for name in required:
             if value(name) in (None, "", []) and not fields.get(name, {}).get("external_data_required"):
                 add(name, f"Не установлено обязательное значение РТК3: {name}.")
-        for name in ["kad_publication_date", "debtor_inn", "creditor_inn"]:
-            if value(name) is None and (name == "kad_publication_date" or fields.get(name, {}).get("external_data_required")):
+        for name in ["debtor_inn", "creditor_inn"]:
+            if value(name) is None and fields.get(name, {}).get("external_data_required"):
                 issues.append(ValidationIssue(
                     code="rtk3_external_data_required", field_name=name, severity="warning",
                     message=f"Поле {name} требует проверенного внешнего источника; это не подтверждённое значение из документа."))
         for name, info in fields.items():
-            if isinstance(info, dict) and info.get("validation_issue"):
+            if name != "kad_publication_date" and isinstance(info, dict) and info.get("validation_issue"):
                 add(name, str(info["validation_issue"]))
         for name in ["debtor_inn", "creditor_inn"]:
             inn = value(name)
             if inn is not None and not (isinstance(inn, str) and re.fullmatch(
                     r"[0-9]{12}" if name == "debtor_inn" else r"(?:[0-9]{10}|[0-9]{12})", inn)):
                 add(name, "Некорректный строковый формат ИНН.")
-        for name in ["inclusion_date", "kad_publication_date"]:
-            date = value(name)
-            if date is not None and (not isinstance(date, str) or date_value(date, date) is None):
-                add(name, "Некорректная календарная дата.")
+        date = value("inclusion_date")
+        if date is not None and (not isinstance(date, str) or date_value(date, date) is None):
+            add("inclusion_date", "Некорректная календарная дата.")
         document, case = normalize_case(value("document_case_number"))
         if document and case != value("case_number"):
             add("case_number", "Основное дело не соответствует номеру обособленного спора.")
@@ -54,13 +56,10 @@ def rtk3_issues(fields: dict) -> list[ValidationIssue]:
             add("document_case_number", "Некорректный номер документа.")
         if value("grounds") is not None and value("grounds") not in GROUNDS:
             add("grounds", "Основание не относится к согласованным категориям.")
-        pledge = value("pledge_resolution")
-        if pledge not in {"yes", "no", "separated"} or value("secured_by_pledge") is not (pledge == "yes"):
-            add("secured_by_pledge", "Не установлен согласованный результат рассмотрения залога.")
-
     rows = value("claims")
     if not isinstance(rows, list):
         return issues
+    individual_pledges = modern and any(isinstance(row, dict) and "pledge_resolution" in row for row in rows)
     nets = []
     for i, row in enumerate(rows):
         field = f"claims/{i}"
@@ -84,11 +83,23 @@ def rtk3_issues(fields: dict) -> list[ValidationIssue]:
                 add(field, "Сумма долга, санкций и пошлины не совпадает с итогом строки.")
             if modern and money(row.get("claimed_amount")) != net:
                 add(field, "claimed_amount не соответствует включённой сумме без пошлины.")
-        if modern and row.get("priority_queue") not in QUEUES:
+        if modern and row.get("priority_queue") not in QUEUES and not is_duty_only(row):
             add(field, "Не установлена очередь требования.")
         if modern and not isinstance(row.get("is_salary_or_severance"), bool):
             add(field, "Не установлен признак зарплаты/выходного пособия.")
+        if individual_pledges and not is_duty_only(row):
+            pledge = row.get("pledge_resolution")
+            if pledge not in PLEDGE_STATUSES or row.get("secured_by_pledge") is not (pledge == "yes"):
+                add(f"{field}/pledge_resolution", "Не установлен залоговый статус отдельного требования.")
     if modern:
+        pledge = value("pledge_resolution")
+        if individual_pledges:
+            statuses = row_pledges([row for row in rows if isinstance(row, dict)])
+            expected = next(iter(statuses)) if len(statuses) == 1 else None
+            if pledge != expected or value("secured_by_pledge") is not (expected == "yes" if expected else None):
+                add("secured_by_pledge", "Общий залоговый статус не согласуется со строками требований.")
+        elif pledge not in PLEDGE_STATUSES or value("secured_by_pledge") is not (pledge == "yes"):
+            add("secured_by_pledge", "Не установлен согласованный результат рассмотрения залога.")
         raw_total = value("total_claimed_amount")
         if not isinstance(raw_total, str) or not re.fullmatch(r"[0-9]+\.[0-9]{2}", raw_total):
             add("total_claimed_amount", "Не установлена общая сумма требований без пошлины.")

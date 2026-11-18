@@ -61,7 +61,7 @@ def normalize_creditor(value: str) -> str:
     value = re.sub(r",\s*(?:г\.\s*|г\s+|город\s+).*$", "", value, flags=re.I)
     value = re.sub(r'(?<=[»"])\s+г\.\s*[А-ЯЁ][а-яё-]+.*$', '', value)
     # Straight/curly quotation pairs only; keep internal capitalization and ё.
-    value = re.sub(r'["“„]([^"“”„]+)["”]', r"«\1»", value)
+    value = re.sub(r'["“„]([^"“”„]+)["“”]', r"«\1»", value)
     value = re.sub(r"«\s*", "«", value)
     value = re.sub(r"\s*»", "»", value)
     value = re.sub(r"\s+([,;])", r"\1", value).strip(" ,;")
@@ -312,3 +312,61 @@ def publication_date(text: str) -> Requisite:
         value, line = next(iter(candidates.items()))
         return Requisite(value, line)
     return Requisite(None, problem="Дата публикации КАД явно не указана или неоднозначна.")
+
+
+TAX_KIND = r"(?:транспортн\w*|земельн\w*|имущественн\w*)\s+налог\w*"
+GROUND_PATTERNS = {
+    "Кредитный договор": (
+        r"(?:кредитн\w+\s+(?:договор\w*|соглашени\w*|карт\w*)|"
+        r"договор\w*\s+потребительск\w*\s+кредит\w*\b(?!\s*\(\s*займ\w*\s*\))|"
+        r"договор\w*\s+.{0,45}?\s+кредитн\w*\s+лини\w*|"
+        r"предоставлени\w*\s+(?:возобновляем\w*\s+)?кредитн\w*\s+лини\w*|"
+        r"договор\w*\s+о\s+предоставлении\s+(?:потребительск\w+\s+)?кредит\w*\b"
+        r"(?!\s*\(\s*займ\w*\s*\)))"
+    ),
+    "Договор займа": (
+        r"(?:договор\w*\s+(?:(?:потребительск\w*|целев\w*|жилищн\w*)\s+){0,2}(?:микро)?займ\w*|"
+        r"договор\w*\s+о\s+предоставлении\s+(?:потребительск\w+\s+)?"
+        r"(?:кредит\w*\s*\(\s*займ\w*\s*\)|(?:микро)?займ\w*)|"
+        r"процент\w*\s+за\s+пользование\s+займом)"
+    ),
+    "Налоговая задолженность": (
+        r"(?:налогов\w+\s+задолжен\w*|задолжен\w*\s+по\s+(?:уплате\s+)?налог\w*|"
+        r"недоимк\w*\s+по\s+налог\w*|основн\w+\s+долг\s*\(налог\w*\)|"
+        r"задолжен\w*\s+в\s+бюджет(?:\s+и\s+внебюджетн\w*\s+фонд\w*)?|"
+        r"страхов\w+\s+взнос\w*|задолжен\w*\s+по\s+обязательн\w*\s+платеж\w*|"
+        rf"долг\w*\s+по\s+{TAX_KIND})"
+    ),
+    "Оплата коммунальных услуг": r"(?:(?:по\s+)?оплат\w*\s+(?:жилищно[- ]?)?коммунальн\w+\s+услуг\w*)",
+}
+
+
+NEGATED_GROUND = re.compile(r"\b(?:не\s+представлен\w*|отсутству\w*|не\s+заключ[её]н\w*)\s*$", re.I)
+GENERAL_SANCTIONS_NOTICE = re.compile(
+    r"\bза\s+неисполнение\s+или\s+ненадлежащее\s+исполнение\s+обязанности\s+по\s+уплате\s+обязательных\s+платежей\b",
+    re.I,
+)
+
+
+def explicit_ground_category(quote: str) -> str | None:
+    """Validate a category against the quoted words that describe the basis."""
+    quote = GENERAL_SANCTIONS_NOTICE.sub(" ", quote)
+    categories = {
+        category for category, pattern in GROUND_PATTERNS.items()
+        for match in re.finditer(pattern, quote, re.I)
+        if not NEGATED_GROUND.search(quote[max(0, match.start() - 45):match.start()])
+    }
+    if re.search(rf"\b(?:по\s+(?:уплате\s+)?обязательн\w*\s+платеж\w*|по\s+налогам\s+и\s+пеням|{TAX_KIND})\b",
+                 quote, re.I):
+        categories.add("Налоговая задолженность")
+    return next(iter(categories)) if len(categories) == 1 else None
+
+
+def contract_numbers(quote: str) -> dict[str, str]:
+    """Return named contract references with a case-insensitive lookup key."""
+    pattern = (
+        r"(?:\b(?:кредитн\w*\s+)?договор\w*(?:\s+(?:потребительск\w*\s+)?(?:микро)?займ\w*)?"
+        r"|^[-–—])(?:\s*№\s*|\s+(?=[\w./-]*\d))([\w/-]+(?:\.[\w/-]+)*)"
+    )
+    return {match[1].casefold(): match[1] for match in re.finditer(pattern, quote.strip(), re.I)
+            if not re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{4}", match[1])}

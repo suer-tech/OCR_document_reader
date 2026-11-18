@@ -31,7 +31,8 @@ def test_swagger_documents_exact_current_profile_fields(openapi):
     nested = by_type["rtk3"].split("\nПоля каждого объекта")[1]
     assert set(re.findall(r"^\* `([^`]+)`", nested, re.MULTILINE)) == {
         "priority_queue", "claimed_amount", "principal_debt", "financial_sanctions",
-        "pau_only_amount", "total_amount", "is_salary_or_severance"}
+        "pau_only_amount", "total_amount", "is_salary_or_severance",
+        "contract_number", "pledge_resolution", "secured_by_pledge"}
 
 
 def test_swagger_response_examples_match_contract_and_review_rules(openapi):

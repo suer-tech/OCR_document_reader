@@ -458,6 +458,10 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     },
                 )
 
+        if profile_id == "rtk3":
+            from ocr_platform.services.rtk3_evidence import publication_date_field
+
+            fields["kad_publication_date"] = publication_date_field()
         fields["processing_started_at"] = (
             processing_started_at.isoformat() if processing_started_at else None
         )
@@ -487,7 +491,9 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 from ocr_platform.services.field_retries import required_names
 
                 quality_options["required_fields"] = required_names(profile_config["fields"])
-            technical, semantic, overall = quality_service.compute_quality_scores(text, fields, **quality_options)
+            scored_fields = ({name: info for name, info in fields.items() if name != "kad_publication_date"}
+                             if profile_id == "rtk3" else fields)
+            technical, semantic, overall = quality_service.compute_quality_scores(text, scored_fields, **quality_options)
             if quality_span is not None:
                 quality_span.update(
                     output={

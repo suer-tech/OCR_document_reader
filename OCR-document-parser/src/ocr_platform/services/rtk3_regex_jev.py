@@ -17,8 +17,9 @@ from ocr_platform.services.agent_tools import dadata_party_suggestions
 from ocr_platform.services import rtk3_requisites as req
 from ocr_platform.services.llm_gateway import call_llm_json_with_fallback, decision_probabilities
 from ocr_platform.services.rtk3_evidence import (
-    GROUNDS, QUEUES, VERSION, ClaimEvidence, DocumentEvidence, Fact, PledgeFact, PriorityFact, amount_supported,
-    build_fields, compact, excluded_component, money, normalize_case, previous_cost, quoted,
+    QUEUES, VERSION, ClaimEvidence, DocumentEvidence, Fact, PledgeFact, PriorityFact, amount_supported,
+    build_fields, compact, excluded_component, is_duty_only, money, normalize_case, previous_cost,
+    publication_date_field, quoted, row_pledges,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
     CATEGORY_FIELDS, EXPIRED_REGISTRY_ORDER, PUBLIC_TAX_CREDITOR, SALARY_WORDS, SEPARATE_SANCTIONS,
@@ -90,7 +91,8 @@ async def _verify(text: str, candidates, config: dict, context: dict) -> tuple[d
         state["claim_layout"] = [claim.quote for claim in candidates.claims]
         questions["claim_layout"] = _question(
             "Каждый фрагмент claim_layout соответствует одному самостоятельному включённому требованию "
-            "с однородной очередью и статусом? Все ли окончательно признанные требования охвачены без повторов, "
+            "с однородной очередью и статусом? Каждый договор выделен отдельно, в том числе в одной очереди? "
+            "Все ли окончательно признанные требования охвачены без повторов, "
             "и относится ли каждый отдельно приложенный денежный компонент к указанной строке?"
         )
         for index, claim in enumerate(candidates.claims):
@@ -242,7 +244,7 @@ def _model_fact(
         if re.search(r"должник|граждан|банкрот", fact.quote, re.I) and not re.search(
                 r"поручител|управляющ|супруг|заявител", fact.quote, re.I):
             return fact.value
-    elif name == "grounds" and fact.value in GROUNDS:
+    elif name == "grounds" and req.explicit_ground_category(fact.quote) == fact.value:
         return fact.value
     elif name == "grounds_ocr" and quoted(fact.value, fact.quote):
         return fact.value
@@ -261,6 +263,12 @@ def _scalar_fields(
         fact = approved.value if approved else response.get(name)
         creditor = result.get("creditor", {}).get("value")
         value = fact.value if approved else _model_fact(name, fact, text, creditor, tax_subject)
+        if name == "creditor" and not approved and fact and value != PUBLIC_TAX_CREDITOR:
+            original = proposals.get(name)
+            if (original and original.value and original.value != PUBLIC_TAX_CREDITOR
+                    and (value is None or req.identity(value)[1] <= req.identity(original.value)[1])
+                    and req.creditor_value(original.value, fact.quote, text).value):
+                value = original.value
         if approved and name == "creditor_inn":
             proposed_creditor = proposals.get("creditor")
             if not creditor or not proposed_creditor or req.identity(creditor) != req.identity(proposed_creditor.value):
@@ -278,8 +286,7 @@ def _scalar_fields(
                 result[name] = _field(route="external", quote="ИНН требует внешнего источника.")
                 result[name]["external_data_required"] = True
     if "kad_publication_date" in configured:
-        result["kad_publication_date"] = _field(route="external", quote="Дата публикации КАД требует внешнего источника.")
-        result["kad_publication_date"]["external_data_required"] = True
+        result["kad_publication_date"] = publication_date_field()
     if "document_case_number" in result and "case_number" in result:
         document, base = normalize_case(result["document_case_number"]["value"])
         if document and base != result["case_number"]["value"] and result["case_number"]["value"] is not None:
@@ -394,7 +401,7 @@ def _amount_sum(
     for item in value.items:
         amount = money(item.amount)
         kind = "prior_cost" if item.kind == "duty" and previous_cost(item.quote) else item.kind
-        key = (compact(item.quote), amount)
+        key = ((claim.contract_number or "").casefold(), compact(item.quote), amount)
         if (amount is None or kind not in CATEGORY_FIELDS[name] or key in visited or key in seen
                 or (not verified and key in reserved)
                 or not quoted(item.quote, text) or not amount_supported(item.amount, item.quote)
@@ -429,10 +436,12 @@ def _decimal(value: Decimal | None) -> str | None:
 
 
 def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str) -> dict:
-    rows, status, issues, seen = [], set(), [], set()
+    rows, issues, seen = [], [], set()
     reserved = {
-        (compact(item.quote), money(item.amount))
-        for candidate in verified.values() if isinstance(candidate.value, Components)
+        ((claim.contract_number or "").casefold(), compact(item.quote), money(item.amount))
+        for index, claim in enumerate(layout)
+        for name in CATEGORY_FIELDS
+        if (candidate := verified.get(_claim_key(index, name))) and isinstance(candidate.value, Components)
         for item in candidate.value.items
     }
     for index, claim in enumerate(layout):
@@ -468,8 +477,9 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
             elif pledge.value == "separated" and re.search(r"выдел|отлож|отдельн", pledge.quote, re.I):
                 pledge_value = "separated"
             if pledge_value and len(layout) > 1 and not quoted(pledge.quote, claim.quote):
-                pledge_value = None
-        status.add(pledge_value)
+                references = req.contract_numbers(pledge.quote)
+                if not claim.contract_number or set(references) != {claim.contract_number.casefold()}:
+                    pledge_value = None
 
         total = selected("included_total")
         if total and (not quoted(total.quote, claim.quote) or not amount_supported(total.amount, total.quote)):
@@ -494,34 +504,24 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                 # The regex balanced this printed list before assigning scope.
                 # The gross is independent of how its unclassified costs split.
                 gross = printed
-        if not queue_valid or net is None or gross is None or salary_value is None:
+        row = {"priority_queue": queue.value if queue_valid else None, "contract_number": claim.contract_number,
+               **{name: _decimal(amount) for name, amount in amounts.items()},
+               "claimed_amount": _decimal(net), "total_amount": _decimal(gross),
+               "is_salary_or_severance": salary_value}
+        if is_duty_only(row):
+            pledge_value = None
+        elif not queue_valid or net is None or gross is None or salary_value is None:
             issues.append("Часть полей строки требования не подтверждена.")
-        rows.append({"priority_queue": queue.value if queue_valid else None,
-                     **{name: _decimal(amount) for name, amount in amounts.items()},
-                     "claimed_amount": _decimal(net), "total_amount": _decimal(gross),
-                     "is_salary_or_severance": salary_value})
-    return _claim_outputs(rows, status, issues)
+        row["pledge_resolution"] = pledge_value
+        row["secured_by_pledge"] = pledge_value == "yes" if pledge_value else None
+        rows.append(row)
+    return _claim_outputs(rows, issues)
 
 
-def _claim_outputs(rows: list[dict], pledges: set, issues: list[str]) -> dict:
-    combined = {}
-    money_fields = [*CATEGORY_FIELDS, "claimed_amount", "total_amount"]
-    for index, row in enumerate(rows):
-        key = row["priority_queue"] or index
-        if key not in combined:
-            combined[key] = row.copy()
-            continue
-        existing = combined[key]
-        for name in money_fields:
-            before, after = money(existing[name]), money(row[name])
-            existing[name] = _decimal(before + after) if before is not None and after is not None else None
-        if existing["is_salary_or_severance"] != row["is_salary_or_severance"]:
-            values = (existing["is_salary_or_severance"], row["is_salary_or_severance"])
-            existing["is_salary_or_severance"] = True if True in values else None
-            issues.append("Одна очередь содержит разные признаки зарплаты или выходного пособия.")
-    rows = list(combined.values())
+def _claim_outputs(rows: list[dict], issues: list[str]) -> dict:
+    pledges = row_pledges(rows)
     status = next(iter(pledges)) if len(pledges) == 1 else None
-    status_issue = "" if status else "Не установлен единый залоговый статус включённых требований."
+    status_issue = "Не установлен залоговый статус требования." if not pledges or None in pledges else ""
     values = [money(row["claimed_amount"]) for row in rows]
     total = _decimal(sum(values, Decimal(0))) if rows and all(value is not None for value in values) else None
     return {
@@ -535,7 +535,7 @@ def _claim_outputs(rows: list[dict], pledges: set, issues: list[str]) -> dict:
 def _model_claims(text: str, profile: dict, response: dict, scalar: dict) -> dict:
     claims = response.get("claims") or []
     if not claims:
-        return _claim_outputs([], set(), ["Не установлены включённые требования."])
+        return _claim_outputs([], ["Не установлены включённые требования."])
     evidence = DocumentEvidence(
         **{name: Fact(value=None, quote="") for name in (
             "document_case_number", "debtor_inn", "creditor_inn", "inclusion_date", "kad_publication_date", "grounds",

@@ -23,16 +23,17 @@ claim. A narrowly quoted fee explicitly originating in a prior court order is
 accounted as prior_cost, even if the model called it duty. Wide quotes containing
 both old and new fees are not reclassified automatically. Refunds, duplicates,
 unsubstantiated totals and incomplete ledgers remain reviewable errors.
-Same-queue rows are combined only with null propagation; missing amounts are
-never silently converted to zero. Separate sanctions accounting does not by
-itself establish an outside-register priority.
+Different contracts have separate rows even when the queue is the same.
+Each row retains its contract reference and collateral status. The summary
+collateral fields are null when statuses differ. Missing amounts remain null.
+Separate sanctions accounting does not by itself establish an outside-register priority.
 
 External data is not document extraction
 ---------------------------------------
-A missing KAD publication date remains null. No ruling/signature date or external
-EMU value is substituted. Its issue code is rtk3_external_data_required, severity
-warning. RTK3 validation_status is warnings when all issues are non-errors; GET
-and webhook use the same rule. KAD alone does not force human document review.
+KAD publication date is always null in RTK3, including GET and webhook results.
+It has no external-data validation issue. Grounds are populated only when the
+act explicitly states the basis for the included debt. Creditor display names
+follow the act, including the organization form, with «ФНС России» for tax bodies.
 An INN with no labelled source candidate is similarly marked as requiring an
 external source, and still requires completion/review with reason
 rtk3_external_data_required. No repeated LLM attempts are spent on these fields.
@@ -89,9 +90,8 @@ formats no longer share contradictory format instructions. Profile YAML contains
 configuration and field metadata, not duplicate prompts or legacy claimed-amount
 semantics. JEV verification questions remain separate from Gemini extraction rules.
 
-Salary/severance is true, false or null in both formats. Unsupported bool answers
-become unknown without erasing supported money. Merging same-queue rows preserves
-unknown (unless another included component explicitly establishes salary). Unknown
+Salary/severance is true, false or null for each individual row in both formats.
+Unsupported bool answers become unknown without erasing supported money. Unknown
 status remains reviewable. Queue and pledge fields have explicit enum constraints.
 Current duty, prior costs, sanctions and computed totals retain the EMU convention.
 

@@ -23,6 +23,7 @@ from ocr_platform.observability.metrics import (
 from ocr_platform.orchestration.mlflow_backfill import backfill_pipeline_runs_to_mlflow
 from ocr_platform.queueing.rabbitmq import IngestJob, publish_ingest_job
 from ocr_platform.storage import file_storage, models, repository
+from ocr_platform.services.rtk3_evidence import publication_date_field
 from ocr_platform.services.validation_service import profile_field_issues, review_requirement
 from ocr_platform.services.document_content_validation import validate_document_content
 
@@ -571,6 +572,8 @@ def create_app() -> FastAPI:
                 except Exception:
                     data_dict = {}
             if isinstance(data_dict, dict):
+                if data_dict and run.profile_id == "rtk3":
+                    data_dict = {**data_dict, "kad_publication_date": publication_date_field()}
                 for name, value in data_dict.items():
                     if isinstance(value, dict):
                         fields[name] = schemas.FieldValue(

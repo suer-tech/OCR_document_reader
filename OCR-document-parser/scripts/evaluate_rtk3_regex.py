@@ -16,6 +16,32 @@ from ocr_platform.services.rtk3_regex_jev import _claim_key, _claim_values, _fix
 from ocr_platform.services.rtk3_requisites import identity
 
 
+CLAIM_AMOUNTS = {"principal_debt", "financial_sanctions", "pau_only_amount", "claimed_amount", "total_amount"}
+
+
+def queue_totals(rows):
+    """Compare old queue-level labels without changing the new response rows."""
+    by_queue = defaultdict(list)
+    for row in rows:
+        by_queue[row["priority_queue"]].append(row)
+    known_queues = set(by_queue) - {None}
+    unassigned = by_queue.get(None, [])
+    if len(known_queues) == 1 and unassigned and all(
+            money(row.get("claimed_amount")) == 0 and money(row.get("pau_only_amount")) is not None
+            and money(row["pau_only_amount"]) > 0 for row in unassigned):
+        by_queue[next(iter(known_queues))].extend(by_queue.pop(None))
+    result = {}
+    for queue, claims in by_queue.items():
+        amounts = {name: [money(row.get(name)) for row in claims] for name in CLAIM_AMOUNTS}
+        salary = {row.get("is_salary_or_severance") for row in claims}
+        result[queue] = {
+            "priority_queue": queue,
+            **{name: format(sum(values), ".2f") if None not in values else None for name, values in amounts.items()},
+            "is_salary_or_severance": True if True in salary else False if salary == {False} else None,
+        }
+    return result
+
+
 def evaluate(root, selected):
     counts, examples = defaultdict(Counter), defaultdict(lambda: defaultdict(list))
     absence_counts, absence_examples = defaultdict(Counter), defaultdict(list)
@@ -41,9 +67,7 @@ def evaluate(root, selected):
             coverage[name] += actual is not None
             if actual is None:
                 outcome = "missing"
-            elif name.startswith("claims[].") and name.split(".")[1] in {
-                    "principal_debt", "financial_sanctions", "pau_only_amount", "claimed_amount", "total_amount"
-            } or name == "total_claimed_amount":
+            elif name.startswith("claims[].") and name.split(".")[1] in CLAIM_AMOUNTS or name == "total_claimed_amount":
                 outcome = "match" if money(expected) == money(actual) else "different"
             elif name == "creditor":
                 outcome = "match" if identity(expected) == identity(actual) else "different"
@@ -68,11 +92,13 @@ def evaluate(root, selected):
         if "claims" in labels:
             expected = labels["claims"]["value"]
             actual = predicted["claims"]
-            record("claim_queues", sorted(row["priority_queue"] for row in expected if row["priority_queue"]),
-                   sorted(row["priority_queue"] for row in actual if row["priority_queue"]) if actual else None)
-            actual_by_queue = {row["priority_queue"]: row for row in actual}
+            record("claim_queues", sorted({row["priority_queue"] for row in expected if row["priority_queue"]}),
+                   sorted({row["priority_queue"] for row in actual if row["priority_queue"]}) if actual else None)
+            actual_by_queue = queue_totals(actual)
+            actual_by_contract = {(row["priority_queue"], row.get("contract_number")): row for row in actual}
             for row in expected:
-                aligned = actual_by_queue.get(row["priority_queue"], {})
+                key = row["priority_queue"], row.get("contract_number")
+                aligned = actual_by_contract.get(key, {}) if key[1] else actual_by_queue.get(key[0], {})
                 for name, value in row.items():
                     record("claims[]." + name, value, aligned.get(name))
         for name, value in predicted.items():

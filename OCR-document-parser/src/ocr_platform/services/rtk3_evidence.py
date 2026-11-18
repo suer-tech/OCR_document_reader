@@ -31,6 +31,21 @@ VERSION = "rtk3_evidence_v2"
 logger = get_logger(__name__)
 GROUNDS = {"Кредитный договор", "Договор займа", "Налоговая задолженность", "Оплата коммунальных услуг"}
 QUEUES = {"1 очередь", "2 очередь", "3 очередь", "4 очередь", "За реестром", "Иное"}
+PLEDGE_STATUSES = {"yes", "no", "separated"}
+
+
+def is_duty_only(row: dict) -> bool:
+    fee = money(row.get("pau_only_amount"))
+    return fee is not None and fee > 0 and money(row.get("claimed_amount")) == 0
+
+
+def row_pledges(rows: list[dict]) -> set[str | None]:
+    return {row.get("pledge_resolution") for row in rows if not is_duty_only(row)}
+
+
+def publication_date_field() -> dict:
+    return {"value": None, "confidence": None, "reasoning": "Поле всегда равно null по правилам РТК-3.",
+            "source": VERSION, "extraction_method": "fixed"}
 
 
 class Fact(BaseModel):
@@ -343,25 +358,34 @@ def build_fields(
         for name in ["debtor_inn", "creditor_inn"]:
             put(name, None, problem="Один ИНН приписан должнику и кредитору; требуется проверка субъектов.")
 
-    date_resolvers = [("inclusion_date", requisites.ruling_date),
-                      ("kad_publication_date", requisites.publication_date)] if recover_from_source else []
-    for name, resolver in date_resolvers:
-        resolved = resolver(text)
-        put(name, resolved.value, resolved.quote, resolved.problem)
-        if name == "kad_publication_date" and not resolved.value:
-            fields[name].pop("validation_issue", None)
-            fields[name]["external_data_required"] = True
-            fields[name]["reasoning"] = "Дата публикации КАД не установлена по документу; нужны метаданные публикации, а не дата определения."
+    if recover_from_source:
+        resolved = requisites.ruling_date(text)
+        put("inclusion_date", resolved.value, resolved.quote, resolved.problem)
+    if "kad_publication_date" in fields:
+        fields["kad_publication_date"] = publication_date_field()
     grounds = fact("grounds")
-    put("grounds", grounds.value if grounds and grounds.value in GROUNDS else None,
-        grounds.quote if grounds else "")
+    category = grounds.value if grounds and requisites.explicit_ground_category(grounds.quote) == grounds.value else None
+    put("grounds", category, grounds.quote if category else "")
     put("grounds_ocr", grounds.quote if grounds else None, grounds.quote if grounds else "")
 
-    rows, problems, pledges, ledger_reasons = [], [], set(), []
+    rows, problems, ledger_reasons = [], [], []
+    incomplete_layout = False
     if not evidence.claims_complete or evidence.uncertainty:
         problems.append(evidence.uncertainty or "Не подтверждена полнота требований.")
     seen = set()
     for claim in evidence.claims:
+        contracts = requisites.contract_numbers(claim.decision_quote)
+        scoped_breakdown = len(contracts) > 1
+        if scoped_breakdown:
+            scoped = requisites.contract_numbers(claim.breakdown_quote)
+            if (len(scoped) != 1 or not scoped.keys() <= contracts.keys()
+                    or not quoted(claim.breakdown_quote, text)
+                    or not all(quoted(item.quote, claim.breakdown_quote) for item in claim.components)):
+                problems.append("Не разделены суммы по разным договорам.")
+                incomplete_layout = True
+                continue
+            contracts = scoped
+        number = next(iter(contracts.values())) if len(contracts) == 1 else None
         ledger_reasons.append(
             f"{claim.priority_queue.value}: " + "; ".join(
                 f"{c.kind} {c.amount}: {c.quote}" for c in claim.components))
@@ -404,7 +428,7 @@ def build_fields(
                 component = component.model_copy(update={"kind": "prior_cost"})
                 ledger_reasons.append("Расходы по прежнему судебному акту учтены в составе долга, не как пошлина текущего включения: " + component.quote)
             amount = money(component.amount)
-            key = (compact(component.quote), component.amount)
+            key = ((number or "").casefold(), compact(component.quote), amount)
             if (amount is None or not (quoted(component.quote, claim.decision_quote)
                                       or (breakdown and quoted(component.quote, breakdown)))
                     or not amount_supported(component.amount, component.quote) or key in seen):
@@ -450,6 +474,10 @@ def build_fields(
         duty_only = amounts["duty"] > 0 and net == 0
         pledge = claim.pledge_resolution
         pledge_problems = []
+        if scoped_breakdown and pledge != "unknown" and not (
+                quoted(claim.pledge_quote, claim.breakdown_quote)
+                or requisites.contract_numbers(claim.pledge_quote).keys() == contracts.keys()):
+            pledge_problems.append("Не подтверждена связь залогового решения с конкретным договором.")
         if pledge in {"yes", "separated"} and not quoted(claim.pledge_quote, claim.decision_quote):
             pledge_problems.append("Залоговый статус не подтверждён окончательным решением.")
         if pledge == "yes" and (not re.search(r"залог", claim.pledge_quote, re.IGNORECASE)
@@ -470,10 +498,8 @@ def build_fields(
             # unsupported yes/no/separated result as if it were established.
             problems.extend(pledge_problems)
             pledge = "unknown"
-        if not duty_only:
-            # Fee recovery has no separate collateral status. Its model label
-            # must not turn a secured principal claim into mixed collateral.
-            pledges.add(pledge)
+        if pledge == "unknown" or duty_only:
+            pledge = None
         salary = claim.is_salary_or_severance
         salary_supported = quoted(claim.salary_quote, claim.decision_quote) or (
             bool(breakdown) and quoted(claim.salary_quote, breakdown))
@@ -486,6 +512,8 @@ def build_fields(
         def fmt(amount):
             return None if errors else format(amount, ".2f")
         rows.append({"priority_queue": claim.priority_queue.value if claim.priority_queue.value in QUEUES else None,
+                     "contract_number": number, "pledge_resolution": pledge,
+                     "secured_by_pledge": pledge == "yes" if pledge else None,
                      "principal_debt": fmt(principal), "financial_sanctions": fmt(amounts["sanction"]),
                      "pau_only_amount": fmt(amounts["duty"]), "claimed_amount": fmt(net),
                      "total_amount": fmt(total), "is_salary_or_severance": salary})
@@ -503,24 +531,6 @@ def build_fields(
         payer["pau_only_amount"] = format(money(payer["pau_only_amount"]) + extra, ".2f")
         payer["total_amount"] = format(money(payer["total_amount"]) + extra, ".2f")
         rows = [r for r in rows if r not in duties]
-    # Same-queue obligations are additive only after each independent ledger
-    # passed validation and duplicate-component detection. Never sum nulls as 0.
-    combined = {}
-    for row in rows:
-        queue = row["priority_queue"]
-        if queue not in combined:
-            combined[queue] = deepcopy(row)
-            continue
-        existing = combined[queue]
-        for key in ["principal_debt", "financial_sanctions", "pau_only_amount", "claimed_amount", "total_amount"]:
-            values = [money(existing[key]), money(row[key])]
-            existing[key] = format(sum(values, Decimal(0)), ".2f") if all(v is not None for v in values) else None
-        if existing["is_salary_or_severance"] != row["is_salary_or_severance"]:
-            problems.append("Одна очередь содержит разные признаки зарплаты; требуется проверка.")
-        statuses = (existing["is_salary_or_severance"], row["is_salary_or_severance"])
-        existing["is_salary_or_severance"] = (
-            True if True in statuses else False if all(value is False for value in statuses) else None)
-    rows = list(combined.values())
     # Recover a model-omitted standalone fee only with a single admitted row,
     # a literal art.137(3) award and a shared named creditor. No guessed allocation.
     fee_facts = separately_awarded_fees(text) if recover_from_source else []
@@ -532,24 +542,25 @@ def build_fields(
             rows[0]["pau_only_amount"] = format(amount, ".2f")
             rows[0]["total_amount"] = format(money(rows[0]["claimed_amount"]) + amount, ".2f")
             ledger_reasons.append("Отдельно присуждённая пошлина: " + quote)
-    if len(pledges) != 1 or "unknown" in pledges:
-        put("pledge_resolution", None, problem="Неоднозначный или различающийся залоговый статус требований.")
+    pledges = row_pledges(rows)
+    if not pledges or None in pledges:
+        put("pledge_resolution", None, problem="Не установлен залоговый статус требования.")
         put("secured_by_pledge", None, problem="Требуется проверка залогового статуса.")
     else:
-        pledge = next(iter(pledges))
+        pledge = next(iter(pledges)) if len(pledges) == 1 else None
         put("pledge_resolution", pledge)
-        put("secured_by_pledge", pledge == "yes")
+        put("secured_by_pledge", pledge == "yes" if pledge else None)
     put("claims", rows, quote="\n".join(ledger_reasons), problem="; ".join(dict.fromkeys(problems)))
     net_values = [money(row["claimed_amount"]) for row in rows]
     put("total_claimed_amount", format(sum(net_values, Decimal(0)), ".2f")
-        if rows and evidence.claims_complete and all(v is not None for v in net_values) else None)
+        if rows and evidence.claims_complete and not incomplete_layout and all(v is not None for v in net_values) else None)
     return fields
 
 
 _FACT_OUTPUTS = {
     "document_case_number": {"document_case_number", "case_number"},
     "debtor_inn": {"debtor_inn"}, "creditor": {"creditor"}, "creditor_inn": {"creditor_inn"},
-    "inclusion_date": {"inclusion_date"}, "kad_publication_date": {"kad_publication_date"},
+    "inclusion_date": {"inclusion_date"},
     "grounds": {"grounds", "grounds_ocr"},
 }
 _CLAIM_OUTPUTS = {"claims", "total_claimed_amount", "pledge_resolution", "secured_by_pledge"}
@@ -573,6 +584,14 @@ def _compatible_fields(previous: dict, candidate: dict) -> bool:
     )
 
 
+def _missing_claim_values(name: str, value) -> bool:
+    if name == "claims" and isinstance(value, list) and value:
+        optional = {"contract_number", "pledge_resolution", "secured_by_pledge"}
+        return any(has_empty_value({key: item for key, item in row.items() if key not in optional})
+                   for row in value)
+    return has_empty_value(value)
+
+
 async def extract_rtk3(text: str, profile: dict) -> dict:
     """One extraction and at most three retries of missing/invalid components."""
     config = profile["models"]["llm_extraction"]
@@ -583,12 +602,14 @@ async def extract_rtk3(text: str, profile: dict) -> dict:
                      **({"validation_issue": "Модель не вернула подтверждённое значение РТК3."}
                         if name in required_names(profile["fields"]) else {})}
               for name in profile["fields"]}
+    if "kad_publication_date" in fields:
+        fields["kad_publication_date"] = publication_date_field()
     failure_details = {}
     for attempt in range(MAX_EMPTY_FIELD_RETRIES + 1):
         pending = {name for name, info in fields.items()
                    if name in required_names(profile["fields"])
                    and not info.get("external_data_required")
-                   and (has_empty_value(info.get("value")) or info.get("validation_issue"))}
+                   and (_missing_claim_values(name, info.get("value")) or info.get("validation_issue"))}
         if attempt and not pending:
             break
         groups = _retry_groups(pending)
@@ -599,7 +620,7 @@ async def extract_rtk3(text: str, profile: dict) -> dict:
             schema_model = create_model("Rtk3MissingEvidence", __config__=ConfigDict(extra="forbid"),
                 **{name: (DocumentEvidence.model_fields[name].annotation, ...) for name in names})
             known = {name: info["value"] for name, info in fields.items()
-                     if not has_empty_value(info.get("value"))}
+                     if not _missing_claim_values(name, info.get("value"))}
             system += (
                 "\nThis is a retry of missing/invalid fields only: " + ", ".join(sorted(pending))
                 + ". Return only the components in the JSON schema. Re-read the source, never invent "
@@ -643,6 +664,7 @@ async def extract_rtk3(text: str, profile: dict) -> dict:
             for group in groups:
                 trial = evidence.model_dump() if evidence is not None else {
                     **{name: {"value": None, "quote": ""} for name in _FACT_OUTPUTS},
+                    "kad_publication_date": {"value": None, "quote": ""},
                     "claims": [], "claims_complete": False, "uncertainty": "Не подтверждена полнота требований.",
                 }
                 trial.update({name: deepcopy(patch[name]) for name in group})
@@ -652,7 +674,11 @@ async def extract_rtk3(text: str, profile: dict) -> dict:
                     logger.warning("rtk3_retry_conflict_rejected", retry=attempt, components=sorted(group))
                     continue
                 evidence = candidate_evidence
-                for name in merge_missing(fields, candidate, pending):
+                updated = merge_missing(fields, candidate, pending)
+                if "claims" in updated:
+                    for name in {"pledge_resolution", "secured_by_pledge"} & candidate.keys():
+                        fields[name] = candidate[name]
+                for name in updated:
                     fields[name]["empty_field_retries"] = attempt
         except (ValidationError, ValueError, TypeError, httpx.HTTPError) as exc:
             logger.warning("rtk3_missing_fields_retry_failed", attempt=attempt, error=type(exc).__name__)

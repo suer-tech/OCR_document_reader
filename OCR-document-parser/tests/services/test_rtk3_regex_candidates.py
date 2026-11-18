@@ -128,11 +128,51 @@ def test_inline_contracts_reconcile_without_applying_one_contracts_pledge_to_bot
         "из которых: 18 руб. – основной долг, 2 руб. – неустойка."
     )
     result = fields(text)
-    row, = result["claims"]["value"]
-    assert row["claimed_amount"] == "120.00"
-    assert row["financial_sanctions"] == "2.00"
+    first, second = result["claims"]["value"]
+    assert (first["contract_number"], second["contract_number"]) == ("A-1", "A-2")
+    assert (first["claimed_amount"], second["claimed_amount"]) == ("100.00", "20.00")
+    assert second["financial_sanctions"] == "2.00"
+    assert (first["pledge_resolution"], second["pledge_resolution"]) == ("yes", None)
     assert result["pledge_resolution"]["value"] is None
     assert result["secured_by_pledge"]["value"] is None
+
+
+def test_collateral_refusal_is_linked_to_its_contract_in_the_same_queue():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь "
+        "по кредитному договору № A-1 в размере 100 руб. основного долга, как обеспеченные залогом. "
+        "Включить требования ПАО «Пример» в третью очередь "
+        "по кредитному договору № A-2 в размере 100 руб. основного долга. "
+        "В удовлетворении заявления о признании требований по кредитному договору № A-2 "
+        "обеспеченными залогом отказать."
+    )
+    result = fields(text)
+    rows = result["claims"]["value"]
+    assert [(row["contract_number"], row["pledge_resolution"], row["claimed_amount"]) for row in rows] == [
+        ("A-1", "yes", "100.00"), ("A-2", "no", "100.00"),
+    ]
+    assert result["total_claimed_amount"]["value"] == "200.00"
+    assert result["pledge_resolution"]["value"] is None
+    assert result["secured_by_pledge"]["value"] is None
+    assert "validation_issue" not in result["pledge_resolution"]
+
+
+def test_missing_explicit_basis_and_publication_stay_null_in_model_fallback():
+    from ocr_platform.services.rtk3_evidence import Fact
+    from ocr_platform.services.rtk3_regex_jev import _scalar_fields
+
+    order = "Включить требования АО „Банк Русский Стандарт“ в размере 100 руб. основного долга."
+    publication = "Дата публикации в КАД: 05.10.2026"
+    text = f"{publication}\nОПРЕДЕЛИЛ:\n{order}"
+    proposals = extract_candidates(text).fields
+    result = _scalar_fields(text, {"creditor": {}, "grounds": {}, "kad_publication_date": {}}, {}, {
+        "creditor": Fact(value="БРС", quote=order),
+        "grounds": Fact(value="Кредитный договор", quote=order),
+        "kad_publication_date": Fact(value="05.10.2026", quote=publication),
+    }, proposals)
+    assert result["creditor"]["value"] == "АО «Банк Русский Стандарт»"
+    assert result["grounds"]["value"] is None
+    assert result["kad_publication_date"]["value"] is None
 
 
 def test_a_single_listed_cost_supports_the_gross_but_has_unknown_provenance():

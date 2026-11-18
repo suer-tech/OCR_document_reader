@@ -60,15 +60,16 @@ fields:
   kad_publication_date:
     required: false
     label_ru: "Дата публикации в КАД"
-    description_ru: "Внешние метаданные КАД. В документе поле не ищется."
-    extraction_method: "external"
+    description_ru: "Всегда null."
+    extraction_method: "fixed"
   grounds_ocr:
     required: false
     label_ru: "Основание из документа"
     extraction_method: "llm"
   pledge_resolution:
-    required: true
+    required: false
     label_ru: "Решение о залоге"
+    description_ru: "Общий статус при совпадении статусов всех требований. Индивидуальные статусы передаются в claims."
     extraction_method: "llm"
   inclusion_date:
     required: true
@@ -78,7 +79,7 @@ fields:
   creditor:
     required: true
     label_ru: "Кредитор"
-    description_ru: "ФИО или наименование кредитора, чьи требования включаются в реестр. Для налогового органа наименование «ФНС России»."
+    description_ru: "ФИО или наименование кредитора из акта с указанной организационно-правовой формой. Для налогового органа наименование «ФНС России»."
     extraction_method: "llm"
   total_claimed_amount:
     required: true
@@ -88,15 +89,15 @@ fields:
   claims:
     required: true
     label_ru: "Требования по очередям"
-    description_ru: "Список требований с разбивкой по очередям."
+    description_ru: "Отдельные строки по договорам и очередям. Каждая строка содержит свой залоговый статус."
     extraction_method: "llm"
   grounds:
     required: false
     label_ru: "Основания возникновения задолженности"
-    description_ru: "Категория: Кредитный договор, Договор займа, Налоговая задолженность, Оплата коммунальных услуг; иначе null."
+    description_ru: "Категория прямо указанного в акте основания. При отсутствии явного основания — null."
     extraction_method: "llm"
   secured_by_pledge:
-    required: true
+    required: false
     label_ru: "Обеспечение залогом"
     description_ru: "Обеспечено ли требование залогом имущества должника."
     extraction_method: "computed"
