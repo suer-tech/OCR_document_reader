@@ -116,6 +116,41 @@ def test_claim_contract_number_after_credit_purpose_and_after_colon():
         assert row["contract_number"] == number
 
 
+def test_single_admitted_amount_can_reference_the_contract_from_the_reasoning(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from ocr_platform.services import rtk3_regex_jev as service
+
+    reasoning = "Суд установил задолженность по кредитному договору № A-123 от 01.01.2025 в размере 100 руб."
+    order = "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 100 руб. основного долга."
+    text = f"{reasoning} {order}"
+    claim, = extract_candidates(text).claims
+    assert claim.contract_number == "A-123"
+    assert claim.contract_reference.quote in text
+    assert fields(text)["claims"]["value"][0]["contract_number"] == "A-123"
+
+    different_total, = extract_candidates(text.replace("в размере 100 руб.", "в размере 90 руб.", 1)).claims
+    assert different_total.contract_number is None
+    ambiguous, = extract_candidates(
+        f"{reasoning} Также заявлено требование по кредитному договору № B-456. {order}"
+    ).claims
+    assert ambiguous.contract_number is None
+
+    profile = {"models": {"verification": {}, "llm_extraction": {}}, "fields": {"claims": {}}}
+    verified = {
+        _claim_key(0, name): service.Verified(fact, 1.0) for name, fact in _claim_values(claim).items()
+    }
+    verify = AsyncMock(return_value=(verified, True))
+    monkeypatch.setattr(service, "_verify", verify)
+    monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={}))
+    row, = asyncio.run(service.extract_fields(text, profile))["claims"]["value"]
+    assert row["contract_number"] is None
+    assert row["principal_debt"] == "100.00"
+    verified[_claim_key(0, "contract_reference")] = service.Verified(claim.contract_reference, 1.0)
+    row, = asyncio.run(service.extract_fields(text, profile))["claims"]["value"]
+    assert row["contract_number"] == "A-123"
+
+
 def test_written_admission_and_separately_awarded_current_duty_survive_unknown_breakdown():
     text = (
         "ОПРЕДЕЛИЛ:\nПризнать обоснованным заявление и включить в третью очередь реестра требований "
@@ -367,6 +402,18 @@ def test_contract_list_with_date_before_number_and_unreconciled_itemization():
     assert (first["contract_number"], first["total_amount"], first["claimed_amount"]) == ("A-1", "100.00", None)
     assert (second["contract_number"], second["total_amount"], second["claimed_amount"]) == ("A-2", "20.00", "20.00")
     assert result["total_claimed_amount"]["value"] is None
+
+
+def test_penalty_label_with_a_qualifying_clause_before_the_amount():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 120 руб., в том числе: "
+        "- основной долг – 100 руб.; - пени за просрочку возврата кредита, "
+        "начисленные на сумму невозвращенного в срок кредита – 20 руб."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["principal_debt"], row["financial_sanctions"], row["claimed_amount"]) == ("100.00", "20.00", "120.00")
+    unlabeled = text.replace("пени за просрочку возврата кредита, ", "")
+    assert fields(unlabeled)["claims"]["value"][0]["financial_sanctions"] is None
 
 
 def test_embedded_current_fee_and_net_total():

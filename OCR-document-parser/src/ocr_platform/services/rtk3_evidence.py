@@ -171,8 +171,13 @@ def excluded_component(quote: str, text: str) -> bool:
         if (re.search(r"прекрат|отказ|вернуть|возврат", block)
                 and compact(quote) in block):
             return True
+    # The contractual return of borrowed funds can be the event that triggered
+    # a penalty. It is distinct from the court ordering a payment to be refunded.
+    decision_words = re.sub(
+        r"\bвозврат(?:а|у|ом|е)?\s+(?:кредит\w*|(?:микро)?займ\w*)\b", "", quote, flags=re.I,
+    )
     return bool(re.search(r"текущ\w*\s+плат[её]ж|вернуть|возврат|прекрат|отказат",
-                          quote, re.IGNORECASE))
+                          decision_words, re.IGNORECASE))
 
 
 def separately_awarded_fees(text: str) -> list[tuple[Decimal, str]]:

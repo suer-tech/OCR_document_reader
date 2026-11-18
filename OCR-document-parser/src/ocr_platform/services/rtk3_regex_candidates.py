@@ -41,6 +41,7 @@ class Claim:
     total: CourtTotal | None
     contract_number: str | None = None
     parent_total_conflict: bool = False
+    contract_reference: Fact | None = None
 
 
 @dataclass
@@ -497,7 +498,16 @@ def pledge_candidate(quote: str) -> Fact | None:
 
 
 def _component_quote(text: str, match: re.Match, lower: int, upper: int, *, amount_first: bool) -> str:
-    preceding = re.split(r";|,(?![0-9])|(?<!\d)\.(?!\d)", text[lower:match.start()])[-1]
+    before = text[lower:match.start()]
+    preceding = re.split(r";|,(?![0-9])|(?<!\d)\.(?!\d)", before)[-1]
+    if not amount_first:
+        # The qualifier after the comma belongs to the same penalty label.
+        penalty = re.search(
+            r"\b(?:пени|неустойк\w*)\s+[^,;.]{1,140},\s*начисленн\w*\s+на\s+[^,;.]{1,140}[-–—]\s*$",
+            before, re.I,
+        )
+        if penalty:
+            preceding = penalty[0]
     tail = text[match.end():upper]
     # An extra period can follow an amount with no currency before its dash label.
     decimal_period = "." if re.match(r"\.\s*[-–—]\s*", tail) and re.fullmatch(
@@ -1174,6 +1184,38 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
     return rows
 
 
+def _source_contract_reference(source: str, operative: str, claim: Claim, fields: dict[str, Fact]) -> Fact | None:
+    basis, category = fields.get("grounds_ocr"), fields.get("grounds")
+    if (claim.contract_number or not claim.total or not fields.get("creditor") or not basis or not category
+            or category.value not in {"Кредитный договор", "Договор займа"}
+            or not basis.quote or basis.quote in operative
+            or re.search(r"отказат\w*|прекрат\w*|выделить|план\s+реструктуризац", operative, re.I)):
+        return None
+    references = req.contract_numbers(basis.quote)
+    if len(references) != 1 or references.keys() != req.contract_numbers(source).keys() or basis.quote.count("№") > 1:
+        return None
+    start = source.find(basis.quote)
+    if start < 0:
+        return None
+    number = next(iter(references.values()))
+    end = start + len(basis.quote)
+    following = source[end:end + 380]
+    amount = AMOUNTS.search(following)
+    if amount and money(amount[0]) == money(claim.total.amount):
+        lead = following[:amount.start()]
+        if GROSS.fullmatch(lead.lstrip(" ,")) or (
+                GROSS.search(lead) and re.search(r"неисполнени\w*.{0,180}образовал\w*\s+задолжен", lead, re.I)):
+            return Fact(value=number, quote=source[start:end + amount.end()])
+    left = max(0, start - 360)
+    application = re.search(
+        r"\bоб\s+установлении\s+размера\s+требован\w*\s+кредитора\s+в\s+деле\s+о\s+банкротстве"
+        r"\s+должник\w*[^.;]{0,200}$", source[left:start], re.I,
+    )
+    if application:
+        return Fact(value=number, quote=source[left + application.start():end])
+    return None
+
+
 def extract_candidates(text: str) -> Candidates:
     source = re.sub(r"\s+", " ", text).strip()
     operative = re.sub(r"\s+", " ", operative_part(text))
@@ -1203,4 +1245,10 @@ def extract_candidates(text: str) -> Candidates:
             fields[name] = Fact(value=result.value, quote=result.quote)
     claims = claim_candidates(operative, creditor)
     fields.update(grounds_candidates(source, operative, claims))
+    if len(claims) == 1:
+        claim = claims[0]
+        reference = _source_contract_reference(source, operative, claim, fields)
+        if reference:
+            claim.contract_number = reference.value
+            claim.contract_reference = reference
     return Candidates(fields=fields, claims=claims, creditor_tax_subject=tax_subject)

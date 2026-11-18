@@ -104,6 +104,11 @@ async def _verify(text: str, candidates, config: dict, context: dict) -> tuple[d
                 values[key] = candidate
                 state["fields"][key] = {"claim": index + 1, **candidate.model_dump()}
                 questions[key] = _question(CLAIM_QUESTIONS[name])
+            if claim.contract_reference:
+                key = _claim_key(index, "contract_reference")
+                values[key] = claim.contract_reference
+                state["fields"][key] = {"claim": index + 1, **claim.contract_reference.model_dump()}
+                questions[key] = _question("Подтверждает ли цитата номер договора именно для этой включённой строки?")
     if not questions:
         return {}, False
     try:
@@ -665,6 +670,9 @@ async def extract_fields(
     context = {"profile_id": "rtk3", "document_id": document_id, "pipeline_run_id": pipeline_run_id}
     verified, layout_verified = await _verify(text, candidates, profile["models"]["verification"], context)
     layout = candidates.claims if layout_verified else []
+    for index, claim in enumerate(layout):
+        if claim.contract_reference and _claim_key(index, "contract_reference") not in verified:
+            claim.contract_number = None
     types = _fallback_schema(layout, verified, set(profile["fields"]))
     response = await _gemini(text, profile["models"]["llm_extraction"], context, types, layout, verified) if text.strip() else {}
     fields = _scalar_fields(
