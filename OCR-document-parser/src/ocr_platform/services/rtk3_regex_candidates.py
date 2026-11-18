@@ -43,6 +43,7 @@ class Claim:
     parent_total_conflict: bool = False
     contract_reference: Fact | None = None
     cost_reference: Fact | None = None
+    itemized_admission: Decimal | None = None
 
 
 @dataclass
@@ -82,6 +83,7 @@ QUEUE_WORDS = (
 QUEUE = re.compile(
     r"\b(?P<num>" + "|".join(QUEUE_WORDS) + r"|[1-4](?:-?(?:ю|й|я|ой|ую|ей|ью))?)\s+очеред\w*"
     r"|\bочеред\w*\s+(?P<reverse>[1-4])\b"
+    r"|\bв\s+(?P<section>третий)\s+раздел\s+реестра\s+требований\s+кредиторов\b"
     r"|(?P<outside>\bза\s+реестром\b|после\s+(?:полного\s+)?удовлетворения\s+требований\s+кредиторов"
     r"\s*,?\s*включ[её]н\w*\s+в\s+реестр)", re.I,
 )
@@ -108,7 +110,8 @@ LEGAL_NAME = (
     r"микрофинансов\w*\s+компани\w*|микрокредитн\w*\s+компани\w*|"
     r"профессиональн\w*\s+коллекторск\w*\s+организаци\w*|коллекторск\w*\s+бюро)\s+)?"
     r'(?:["«](?:ПКО|профессиональн\w*\s+коллекторск\w*\s+организаци\w*)\s*["«][^"»]{2,100}["»]["»]?'
-    r'|«[^»]{2,120}»|"[^"]{2,120}"|[„“][^“”]{2,120}[“”]'
+    r'|«[^»]{2,120}»(?:\s+(?-i:БАНК)\b(?=\s*(?:[.,;\(]|по\s+кредитн|о\s+(?:включении|возмещении)|$)))?'
+    r'|"[^"]{2,120}"|[„“][^“”]{2,120}[“”]'
     r'|(?-i:[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z0-9-]{2,})(?=\s*(?:\(|,|[0-9]|\b(?:расходы|удовлетворить|обоснованн\w*|о\s+включении|включить|в\s+(?:реестр|третью|размере))|$)))'
     r"|Банк(?:а|у|ом)?\s+ВТБ(?:\s*\(ПАО\))?"
     r'|Банк(?:а|у|ом)?\s+[«"][^»"]{2,100}[»"]\s*\((?:ПАО|АО)\)'
@@ -158,6 +161,12 @@ INLINE_ACCOUNTED_DUTY = re.compile(
     r"в\s+реестре\s+требований\s+кредиторов\b[^.]{0,150}\bпосле\s+погашения\s+основной\s+суммы",
     re.I,
 )
+SECTION_ACCOUNTED_DUTY = re.compile(
+    r"\bа\s+также\s+государственн\w*\s+пошлин\w*\s+в\s+сумме\s+"
+    rf"(?P<amount>{AMOUNT})\s+с\s+режимом\s+уч[её]та\s+и\s+удовлетворения\s+данного\s+требования"
+    r"\s+к\s+должнику\s+в\s+порядке,\s*установленном\s+пунктом\s+3\s+статьи\s+137\b",
+    re.I,
+)
 FEE_ACCOUNTING = re.compile(
     r"(?<=\.)\s+Требование\s+в\s+части\s+(?:пени\s*/\s*неустойки\s+и\s+штрафа"
     r"\s*\(при наличии\)|неустойки\s+и\s+штрафа),\s+"
@@ -193,11 +202,12 @@ BASIS_INTRO = r"(?:по|из|на\s+основании|в\s+рамках|осн�
 BASIS_NUMBER = r"\s*:?\s*(?:№|N|#)\s*[\w/-]+(?:\.[\w/-]+)*"
 BASIS_DATE_DIGIT = r"[0-9ОоOo]"
 # A quotation keeps the printed date even when the calendar date is unreadable or invalid.
-BASIS_DATE = (
-    rf'\s+от\s+(?:{BASIS_DATE_DIGIT}{{1,3}}\s*[./-]\s*{BASIS_DATE_DIGIT}{{1,3}}\s*[./-]\s*'
+BASIS_DATE_LITERAL = (
+    rf'(?:{BASIS_DATE_DIGIT}{{1,3}}\s*[./-]\s*{BASIS_DATE_DIGIT}{{1,3}}\s*[./-]\s*'
     rf'{BASIS_DATE_DIGIT}{{2,4}}|[«"]?{BASIS_DATE_DIGIT}{{1,2}}[»"]?\s+[а-яё]+\s+{BASIS_DATE_DIGIT}{{4}})'
     r'(?:\s*г\.(?!\w)|\s+года\b|\b)(?![./-][0-9])'
 )
+BASIS_DATE = rf"\s+от\s+{BASIS_DATE_LITERAL}"
 BASIS_BARE_NUMBER = (
     rf"\s+(?=[\w./-]*[0-9])[\w/-]+(?:\.[\w/-]+)*(?={BASIS_DATE}|\s+(?:в\s+размере|на\s+сумму)\b)"
 )
@@ -237,7 +247,7 @@ def queue_candidates(text: str) -> list[Fact]:
     for match in QUEUE.finditer(text):
         if match["reverse"] and re.match(r"\s+[АA]\d{1,3}-\d+/\d{4}\b", text[match.end():], re.I):
             continue
-        word = match["num"] or match["reverse"]
+        word = match["num"] or match["reverse"] or match["section"]
         if not word:
             value = "За реестром"
         elif word[0].isdigit():
@@ -397,6 +407,9 @@ def grounds_candidates(text: str, operative: str, claims: list[Claim]) -> dict[s
                     source[name_end + len(suffix):], re.I,
                 )[0]
                 suffix += continuation
+                if re.search(r"\bдоговор(?:ам|ами|ах|ов)\b", match[0], re.I) and re.fullmatch(BASIS_DATE, suffix, re.I):
+                    dates = re.match(rf"(?:,\s*{BASIS_DATE_LITERAL})*", source[name_end + len(suffix):], re.I)
+                    suffix += dates[0]
             qualifier = BASIS_QUALIFIER.match(source, name_end + len(suffix))
             if qualifier:
                 suffix += qualifier[0]
@@ -574,6 +587,33 @@ def _component_at(text: str, match: re.Match, lower: int, upper: int, *, amount_
     return None
 
 
+def _itemized_admission_with_commission(quote: str) -> tuple[Decimal, Components] | None:
+    """Read an exhaustive contract list while leaving the commission uncategorized."""
+    if not re.search(r"\bкомисси[яию]\b", quote, re.I) or not CONTRACT_BASIS.search(quote):
+        return None
+    parts = list(AMOUNTS.finditer(quote))
+    values = [money(part[0]) for part in parts]
+    if not parts or None in values:
+        return None
+    commissions, sanctions = 0, []
+    for index, part in enumerate(parts):
+        lower = parts[index - 1].end() if index else 0
+        upper = parts[index + 1].start() if index + 1 < len(parts) else len(quote)
+        item = _component_at(quote, part, lower, upper, amount_first=True)
+        if item and item.kind in {"principal", "interest", "sanction"}:
+            if item.kind == "sanction":
+                sanctions.append(item)
+        elif re.fullmatch(
+                rf"{AMOUNT}\s*[-–—]\s*комисси[яию]",
+                _component_quote(quote, part, lower, upper, amount_first=True), re.I):
+            commissions += 1
+        else:
+            return None
+    if commissions != 1 or len(parts) < 2:
+        return None
+    return sum(values, Decimal(0)), Components(items=sanctions, complete=True, quote=quote)
+
+
 def claim_amounts(
     quote: str, fee: Component | None, *, embedded_cost: Component | None = None,
 ) -> tuple[dict[str, Components], CourtTotal | None]:
@@ -732,7 +772,7 @@ def contract_sections(quote: str) -> tuple[str, list[str]] | None:
     if listed_contracts:
         pattern = r"(?:^|\s)[-–—]\s+№\s*[\w./-]+\s+от\s+\d{1,2}\.\d{1,2}\.\d{4}"
     else:
-        pattern = (r"(?:[-–—]\s+|(?:в\s+том\s+числе\s*:|;)\s*)по\s+"
+        pattern = (r"(?:[-–—]\s+|(?:в\s+том\s+числе\s*:|из\s+(?:которых|них)\s*:|;)\s*)по\s+"
                    r"(?:кредитн\w*\s+договор\w*|договор\w*\s+(?:потребительск\w*\s+)?(?:микро)?займ\w*)")
     starts = list(re.finditer(pattern, quote, re.I))
     if not starts:
@@ -756,7 +796,7 @@ def contract_sections(quote: str) -> tuple[str, list[str]] | None:
         return None
     boundaries = [*(m.start("numbered") if "numbered" in m.re.groupindex else m.start() for m in starts), len(quote)]
     parts = [quote[start:end].strip(" ;,") for start, end in zip(boundaries, boundaries[1:])]
-    parts[0] = re.sub(r"^в\s+том\s+числе\s*:\s*", "", parts[0], flags=re.I)
+    parts[0] = re.sub(r"^(?:в\s+том\s+числе|из\s+(?:которых|них))\s*:\s*", "", parts[0], flags=re.I)
     return heading, parts
 
 
@@ -896,6 +936,8 @@ def _is_final_unitemized_total(
             or (re.match(r"включить\s+требован\w*\b", prefix, re.I)
                 and re.match(r"\s+(?:задолжен\w*|неисполненн\w*\s+обязательств\w*)\s+"
                              r"в\s+\w+\s+очередь\s+реестра\b", suffix, re.I))
+            or (re.match(r"включить\s+требован\w*\b", prefix, re.I)
+                and queue_candidates(prefix) and not suffix.strip(" ."))
             or (re.search(r"задолжен\w*\s+в\s+размере\s*$", prefix, re.I)
                 and re.match(r"\s*[-–—]\s+(?:в|во)\s+\w+\s+очередь\b", suffix, re.I))
         )
@@ -904,6 +946,35 @@ def _is_final_unitemized_total(
         and money(parts[0][0]) == money(sanctions.items[0].amount)
         and bool(BREAKDOWN.match(quote[admission.end():parts[0].start()].lstrip(", ")))
     )
+
+
+def _loan_with_separately_recognized_unclassified_fee(quote: str) -> list[Claim]:
+    fee = re.search(
+        rf"\bпо\s+оплате\s+госпошлин\w*\s+в\s+размере\s+(?P<amount>{AMOUNT}),\s*"
+        r"(?=по\s+договору\s+(?:микро)?займа\b)", quote, re.I,
+    )
+    if not fee or CURRENT_DUTY.search(quote) or previous_cost(fee[0]) or COLLATERAL.search(quote):
+        return []
+    loan = quote[fee.end():]
+    queues = queue_candidates(loan)
+    if ([queue.value for queue in queues] != ["За реестром"]
+            or not re.search(r"\bобоснованн\w*\s+и\s+подлежащ\w*\s+удовлетворению\b", loan, re.I)):
+        return []
+    numbers = req.contract_numbers(loan)
+    fields, total = claim_amounts(loan, None)
+    if len(numbers) != 1 or not total or not all(name in fields for name in CATEGORY_FIELDS):
+        return []
+    fields["priority_queue"] = queues[0]
+    fields["is_salary_or_severance"] = Salary(value=False, quote=loan)
+    fee_quote = fee[0].rstrip(", ")
+    return [
+        Claim(loan, fields, total, next(iter(numbers.values()))),
+        Claim(fee_quote, {
+            "priority_queue": queues[0],
+            "financial_sanctions": Components(items=[], complete=True, quote=fee_quote),
+            "is_salary_or_severance": Salary(value=False, quote=fee_quote),
+        }, CourtTotal(amount=fee["amount"], scope="with_duty", quote=fee["amount"])),
+    ]
 
 
 def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
@@ -919,6 +990,18 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         if not boundary:
             return []
         operative = operative[boundary.end():]
+    confirmation = re.match(
+        rf"1\.\s*требован\w*\s+(?P<name>{LEGAL_NAME})\s+в\s+(?:размере|сумме)\s+(?P<amount>{AMOUNT})"
+        r"\s+признать\s+обоснованн\w*\.\s+(?=2\.\s*включить\s+в\s+третий\s+раздел\s+реестра)",
+        operative, re.I,
+    )
+    if confirmation:
+        following = operative[confirmation.end():]
+        payee, amount = CREDITOR.search(following), AMOUNTS.search(following)
+        if (not payee or not amount or req.identity(payee["name"]) != req.identity(confirmation["name"])
+                or money(amount[0]) != money(confirmation["amount"])):
+            return []
+        operative = following
     starts = list(COMMAND.finditer(operative))
     if not starts or operative[:starts[0].start()].strip(" \n.0123456789)"):
         return []
@@ -955,6 +1038,11 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
             if len(agreements) >= 2 and (expense := AGREEMENT_LIST_FEE.search(block, agreements[-1].end())):
                 fees.append(Component(kind="duty", amount=expense["amount"], quote=expense[0].strip()))
                 block = block[:expense.start()].strip()
+        if command == "включить" and re.match(r"\s*(?:2\.\s*)?включить\s+в\s+третий\s+раздел\s+реестра", block, re.I):
+            section_fee = SECTION_ACCOUNTED_DUTY.search(block)
+            if section_fee and len(list(AMOUNTS.finditer(block))) == 2:
+                fees.append(Component(kind="duty", amount=section_fee["amount"], quote=section_fee[0]))
+                block = block[:section_fee.start()].rstrip(", ")
         embedded = re.search(
             r"(?<=[.;])\s+(?:Судебные\s+расходы\s+(?:" + LEGAL_NAME + r"\s+)?"
             r"по\s+уплате\s+государственной\s+пошлины|Государственная\s+пошлина)\b", block,
@@ -1091,6 +1179,10 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         return []
     if allocated:
         return [allocated] if len(admitted) == 1 and not (fees or separate_pledges or unknown_fees) else []
+    if len(admitted) == 1 and not (fees or separate_pledges or unknown_fees or collateral_confirmation or refunded_duty):
+        split_award = _loan_with_separately_recognized_unclassified_fee(admitted[0])
+        if split_award:
+            return split_award
     if collateral_confirmation and (len(admitted) != 1 or separate_pledges or unknown_fees):
         return []
     if unknown_fees and (fees or len(unknown_fees) != 1):
@@ -1140,7 +1232,13 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         sections = contract_sections(quote)
         if not sections:
             if len(req.contract_numbers(quote)) > 1:
-                return []
+                # A single common award with no requested allocation can
+                # establish a queue amount, but cannot populate contract rows.
+                amounts = list(AMOUNTS.finditer(quote))
+                if not (len(admitted) == len(queues) == len(fees) == len(amounts) == 1
+                        and not BREAKDOWN.search(quote)
+                        and re.search(r"\bв\s+общем\s+размере\s*$", quote[:amounts[0].start()], re.I)):
+                    return []
             partitions.append((quote, queues))
             continue
         if unknown_fees or collateral_confirmation or len(queues) != 1:
@@ -1176,6 +1274,11 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         if not AMOUNTS.search(quote):
             return []
         fields, total = claim_amounts(quote, single_fee)
+        itemized_admission = None
+        if single_fee and total is None and "principal_debt" not in fields:
+            itemized = _itemized_admission_with_commission(quote)
+            if itemized:
+                itemized_admission, fields["financial_sanctions"] = itemized
         if queues:
             fields["priority_queue"] = queues[0]
             if (not fees and not unknown_fees and total and total.scope == "unknown"
@@ -1194,7 +1297,7 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         salary = SALARY_WORDS.search(quote)
         if salary:
             fields["is_salary_or_severance"] = Salary(value=True, quote=salary[0])
-        elif all(name in fields for name in CATEGORY_FIELDS) or (
+        elif itemized_admission is not None or all(name in fields for name in CATEGORY_FIELDS) or (
                 total and total.scope == "with_duty" and CONTRACT_BASIS.search(quote)):
             fields["is_salary_or_severance"] = Salary(value=False, quote=quote)
         if unknown_fees:
@@ -1218,7 +1321,8 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
                 rf"(?:возобновляем\w*\s+)?кредитн\w*\s+лини\w*\s+пут[её]м\s+подписани\w*\s+"
                 rf"эмиссионн\w*\s+контракт\w*(?:{BASIS_DATE})?{BASIS_NUMBER}", quote, re.I):
             number = None
-        rows.append(Claim(quote, fields, total, number, parent_total_conflict=quote in inconsistent_parts))
+        rows.append(Claim(quote, fields, total, number, parent_total_conflict=quote in inconsistent_parts,
+                          itemized_admission=itemized_admission))
     if fees and not single_fee:
         fee = fees[0]
         fields = {name: Components(items=[fee] if "duty" in kinds else [], complete=True, quote=fee.quote)
@@ -1392,6 +1496,15 @@ def extract_candidates(text: str) -> Candidates:
             order = _filing_court_order(body, claim)
             if order:
                 fields.setdefault("grounds_ocr", Fact(value=order.value, quote=order.value))
+            if claim.total and "grounds_ocr" not in fields:
+                cited_order = re.search(
+                    rf"(?P<amount>{AMOUNT}),\s*в\s+отсутствие\s+возражений\s+должника\s+и\s+"
+                    rf"финансового\s+управляющего,\s*(?P<basis>с\s+уч[её]том\s+судебн\w*\s+приказ\w*{BASIS_REFERENCE})",
+                    body, re.I,
+                )
+                if cited_order and money(cited_order["amount"]) == money(claim.total.amount):
+                    basis = cited_order["basis"]
+                    fields["grounds_ocr"] = Fact(value=basis, quote=basis)
             _recover_embedded_cost(body, claim, order)
         reference = _source_contract_reference(source, operative, claim, fields)
         if reference:

@@ -23,7 +23,7 @@ from ocr_platform.services.rtk3_evidence import (
 )
 from ocr_platform.services.rtk3_regex_candidates import (
     AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_DUTY, EXPIRED_REGISTRY_ORDER, GROSS, LEGAL_NAME, PUBLIC_TAX_CREDITOR,
-    SALARY_WORDS, SEPARATE_SANCTIONS, STANDALONE_FEE_ACCOUNTING,
+    SALARY_WORDS, SECTION_ACCOUNTED_DUTY, SEPARATE_SANCTIONS, STANDALONE_FEE_ACCOUNTING,
     Claim, Components, CourtTotal, Salary, extract_candidates,
 )
 
@@ -476,9 +476,9 @@ def _amount_sum(
                 or excluded_component(item.quote, text)):
             return None
         if not verified and not quoted(item.quote, claim.quote):
-            separate_duty = sole_claim and kind == "duty" and re.search(
+            separate_duty = sole_claim and kind == "duty" and (re.search(
                 r"взыскать|признать|включить|учитыва(?:ть|ется|ются)|подлежащ\w*\s+взысканию|"
-                r"подлеж\w*\s+(?:учету|удовлетворению)", item.quote, re.I)
+                r"подлеж\w*\s+(?:учету|удовлетворению)", item.quote, re.I) or SECTION_ACCOUNTED_DUTY.fullmatch(item.quote))
             linked_breakdown = (total and quoted(item.quote, value.quote)
                                 and amount_supported(total.amount, value.quote) and quoted(total.quote, claim.quote))
             if not separate_duty and not linked_breakdown:
@@ -521,9 +521,13 @@ def _separately_priced_admission(claim: Claim, total: CourtTotal, duty: Componen
     current_duty = re.search(
         r"пошлин\w*\s*,?\s*уплаченн\w*\s+при\s+подаче\s+настоящ\w*\s+заявлени\w*",
         compact(duty.quote), re.I,
-    ) or STANDALONE_FEE_ACCOUNTING.search(duty.quote) or (
+    ) or STANDALONE_FEE_ACCOUNTING.search(duty.quote) or SECTION_ACCOUNTED_DUTY.fullmatch(duty.quote) or (
         CURRENT_DUTY.search(duty.quote)
-        and re.search(r"подлеж\w*\s+(?:удовлетворению|возмещению|уч[её]ту)", duty.quote, re.I)
+        and (re.search(
+            r"подлеж\w*\s+(?:(?:\d{1,3}\s+)?[АA]\d{1,3}-\d+/\d{2,4}\s+)?"
+            r"(?:удовлетворению|возмещению|уч[её]ту)", duty.quote, re.I,
+        ) or re.match(r"\s*(?:\d{1,2}\.\s*)?включить\s+требован\w*\b.*?пошлин\w*\s+с\s+уч[её]том\b",
+                      duty.quote, re.I))
     )
     return (
         len(amounts) == 1
@@ -617,6 +621,14 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                 # The operative text establishes the gross even when the
                 # components or their classification are incomplete.
                 gross = printed
+        elif claim.itemized_admission is not None and queue_valid and amounts["pau_only_amount"] is not None:
+            if net is None:
+                net = claim.itemized_admission
+                gross = net + amounts["pau_only_amount"]
+                issues.append("Категория указанной в акте комиссии требует проверки.")
+            elif net != claim.itemized_admission:
+                issues.append("Денежные компоненты не совпадают с суммой перечисленных в акте платежей.")
+                net, gross = None, None
         row = {"priority_queue": queue.value if queue_valid else None, "contract_number": claim.contract_number,
                **{name: _decimal(amount) for name, amount in amounts.items()},
                "claimed_amount": _decimal(net), "total_amount": _decimal(gross),

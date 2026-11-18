@@ -231,6 +231,89 @@ def test_inline_fee_with_a_relative_clause_about_separate_accounting():
     )
 
 
+def test_single_award_for_two_contracts_keeps_only_the_aggregate_amount():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требование ПАО «Пример» по кредитному договору от 15.11.2024 № A-1, "
+        "по кредитному договору от 28.12.2024 № A-2 в общем размере 100 руб. в третью очередь. "
+        "Признать требование ПАО «Пример» о возмещении расходов по уплате государственной пошлины "
+        "в сумме 5 руб. обоснованным и подлежащим 2 А55-123/2026 удовлетворению "
+        "применительно к пункту 3 статьи 137 Закона о банкротстве."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["contract_number"], row["principal_debt"], row["financial_sanctions"]) == (None, None, None)
+    assert (row["claimed_amount"], row["pau_only_amount"], row["total_amount"]) == ("100.00", "5.00", "105.00")
+
+
+def test_numbered_confirmation_and_third_section_admit_one_amount():
+    text = (
+        'ОПРЕДЕЛИЛ:\n1. Требование ПАО «Пример» в размере 100 руб.00 коп. признать обоснованным. '
+        '2. Включить в третий раздел реестра требований кредиторов должника требование ПАО «Пример» '
+        'в размере 100 руб.00 коп., а также государственную пошлину в сумме 5 руб. '
+        'с режимом учета и удовлетворения данного требования к должнику в порядке, установленном пунктом 3 статьи 137.'
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["priority_queue"], row["claimed_amount"], row["pau_only_amount"], row["total_amount"]) == (
+        "3 очередь", "100.00", "5.00", "105.00",
+    )
+    changed = text.replace("в размере 100 руб.", "в размере 90 руб.", 1)
+    assert fields(changed)["claims"]["value"] == []
+
+
+def test_fee_payee_can_have_a_line_break_hyphen_in_the_legal_form():
+    text = (
+        'ОПРЕДЕЛИЛ:\nВключить требования публичного акционерного общества «Пример» '
+        'в третью очередь в размере 100 руб. основного долга. '
+        'Взыскать в пользу публичного акционерного обще-\nства «Пример» 5 руб. государственной пошлины '
+        'в порядке пункта 3 статьи 137.'
+    )
+    row, = fields(text)["claims"]["value"]
+    assert (row["principal_debt"], row["pau_only_amount"], row["total_amount"]) == ("100.00", "5.00", "105.00")
+
+
+def test_creditor_with_banking_name_inside_or_outside_quotation_marks():
+    fields_vtb = extract_candidates(
+        'ОПРЕДЕЛИЛ:\nВключить требование публичного акционерного общества «Банк ВТБ» '
+        '(ОГРН 1027739609391, ИНН 7702070139) в третью очередь в размере 100 руб.'
+    ).fields
+    assert fields_vtb["creditor_inn"].value == "7702070139"
+    other = extract_candidates(
+        'ОПРЕДЕЛИЛ:\nВключить требование ПАО «АК БАРС» БАНК '
+        'по кредитному договору № A-1 в третью очередь в размере 100 руб.'
+    ).fields
+    assert other["creditor"].value == "ПАО «АК БАРС» БАНК"
+
+
+def test_commission_does_not_prevent_reading_the_explicit_penalty():
+    text = (
+        'ОПРЕДЕЛИЛ:\nВключить требования АО «Пример» по кредитному договору № A-1 от 01.05.2023 '
+        '100 руб. – основной долг, 5 руб. – комиссии, 10 руб. – проценты, '
+        '1 руб. – неустойка в третью очередь. Признать обоснованным требование АО «Пример» '
+        'к должнику в размере 5 руб. судебных расходов по уплате государственной пошлины, '
+        'которые подлежат удовлетворению применительно к пункту 3 статьи 137.'
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["financial_sanctions"] == "1.00"
+    assert row["principal_debt"] is None
+    assert (row["claimed_amount"], row["total_amount"]) == ("116.00", "121.00")
+    different, = fields(text.replace("– комиссии,", "– комиссии за просрочку,"))["claims"]["value"]
+    assert different["claimed_amount"] is None
+
+
+def test_explicit_loan_breakdown_survives_a_separate_fee_of_unspecified_origin():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать требования ООО «Пример» по оплате госпошлины в размере 5 руб., "
+        "по договору займа от 01.02.2025 № A-1 в размере 120 руб., из них основной долг в размере "
+        "100 руб., проценты в размере 15 руб., неустойка в размере 5 руб., "
+        "обоснованными и подлежащими удовлетворению за счет имущества, оставшегося после "
+        "удовлетворения требований кредиторов, включенных в реестр требований кредиторов."
+    )
+    result = fields(text)
+    loan, expense = result["claims"]["value"]
+    assert (loan["principal_debt"], loan["financial_sanctions"], loan["total_amount"]) == ("115.00", "5.00", "120.00")
+    assert (expense["total_amount"], expense["principal_debt"], expense["pau_only_amount"]) == ("5.00", None, None)
+    assert result["total_claimed_amount"]["value"] is None
+
+
 def test_single_fee_in_admission_uses_the_courts_explanation_of_separate_accounting():
     reasoning = (
         "Таким образом, государственная пошлина подлежит включению в третью очередь "
@@ -490,6 +573,16 @@ def test_contract_list_with_date_before_number_and_unreconciled_itemization():
     assert (first["contract_number"], first["total_amount"], first["claimed_amount"]) == ("A-1", "100.00", None)
     assert (second["contract_number"], second["total_amount"], second["claimed_amount"]) == ("A-2", "20.00", "20.00")
     assert result["total_claimed_amount"]["value"] is None
+
+
+def test_contract_list_after_iz_kotorykh_preserves_the_separate_amounts():
+    text = (
+        'ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь в размере 120 руб., из которых: '
+        'по кредитному договору № A-1 составляет – 100 руб., из них: 100 руб. – основной долг; '
+        'по кредитному договору № A-2 составляет – 20 руб., из них: 20 руб. – основной долг.'
+    )
+    rows = fields(text)["claims"]["value"]
+    assert [(r["contract_number"], r["claimed_amount"]) for r in rows] == [("A-1", "100.00"), ("A-2", "20.00")]
 
 
 def test_credit_agreements_listed_without_a_printed_overall_total():
