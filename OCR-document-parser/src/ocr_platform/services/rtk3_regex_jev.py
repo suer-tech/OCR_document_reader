@@ -23,7 +23,7 @@ from ocr_platform.services.rtk3_evidence import (
 )
 from ocr_platform.services.rtk3_regex_candidates import (
     AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_DUTY, EXPIRED_REGISTRY_ORDER, GROSS, LEGAL_NAME, PUBLIC_TAX_CREDITOR,
-    SALARY_WORDS, SEPARATE_SANCTIONS,
+    SALARY_WORDS, SEPARATE_SANCTIONS, STANDALONE_FEE_ACCOUNTING,
     Claim, Components, CourtTotal, Salary, extract_candidates,
 )
 
@@ -103,6 +103,8 @@ async def _verify(text: str, candidates, config: dict, context: dict) -> tuple[d
                 key = _claim_key(index, name)
                 values[key] = candidate
                 state["fields"][key] = {"claim": index + 1, **candidate.model_dump()}
+                if claim.cost_reference and name in {"principal_debt", "pau_only_amount"}:
+                    state["fields"][key]["cost_reference"] = claim.cost_reference.model_dump()
                 questions[key] = _question(CLAIM_QUESTIONS[name])
             if claim.contract_reference:
                 key = _claim_key(index, "contract_reference")
@@ -490,7 +492,10 @@ def _amount_sum(
         if kind == "duty" and not re.search(r"пошлин", item.quote, re.I):
             return None
         if kind == "prior_cost" and not previous_cost(item.quote):
-            return None
+            proof = claim.cost_reference
+            if not (proof and proof.value == "prior_cost" and quoted(proof.quote, text)
+                    and amount_supported(item.amount, proof.quote)):
+                return None
         visited.add(key)
         result += amount
     seen.update(visited)
@@ -513,7 +518,7 @@ def _separately_priced_admission(claim: Claim, total: CourtTotal, duty: Componen
     current_duty = re.search(
         r"пошлин\w*\s*,?\s*уплаченн\w*\s+при\s+подаче\s+настоящ\w*\s+заявлени\w*",
         compact(duty.quote), re.I,
-    ) or (
+    ) or STANDALONE_FEE_ACCOUNTING.search(duty.quote) or (
         CURRENT_DUTY.search(duty.quote)
         and re.search(r"подлеж\w*\s+(?:удовлетворению|возмещению|уч[её]ту)", duty.quote, re.I)
     )
