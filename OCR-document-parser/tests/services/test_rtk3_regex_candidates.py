@@ -278,6 +278,7 @@ def test_single_award_for_two_contracts_keeps_only_the_aggregate_amount():
     row, = fields(text)["claims"]["value"]
     assert (row["contract_number"], row["principal_debt"], row["financial_sanctions"]) == (None, None, None)
     assert (row["claimed_amount"], row["pau_only_amount"], row["total_amount"]) == ("100.00", "5.00", "105.00")
+    assert row["is_salary_or_severance"] is False
 
 
 def test_numbered_confirmation_and_third_section_admit_one_amount():
@@ -293,6 +294,11 @@ def test_numbered_confirmation_and_third_section_admit_one_amount():
     )
     changed = text.replace("в размере 100 руб.", "в размере 90 руб.", 1)
     assert fields(changed)["claims"]["value"] == []
+    filing = "Рассмотрел заявление ПАО «Пример» о включении задолженности по кредитным договорам от 09.03.2021, 25.05.2023"
+    sourced, = fields(f"{filing} в размере 100 руб. {text}")["claims"]["value"]
+    assert sourced["is_salary_or_severance"] is False
+    unconfirmed, = fields(f"{filing} в размере 90 руб. {text}")["claims"]["value"]
+    assert unconfirmed["is_salary_or_severance"] is None
 
 
 def test_fee_payee_can_have_a_line_break_hyphen_in_the_legal_form():

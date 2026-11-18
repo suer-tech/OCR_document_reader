@@ -566,7 +566,11 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                 ))
         salary = selected("is_salary_or_severance")
         salary_value = None
-        if salary and type(salary.value) is bool and quoted(salary.quote, claim.quote):
+        if salary and type(salary.value) is bool and (
+                quoted(salary.quote, claim.quote) or (
+                    salary.value is False and salary == claim.fields.get("is_salary_or_severance")
+                    and quoted(salary.quote, text)
+                )):
             if salary.value is False or SALARY_WORDS.search(salary.quote):
                 salary_value = salary.value
 

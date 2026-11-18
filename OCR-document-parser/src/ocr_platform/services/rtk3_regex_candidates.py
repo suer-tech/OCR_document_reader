@@ -1300,9 +1300,10 @@ def claim_candidates(operative: str, creditor: Fact | None) -> list[Claim]:
         salary = SALARY_WORDS.search(quote)
         if salary:
             fields["is_salary_or_severance"] = Salary(value=True, quote=salary[0])
-        elif itemized_admission is not None or all(name in fields for name in CATEGORY_FIELDS) or (
-                total and total.scope == "with_duty" and CONTRACT_BASIS.search(quote)):
+        elif itemized_admission is not None or all(name in fields for name in CATEGORY_FIELDS):
             fields["is_salary_or_severance"] = Salary(value=False, quote=quote)
+        elif total and total.scope != "unknown" and (basis := CONTRACT_BASIS.search(quote)):
+            fields["is_salary_or_severance"] = Salary(value=False, quote=basis[0])
         if unknown_fees:
             # An embedded duty would make the relationship to the unreadable
             # separate fee ambiguous, so let the model resolve the whole layout.
@@ -1408,6 +1409,19 @@ def _filing_court_order(body: str, claim: Claim) -> Fact | None:
     return Fact(value=order[0], quote=body[filing.start():filing.end() + order.end()])
 
 
+def _filing_contract_nature(body: str, claim: Claim, basis: Fact | None) -> Salary | None:
+    if (not claim.total or claim.total.scope != "without_duty" or not basis or not basis.quote
+            or not CONTRACT_BASIS.search(basis.quote)):
+        return None
+    match = re.search(
+        rf"{re.escape(basis.quote)}\s+(?:в\s+(?:общем\s+)?размере|на\s+сумму)\s+(?P<amount>{AMOUNT})",
+        body, re.I,
+    )
+    if match and money(match["amount"]) == money(claim.total.amount):
+        return Salary(value=False, quote=match[0])
+    return None
+
+
 def _recover_embedded_cost(body: str, claim: Claim, order: Fact | None) -> None:
     if "pau_only_amount" in claim.fields or len(re.findall(r"пошлин", claim.quote, re.I)) != 1:
         return
@@ -1509,6 +1523,10 @@ def extract_candidates(text: str) -> Candidates:
                     basis = cited_order["basis"]
                     fields["grounds_ocr"] = Fact(value=basis, quote=basis)
             _recover_embedded_cost(body, claim, order)
+            if "is_salary_or_severance" not in claim.fields:
+                nature = _filing_contract_nature(body, claim, fields.get("grounds_ocr"))
+                if nature:
+                    claim.fields["is_salary_or_severance"] = nature
         reference = _source_contract_reference(source, operative, claim, fields)
         if reference:
             claim.contract_number = reference.value
