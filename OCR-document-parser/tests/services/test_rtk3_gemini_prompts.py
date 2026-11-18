@@ -48,6 +48,7 @@ def test_only_requested_field_instructions_are_sent():
     prompt = build_gemini_prompt({'creditor_inn'}, full_claims=False)
     assert 'Поле creditor_inn:' in prompt
     assert 'ФНС' in prompt and 'инспекции' in prompt
+    assert 'поиск по установленному наименованию выполняется после извлечения' in prompt
     assert 'Поле grounds:' not in prompt and 'Формат полного' not in prompt
     assert 'Формат отдельных' not in prompt
 
@@ -63,6 +64,21 @@ def test_full_prompt_and_schema_require_one_contract_per_breakdown():
     assert 'Неясные отдельные расходы не меняют' in prompt
 
 
+@pytest.mark.parametrize('full_claims', [True, False])
+def test_queue_and_amount_rules_match_both_fallback_formats(full_claims):
+    layout = [] if full_claims else [Claim("Подтверждённая строка", {}, None)]
+    prompt = build_gemini_prompt(set(schema(layout).model_fields), full_claims=full_claims)
+    assert 'неизвестную очередь передавай как null' in prompt
+    assert 'компонентом той же строки третьей очереди' in prompt
+    assert 'проценты по просроченному основному долгу' in prompt
+    assert 'долг, — prior_cost' in prompt
+    assert 'строка из одних пеней или штрафов имеет нулевой основной долг' in prompt
+    if full_claims:
+        assert 'только компоненты kind=sanction\nи components_complete=true' in prompt
+    else:
+        assert 'items=[], complete=true и цитату о пенях' in prompt
+
+
 def test_nullable_salary_and_allowed_queue_and_pledge_values():
     assert 'null' in str(ClaimEvidence.model_json_schema()['properties']['is_salary_or_severance'])
     fixed = schema([Claim("Строка", {}, None)])
@@ -70,7 +86,10 @@ def test_nullable_salary_and_allowed_queue_and_pledge_values():
     from pydantic import TypeAdapter
     assert TypeAdapter(fields['claim_1_is_salary_or_severance'].annotation).validate_python(
         {'value': None, 'quote': ''}).value is None
-    for key, bad in [('claim_1_priority_queue', '5 очередь'), ('claim_1_pledge_resolution', 'maybe')]:
+    queue = TypeAdapter(fields['claim_1_priority_queue'].annotation)
+    assert queue.validate_python({'value': 'Иное', 'quote': 'цитата'}).value == 'Иное'
+    assert queue.validate_python({'value': None, 'quote': ''}).value is None
+    for key, bad in [('claim_1_priority_queue', 'Иное либо неизвестно'), ('claim_1_pledge_resolution', 'maybe')]:
         with pytest.raises(ValidationError):
             TypeAdapter(fields[key].annotation).validate_python({'value': bad, 'quote': 'цитата'})
 
@@ -92,6 +111,47 @@ def ledger(statuses):
         'kad_publication_date', 'grounds')}, claims=claims, claims_complete=True, uncertainty='')
     text = '\n'.join(c['decision_quote'] for c in claims)
     return evidence, text
+
+
+def test_sanctions_only_queue_has_zero_principal_in_both_fallback_formats():
+    evidence, _ = ledger([False, False])
+    first, second = evidence.claims
+    first.decision_quote = first.decision_quote.replace('третью очередь', 'вторую очередь')
+    first.priority_queue.value = '2 очередь'
+    first.priority_queue.quote = 'вторую очередь'
+    first.components[0].quote = first.included_total.quote = first.salary_quote = first.decision_quote
+    second.decision_quote = 'Включить в третью очередь 20 руб. пеней по налоговой задолженности.'
+    second.components[0].kind = 'sanction'
+    second.components[0].amount = second.included_total.value = '20 руб.'
+    second.components[0].quote = '20 руб. пеней'
+    second.included_total.quote = second.salary_quote = second.decision_quote
+    text = first.decision_quote + '\n' + second.decision_quote
+    profile = load_profile('rtk3')
+    full_rows = build_fields(evidence, text, profile, recover_from_source=False)['claims']['value']
+
+    layout = [Claim(claim.decision_quote, {}, None) for claim in evidence.claims]
+    raw_fields = {}
+    for index, claim in enumerate(evidence.claims, start=1):
+        for name, kind in (('principal_debt', 'principal'), ('financial_sanctions', 'sanction'),
+                           ('pau_only_amount', 'duty')):
+            raw_fields[f'claim_{index}_{name}'] = {
+                'items': [item.model_dump() for item in claim.components if item.kind == kind],
+                'complete': True, 'quote': claim.decision_quote,
+            }
+        raw_fields[f'claim_{index}_priority_queue'] = claim.priority_queue.model_dump()
+        raw_fields[f'claim_{index}_included_total'] = {
+            'amount': claim.included_total.value, 'quote': claim.included_total.quote, 'scope': claim.total_scope,
+        }
+        raw_fields[f'claim_{index}_pledge_resolution'] = None
+        raw_fields[f'claim_{index}_is_salary_or_severance'] = {'value': False, 'quote': claim.salary_quote}
+    types = service._fallback_schema(layout, {}, set())
+    fixed = create_model('FixedClaims', **types).model_validate(raw_fields)
+    fixed_rows = service._fixed_claims(layout, {}, dict(fixed), text)['claims']['value']
+
+    expected = [('2 очередь', '100.00', '0.00'), ('3 очередь', '0.00', '20.00')]
+    for rows in (full_rows, fixed_rows):
+        assert [(row['priority_queue'], row['principal_debt'], row['financial_sanctions'])
+                for row in rows] == expected
 
 
 def test_two_contracts_in_one_order_keep_amounts_and_collateral_independent():
