@@ -827,7 +827,6 @@ def test_legacy_arithmetic_error_forces_review_without_mutation():
     issues = profile_field_issues(old, "rtk3")
     assert review_requirement(0.99, issues)[0]
     assert old == snapshot
-    assert profile_field_issues(old, "rtk") == []
 
 
 @pytest.mark.asyncio

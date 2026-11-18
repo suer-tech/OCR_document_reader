@@ -6,7 +6,7 @@ import pytest
 
 from ocr_platform.orchestration.router import load_profile, resolve_profile
 from ocr_platform.services import extraction_agent
-from ocr_platform.services.validation_service import validate_fields
+from ocr_platform.services.validation_service import profile_field_issues, validate_fields
 
 
 @pytest.mark.parametrize("profile_id", ["rtk2", "rtk3"])
@@ -20,6 +20,18 @@ def test_rtk_profile_is_routed_and_has_active_pipeline(profile_id: str) -> None:
     assert profile["fields"]
     assert profile["pipeline"]
     assert profile["models"]["llm_extraction"]["model"]
+
+
+@pytest.mark.parametrize("profile_id,expected_codes", [("rtk", set()), ("rtk2", {"rtk2_requires_review"})])
+def test_common_validation_routes_claims_to_the_requested_profile(profile_id, expected_codes):
+    fields = {
+        "total_claimed_amount": {"value": 170},
+        "claims": {"value": [
+            {"priority_queue": "2 очередь", "principal_debt": 40, "financial_sanctions": 0, "total_amount": 40},
+            {"priority_queue": "3 очередь", "principal_debt": 50, "financial_sanctions": 10, "total_amount": 100},
+        ]},
+    }
+    assert {issue.code for issue in profile_field_issues(fields, profile_id)} == expected_codes
 
 
 @pytest.mark.asyncio

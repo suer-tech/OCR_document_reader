@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ConfigDict, ValidationError, create_model
 
-from ocr_platform.orchestration.router import load_profile
+from ocr_platform.orchestration.router import load_profile, resolve_profile
 from ocr_platform.services import rtk3_regex_jev as service
 from ocr_platform.services.rtk3_evidence import ClaimEvidence, DocumentEvidence, build_fields
 from ocr_platform.services.rtk3_gemini_prompts import CLAIM_RULES, SCALAR_RULES, build_gemini_prompt
@@ -237,7 +237,10 @@ def test_gemini_gateway_receives_selected_prompt_and_schema(monkeypatch):
 
 
 def test_profile_has_one_prompt_source_and_no_legacy_amount_instruction():
-    profile = load_profile('rtk3')
+    resolution = resolve_profile(source_type='external', requested_document_type='rtk3')
+    assert resolution.profile_id == 'rtk3'
+    profile = load_profile(resolution.profile_id)
+    assert profile['fields'] and profile['pipeline']
     assert profile['models']['llm_extraction']['model'] == 'google/gemini-4-argon'
     assert profile['extraction_mode'] == 'regex_jev'
     for config in profile['fields'].values():

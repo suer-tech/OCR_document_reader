@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from ocr_platform.orchestration.router import load_profile
 from ocr_platform.services import extraction_agent as agent
 from ocr_platform.services.rtk3_claims import claimed_amount_issues
-from ocr_platform.services.validation_service import profile_field_issues, review_requirement
+from ocr_platform.services.validation_service import review_requirement
 
 
 def claim(included, claimed=None, queue="3 очередь"):
@@ -73,10 +73,6 @@ def test_review_rules_never_recalculate_values(total, claims, reason):
     assert review_requirement(0.99, issues) == (reason is not None, reason)
     assert [issue.code for issue in issues] == ([reason] if reason else [])
     assert data == original
-    # RTK2 now checks its own required fields, but must never apply RTK3
-    # claimed-amount rules to this deliberately incomplete RTK2 payload.
-    assert {issue.code for issue in profile_field_issues(data, "rtk2")} == {"rtk2_requires_review"}
-    assert profile_field_issues(data, "rtk") == []
 
 
 def test_missing_optional_amount_does_not_suppress_other_review_reasons():
