@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Покрытие тестами</title>
+<style>
+:root {
+    color-scheme: light;
+    --ink: #152844; --muted: #475977; --line: #d5deea; --blue: #205ad1;
+    font: 16px/1.5 "Segoe UI", system-ui, sans-serif;
+    background: #eef3fa; color: var(--ink);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; }
+main { width: min(1120px, 100%); margin: auto; padding: 36px 28px 56px; }
+h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.25rem); letter-spacing: -.025em; }
+h2 { margin: 0 0 12px; font-size: 1.5rem; }
+p { margin: 6px 0; }
+a { color: var(--blue); text-underline-offset: 3px; }
+button, input, select { font: inherit; }
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.scope, small, .empty { color: var(--muted); }
+.run { display: inline-block; margin-top: 14px; font-weight: 700; }
+.ok { color: #087369; }
+.failed { color: #a53d29; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 21px 0 17px; }
+.cards article { display: grid; gap: 2px; padding: 18px 22px; background: white; border-radius: 16px; }
+.cards strong { font-size: clamp(1.8rem, 5vw, 2.65rem); line-height: 1.25; font-variant-numeric: tabular-nums; }
+.cards span, .cards small { color: var(--muted); }
+.links, .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; }
+.help { margin: 22px 0 26px; padding: 14px 17px; border: 1px solid var(--line); border-radius: 12px; }
+summary { cursor: pointer; }
+.controls { padding: 0 0 12px; }
+.controls label { color: var(--muted); }
+.controls input:not([type=checkbox]), .controls select {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: white; color: var(--ink);
+}
+.search { flex: 1 1 210px; }
+.panel { background: white; border-radius: 15px; overflow: hidden; }
+.file-head, .file {
+    display: grid; grid-template-columns: minmax(0, 1fr) 125px 125px 90px; align-items: center; gap: 12px;
+    padding: 12px 16px; font-variant-numeric: tabular-nums;
+}
+.file-head { background: #e2eaf7; font-weight: 700; }
+#files details { border-top: 1px solid var(--line); }
+.file ::marker { content: ""; }
+.file::-webkit-details-marker { display: none; }
+.file > span { min-width: 0; overflow-wrap: anywhere; }
+.file span:first-child strong::before { content: "› "; color: var(--blue); }
+details[open] .file span:first-child strong::before { content: "⌄ "; }
+.file small { display: block; font-size: .8rem; }
+.file progress { display: block; width: 86%; height: 5px; margin-top: 4px; accent-color: var(--blue); }
+.file:hover { background: #f5f8fe; }
+.detail { background: #f5f8fe; padding: 4px 16px 16px; }
+.gaps { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 6px 0; padding: 0; list-style: none; }
+.empty { padding: 14px 16px; }
+.selectors { overflow-wrap: anywhere; }
+@media (max-width: 660px) {
+    main { padding: 22px 14px 38px; }
+    .cards { gap: 7px; }
+    .cards article { padding: 10px; }
+    .cards span, .cards small { font-size: .8rem; }
+    .file-head, .file { grid-template-columns: minmax(0, 1fr) 56px 56px 42px; gap: 7px; padding: 9px 8px; font-size: .84rem; }
+    .file small { font-size: .71rem; }
+}
+</style>
+</head>
+<body>
+<main>
+    <header>
+        <h1>Покрытие тестами</h1>
+        <p class="scope">$scope</p>
+        <span class="run $state">$result</span>
+        <div class="cards">$cards</div>
+        <nav class="links" aria-label="Материалы прогона">
+            <a href="infographic.png">Инфографика PNG</a>
+            $reports
+        </nav>
+    </header>
+    <details class="help">
+        <summary>Как читать показатели</summary>
+        <p><strong>Строки</strong> показывают, сколько исполняемых строк запустили тесты.</p>
+        <p><strong>Ветви</strong> показывают, сколько возможных переходов выполнилось. У обычного <code>if</code> есть переход при истинном условии и при ложном.</p>
+        <p><strong>Пропуски</strong> складывают невыполненные строки и переходы. Посмотрите, какой сценарий нужен, чтобы до них дойти. Число упавших тестов указано в верхней карточке отдельно.</p>
+        <p>В полном отчёте coverage.py процент Total объединяет строки и переходы. Точность извлечения полей измеряется сравнением с разметкой документов.</p>
+    </details>
+    <section aria-labelledby="files-title">
+        <h2 id="files-title">Файлы</h2>
+        <div class="controls">
+            <label class="search">Поиск <input id="search" type="search" placeholder="Имя файла или путь"></label>
+            <label id="scope-label" hidden>Список файлов <select id="scope">
+                <option value="selected">Выбранный срез</option><option value="all">Все измеренные</option>
+            </select></label>
+            <label>Сортировка <select id="sort">
+                <option value="missing">Сначала больше пропусков</option>
+                <option value="branches">Сначала меньше покрытие ветвей</option>
+                <option value="name">По имени</option>
+            </select></label>
+            <label><input id="only-gaps" type="checkbox"> Только с пропусками</label>
+        </div>
+        <p id="count" aria-live="polite"></p>
+        <div class="panel">
+            <div class="file-head"><span>Файл</span><span>Строки</span><span>Ветви</span><span>Проп.</span></div>
+            <div id="files" data-prefix="$prefix">$rows</div>
+            <p class="empty" id="empty" hidden>В этом срезе нет файлов.</p>
+        </div>
+    </section>
+    <details class="help">
+        <summary>Какие тесты запускались</summary>
+        <p>$run_counts</p>
+        <ul class="selectors">$selectors</ul>
+    </details>
+</main>
+<script>
+const list = document.getElementById("files");
+const scope = document.getElementById("scope");
+const search = document.getElementById("search");
+const sort = document.getElementById("sort");
+const onlyGaps = document.getElementById("only-gaps");
+const count = document.getElementById("count");
+const empty = document.getElementById("empty");
+const rows = Array.from(list.children);
+document.getElementById("scope-label").hidden = !list.dataset.prefix;
+
+function render() {
+    const query = search.value.trim().toLowerCase();
+    const property = sort.value;
+    const matching = [];
+    for (const row of rows) {
+        const inScope = scope.value === "all" || row.dataset.match === "true";
+        row.hidden = !inScope || !row.dataset.name.toLowerCase().includes(query) ||
+            (onlyGaps.checked && Number(row.dataset.missing) === 0);
+        if (!row.hidden) matching.push(row);
+    }
+    matching.sort((a, b) => {
+        const fileOrder = a.dataset.name.localeCompare(b.dataset.name, "ru");
+        if (property === "name") return fileOrder;
+        if (property === "branches") return a.dataset.branches - b.dataset.branches || fileOrder;
+        return b.dataset.missing - a.dataset.missing || fileOrder;
+    });
+    list.append(...matching);
+    count.textContent = "Файлов в списке: " + matching.length;
+    empty.hidden = matching.length > 0;
+}
+search.addEventListener("input", render);
+for (const control of [scope, sort, onlyGaps]) control.addEventListener("change", render);
+render();
+</script>
+</body>
+</html>

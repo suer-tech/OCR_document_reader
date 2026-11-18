@@ -60,6 +60,7 @@ Thumbs.db
 *.md
 !README.md
 !AGENTS.md
+!/.agents/skills/ocr-testing/SKILL.md
 !ARCHITECTURE.md
 !PLANS.md
 !QUALITY_SCORE.md
