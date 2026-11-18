@@ -169,7 +169,7 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
             anchors.add(person_key(match))
             continue
         if operative and re.search(
-            r"\bпо\s+делу\s*№\s*[АAаa][0-9/-]+\s+по\s+заявлению\s*$", prefix, re.I,
+            r"\b(?:по\s+делу\s*№\s*[АAаa][0-9/-]+|в\s+деле)\s+по\s+заявлению\s*$", prefix, re.I,
         ):
             decision = text[operative.end():]
             if any(

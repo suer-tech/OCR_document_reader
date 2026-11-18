@@ -40,6 +40,8 @@ def test_personal_inn_in_case_application_requires_the_same_registry_debtor():
     )
     result = extract_candidates(f"{filing} {order}").fields
     assert result["debtor_inn"].value == "012345678901"
+    bankruptcy_application = filing.replace("по делу №А60-123/2026", "в деле")
+    assert source_inn(f"{bankruptcy_application} {order}", "debtor_inn").value == "012345678901"
     different = f"{filing} {order.replace('Петрова', 'Сидорова')}"
     assert "debtor_inn" not in extract_candidates(different).fields
 
@@ -53,6 +55,100 @@ def test_registry_debtor_inn_with_a_line_break_inside_creditors():
     result = extract_candidates(text).fields
     assert result["debtor_inn"].value == "012345678901"
     assert result["creditor_inn"].value == "0123456789"
+
+
+def test_amounts_after_unspaced_commas_and_cost_with_unknown_origin():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать обоснованными требования ПАО «Пример» в размере 19 300,30 руб., "
+        "в том числе: 9 500 руб. – основной долг,2 280 руб. – срочные проценты,"
+        "6 100, 5 руб. – просроченные проценты,644, 8 руб. – пеня, 775 руб. – государственная пошлина, "
+        "с удовлетворением после удовлетворения требований кредиторов, включенных в реестр."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["total_amount"] == "19300.30"
+    assert row["financial_sanctions"] == "644.80"
+    assert row["pau_only_amount"] is None
+    assert row["principal_debt"] is None
+
+
+def test_pledge_confirmation_links_to_same_creditor_and_contract():
+    text = (
+        "ОПРЕДЕЛИЛ:\n1. Включить требования ПАО «Пример» в третью очередь реестра требований кредиторов "
+        "должника по кредитному договору № 1406/ПК 21.11.2025 в размере 108 руб., из которых: "
+        "- 100 руб. требование по уплате суммы основного долга; - 8 руб. проценты; "
+        "установить требования ПАО «Пример» в реестре требований кредиторов, вытекающих из кредитного "
+        "договора № 1406/ПК 21.11.2025 как требования, обеспеченные залогом имущества. "
+        "2. Взыскать с должника судебные расходы по оплате государственной пошлины за подачу заявления "
+        "о включении требований в реестр требований кредиторов в размере 5 руб."
+    )
+    result = extract_candidates(text)
+    assert result.fields["grounds_ocr"].value == "по кредитному договору № 1406/ПК 21.11.2025"
+    row, = fields(text)["claims"]["value"]
+    assert row["contract_number"] == "1406/ПК"
+    assert row["secured_by_pledge"] is True
+    assert row["total_amount"] == "113.00"
+    other = text.replace("договора № 1406/ПК", "договора № 1407/ПК")
+    assert not extract_candidates(other).claims
+
+
+def test_budget_duty_is_distinct_from_tax_allocation_by_queue():
+    text = (
+        "ОПРЕДЕЛИЛ:\nПризнать обоснованным и включить в третью очередь реестра требований кредиторов "
+        "требование ФНС России в размере 121 руб., в том числе: "
+        "- во вторую очередь реестра требований кредиторов задолженность в размере 101 руб. (основной долг). "
+        "- в третью очередь реестра требований кредиторов задолженность в размере 20 руб., "
+        "в том числе: задолженность по пени – 20 руб. "
+        "Взыскать с конкурсной массы должника в доход федерального бюджета государственную пошлину "
+        "за рассмотрение заявления о включении требования в реестр требований кредиторов в размере 5 руб."
+    )
+    second, third, fee = fields(text)["claims"]["value"]
+    assert (second["priority_queue"], second["total_amount"]) == ("2 очередь", "101.00")
+    assert (third["priority_queue"], third["financial_sanctions"]) == ("3 очередь", "20.00")
+    assert (fee["priority_queue"], fee["pau_only_amount"]) == (None, "5.00")
+
+
+def test_registry_fee_does_not_include_a_recovery_assigned_to_the_local_plan():
+    text = (
+        "Судебные расходы за денежные требования – 10 руб. "
+        "- судебные расходы за требования, обеспеченные залогом – 25 руб. "
+        "(20 руб. подлежат возврату из федерального бюджета, остальная сумма подлежит "
+        "возмещению кредитору в рамках локального плана реструктуризации долгов – 5 руб.). "
+        "ОПРЕДЕЛИЛ:\nВключить требования ПАО «Пример» в третью очередь реестра требований кредиторов "
+        "в размере 12 3456,50 руб., вытекающие из кредитных договоров №1 от 01.01.2024 и №2 от 02.01.2024. "
+        "Взыскать в пользу ПАО «Пример» 10 руб. судебных расходов по уплате государственной пошлины "
+        "за рассмотрение настоящего спора, подлежащих удовлетворению по пункту 3 статьи 137. "
+        "Возвратить ПАО «Пример» 20 руб. государственной пошлины. "
+        "Взыскать в пользу ПАО «Пример» расходы по уплате государственной пошлины в размере 5 руб."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["contract_number"] is None
+    assert (row["claimed_amount"], row["pau_only_amount"], row["total_amount"]) == ("123456.50", "10.00", "123466.50")
+    assert not extract_candidates(text.replace("долгов – 5 руб.", "долгов – 6 руб.")).claims
+
+
+def test_express_admission_and_application_fee_without_printed_queue():
+    text = (
+        "ОПРЕДЕЛИЛ:\nВключить требование ПАО «Пример» в реестр требований кредиторов в размере 100 руб. "
+        "Взыскать в пользу ПАО «Пример» судебные расходы по оплате государственной пошлины "
+        "за подачу заявления о включении требований кредиторов должника в размере 5 руб."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["priority_queue"] is None
+    assert row["principal_debt"] is None
+    assert (row["claimed_amount"], row["pau_only_amount"], row["total_amount"]) == ("100.00", "5.00", "105.00")
+
+
+def test_printed_award_and_sanctions_survive_inconsistent_cost_breakdown():
+    text = (
+        "ОПРЕДЕЛИЛ:\nТребование ООО «Пример» в общей сумме 120,01 руб., из них: "
+        "100 руб. – основной долг, 15 руб. – штраф, 5 руб. – расходы по оплате госпошлины "
+        "признать обоснованным и включить в третью очередь реестра требований кредиторов."
+    )
+    row, = fields(text)["claims"]["value"]
+    assert row["total_amount"] == "120.01"
+    assert row["financial_sanctions"] == "15.00"
+    assert row["claimed_amount"] is None
+    assert row["pau_only_amount"] is None
 
 
 def test_enforcement_fee_is_preserved_as_literal_basis():

@@ -22,7 +22,8 @@ from ocr_platform.services.rtk3_evidence import (
     publication_date_field, quoted, row_pledges,
 )
 from ocr_platform.services.rtk3_regex_candidates import (
-    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_DUTY, EXPIRED_REGISTRY_ORDER, GROSS, LEGAL_NAME, PUBLIC_TAX_CREDITOR,
+    AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CURRENT_APPLICATION_DUTY, CURRENT_DUTY, EXPIRED_REGISTRY_ORDER, GROSS,
+    LEGAL_NAME, PUBLIC_TAX_CREDITOR,
     SALARY_WORDS, SECTION_ACCOUNTED_DUTY, SEPARATE_SANCTIONS, STANDALONE_FEE_ACCOUNTING,
     Claim, Components, CourtTotal, Salary, extract_candidates,
 )
@@ -518,16 +519,18 @@ def _separately_priced_admission(claim: Claim, total: CourtTotal, duty: Componen
         return False
     quote = compact(claim.quote)
     amounts = list(AMOUNTS.finditer(quote))
-    current_duty = re.search(
-        r"пошлин\w*\s*,?\s*уплаченн\w*\s+при\s+подаче\s+настоящ\w*\s+заявлени\w*",
-        compact(duty.quote), re.I,
-    ) or STANDALONE_FEE_ACCOUNTING.search(duty.quote) or SECTION_ACCOUNTED_DUTY.fullmatch(duty.quote) or (
-        CURRENT_DUTY.search(duty.quote)
-        and (re.search(
-            r"подлеж\w*\s+(?:(?:\d{1,3}\s+)?[АA]\d{1,3}-\d+/\d{2,4}\s+)?"
-            r"(?:удовлетворению|возмещению|уч[её]ту)", duty.quote, re.I,
-        ) or re.match(r"\s*(?:\d{1,2}\.\s*)?включить\s+требован\w*\b.*?пошлин\w*\s+с\s+уч[её]том\b",
-                      duty.quote, re.I))
+    current_duty = (
+        CURRENT_APPLICATION_DUTY.search(duty.quote)
+        or STANDALONE_FEE_ACCOUNTING.search(duty.quote)
+        or SECTION_ACCOUNTED_DUTY.fullmatch(duty.quote)
+        or re.search(r"пошлин\w*\s*,?\s*уплаченн\w*\s+при\s+подаче\s+настоящ\w*\s+заявлени\w*",
+                     compact(duty.quote), re.I)
+        or (CURRENT_DUTY.search(duty.quote) and (
+            re.search(r"подлеж\w*\s+(?:(?:\d{1,3}\s+)?[АA]\d{1,3}-\d+/\d{2,4}\s+)?"
+                      r"(?:удовлетворению|возмещению|уч[её]ту)", duty.quote, re.I)
+            or re.match(r"\s*(?:\d{1,2}\.\s*)?включить\s+требован\w*\b.*?пошлин\w*\s+с\s+уч[её]том\b",
+                        duty.quote, re.I)
+        ))
     )
     return (
         len(amounts) == 1
@@ -607,9 +610,12 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
                     or (total.scope == "unknown" and gross is not None and printed not in {net, gross})):
                 issues.append("Денежные компоненты не совпадают с итогом, указанным судом.")
                 net, gross = None, None
-            elif (net is None and queue_valid and len(layout) == 1
+            elif (net is None and len(layout) == 1
                   and amounts["pau_only_amount"] is not None and amounts["pau_only_amount"] > 0
                   and _separately_priced_admission(claim, total, selected("pau_only_amount"))
+                  and (queue_valid or (CURRENT_APPLICATION_DUTY.search(selected("pau_only_amount").quote)
+                       and re.match(r"включить\s+требован\w*\b.{0,230}\bв\s+реестр\s+требований\s+кредиторов\b",
+                                    claim.quote, re.I)))
                   and (amounts["principal_debt"] or 0) + (amounts["financial_sanctions"] or 0) <= printed):
                 net = printed
                 gross = net + amounts["pau_only_amount"]
