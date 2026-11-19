@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 
 SourceType = Literal["crm", "email", "portal", "external", "other"]
@@ -15,6 +15,7 @@ DOCUMENT_TYPE_DESCRIPTION = (
     "passport_main — главная страница паспорта РФ; passport_registration — страница регистрации; "
     "bankruptcy_application — заявление на банкротство, паспортные данные должника из шапки; "
     "procedure_completion — акт о завершении РИ или РД, включая переход РД → РИ (явный выбор); "
+    "financial_manager_report — отчёт финансового управляющего о результатах РИ или РД (явный выбор, PDF); "
     "unknown — явно выбранный неизвестный тип, без автоматической классификации. "
     "Автоопределение доступно через POST /documents/ingest, если не заданы document_type и "
     "document_type_hint. В форме POST /documents/upload поле document_type обязательно."
@@ -122,6 +123,18 @@ class FieldValue(BaseModel):
         description="Способ извлечения поля. Для court_decision — regex_jev, court_llm_fallback, regex_legacy и др. Для procedure_completion — llm или calculation. null для служебных полей, старых записей и профилей, ещё не передающих метод отдельно.",
         examples=["regex_jev"],
     )
+    evidence: dict[str, Any] | None = Field(
+        default=None,
+        description="Для отчёта финансового управляющего: page (физическая страница PDF с 1), "
+        "table, row, column или quote. В таблицах источники по ячейкам лежат в value.rows[].sources.",
+    )
+
+    @model_serializer(mode="wrap")
+    def serialize_field(self, handler):
+        data = handler(self)
+        if self.evidence is None:
+            data.pop("evidence", None)
+        return data
 
 
 class ValidationIssue(BaseModel):
@@ -170,6 +183,24 @@ class DocumentResultResponse(BaseModel):
 
 Общее служебное поле для всех профилей:
 * `processing_started_at` — Начало обработки: строка UTC в формате ISO-8601 (без суффикса часового пояса) или null; reasoning, confidence и source равны null.
+
+Для `financial_manager_report` (отчёт финансового управляющего, PDF):
+* `case_number` — номер дела.
+* `debtor_full_name` — ФИО должника одной строкой.
+* `debtor_inn` — ИНН должника, если указан в отчёте.
+* `procedure_type` — РИ или РД.
+* `report_date` — дата отчёта в формате YYYY-MM-DD.
+* `inventory_date` — дата из строки о проведении описи в формате YYYY-MM-DD.
+* `property_inventory` — состав имущества, раздельные оценки, залог, единственное жильё и исключение.
+* `property_sales` — результаты реализации, договорные цены и фактические оплаты.
+* `creditor_register` — требования, промежуточные и общие итоги. `outside_register` отмечает строки за реестром.
+* `current_payments` — обязательства, оплаты и остатки по строкам и итогам.
+* `report_text_complete` — признак получения текста всех страниц. Полный текст с номерами страниц в `raw_text`.
+
+У реквизитов источник находится в `evidence`. Табличные разделы имеют форму `{status, source, rows}`.
+Статусы раздела — listed, none_declared, not_found, unreadable, partial. Источник ячейки хранится в `rows[].sources`,
+причина null в `rows[].null_reasons`. В реестре и текущих платежах `row_kind` различает detail, subtotal и total.
+Суммы передаются строками с двумя знаками после точки.
 
 Для `court_decision` (Судебное решение):
 * `debtor_full_name` — Объект с полями-строками: `debtor_last_name` (Фамилия), `debtor_first_name` (Имя), `debtor_patronymic` (Отчество); компоненты или весь объект могут быть null

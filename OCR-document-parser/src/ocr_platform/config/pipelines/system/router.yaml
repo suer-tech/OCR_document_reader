@@ -14,6 +14,7 @@ document_type_to_profile:
   passport_registration: passport_registration
   bankruptcy_application: bankruptcy_application
   procedure_completion: procedure_completion
+  financial_manager_report: financial_manager_report
   unknown: unknown
 
 detection:

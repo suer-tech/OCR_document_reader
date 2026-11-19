@@ -1,0 +1,37 @@
+profile_id: financial_manager_report
+document_type: financial_manager_report
+name: "Отчёт финансового управляющего о результатах РИ или РД"
+extraction_mode: llm_report_pdf
+explicit_only: true
+version: "1.0"
+applicable_sources: [crm, email, portal, external, other]
+quality: {score_required_values: true}
+
+models:
+  llm_extraction:
+    provider: router_ai
+    model: google/gemini-4-argon
+    reasoning_effort: low
+    timeout_seconds: 240
+    max_tokens: 32768
+
+fields:
+  case_number: {required: true}
+  debtor_full_name: {required: true}
+  debtor_inn: {required: false}
+  procedure_type: {required: true}
+  report_date: {required: true}
+  inventory_date: {required: false}
+  property_inventory: {required: true}
+  property_sales: {required: true}
+  creditor_register: {required: true}
+  current_payments: {required: true}
+  report_text_complete: {required: true}
+
+pipeline:
+  - {name: store_original, type: storage}
+  - {name: detect_document_type, type: classifier}
+  - {name: extract_entities, type: extraction}
+  - {name: validate_entities, type: validation}
+  - {name: compute_quality, type: quality}
+  - {name: route_to_human_review, type: routing}

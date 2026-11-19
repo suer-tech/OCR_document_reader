@@ -44,6 +44,18 @@ jobs:
           OPS_PROPOSAL_ID: ${{ inputs.proposal_id }}
           OPS_PR_NUMBER: ${{ inputs.pr_number }}
         run: python3 -m admin_ops.verify_release
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate OCR model configuration before connecting to the VPS
+        env:
+          PYTHONPATH: OCR-document-parser/src
+        run: |
+          python -m pip install 'PyYAML>=6.0.1,<7'
+          if ! python -m ocr_platform.config.pipeline_model_changes; then
+            echo "::error title=Деплой заблокирован::Проверьте конфигурацию моделей OCR в журнале шага."
+            exit 1
+          fi
       - name: Deploy exact revision to OCR VPS
         env:
           OPS_RELEASE_SHA: ${{ inputs.sha }}

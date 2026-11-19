@@ -25,6 +25,13 @@ async def simple_extract_fields(
 
         return await extract_fields(text, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id)
 
+    if profile_id == "financial_manager_report":
+        from ocr_platform.services.financial_manager_report import extract_fields
+
+        if not storage_path:
+            raise ValueError("Для отчёта финансового управляющего нужен исходный PDF.")
+        return await extract_fields(storage_path, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id)
+
     if profile_id == "bankruptcy_application":
         if profile_config.get("extraction_mode") != "llm_header":
             raise ValueError("Заявления должны использовать настроенный llm_header, без локального fallback.")

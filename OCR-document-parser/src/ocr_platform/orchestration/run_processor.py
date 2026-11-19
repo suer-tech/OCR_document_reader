@@ -147,6 +147,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
         # for missing required fields. Resolve explicit types before separate OCR.
         initial_resolution = None
         direct_vision = False
+        report_pdf = False
         if requested_document_type:
             initial_resolution = router.resolve_profile(
                 source_type=source_type,
@@ -155,14 +156,17 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 pipeline_run_id=pipeline_run_id,
                 page_type=page_type,
             )
+            report_pdf = initial_resolution.profile_id == "financial_manager_report"
             direct_vision = passport_vision_service.is_direct_vision_profile(
                 router.load_profile(initial_resolution.profile_id)
             )
         # Сначала проверим, нет ли уже извлеченного текста в БД для этого документа (после предыдущих попыток)
-        extracted_text = "" if direct_vision else None
+        extracted_text = "" if direct_vision or report_pdf else None
         ocr_was_used = False
         ocr_latency_ms = None
         text_source = "passport_vision" if direct_vision else "database_cache"
+        if report_pdf:
+            text_source = "financial_manager_report_pdf"
 
         with tracer.span(
             "text_extraction",
@@ -179,7 +183,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     .order_by(models.TextVersion.id.desc())
                     .first()
                 )
-                if (not direct_vision and existing_txt and existing_txt.text.strip()
+                if (not direct_vision and not report_pdf and existing_txt and existing_txt.text.strip()
                         and not (initial_resolution and initial_resolution.profile_id == "bankruptcy_application")):
                     extracted_text = existing_txt.text
                     logger.info(
@@ -189,7 +193,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                         text_length=len(extracted_text),
                     )
 
-            if not extracted_text and not direct_vision:
+            if not extracted_text and not direct_vision and not report_pdf:
                 ocr_config = None
                 if requested_document_type:
                     temp_resolution = router.resolve_profile(
@@ -425,10 +429,10 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     "Шапка прочитана моделью по изображению; требуется сверка с изображением."
                 )
             corrected_text = fields.pop("_raw_text", None)
-            if direct_vision:
+            if direct_vision or report_pdf:
                 corrected_text = corrected_text or ""
                 text = corrected_text
-            if corrected_text or direct_vision:
+            if corrected_text or direct_vision or report_pdf:
                 logger.info(
                     "direct_vision_text_saved" if direct_vision else "vision_fallback_text_saved",
                     pipeline_run_id=pipeline_run_id,
@@ -447,7 +451,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 extraction_span.update(
                     output={
                         "fields_count": len(fields),
-                        "vision_fallback_used": corrected_text is not None and not direct_vision,
+                        "vision_fallback_used": corrected_text is not None and not (direct_vision or report_pdf),
                         "direct_vision": direct_vision,
                     },
                     metadata={
@@ -492,10 +496,12 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 )
             else:
                 quality_options = {}
-                if profile_config.get("quality", {}).get("score_required_fields"):
+                quality_config = profile_config.get("quality", {})
+                if quality_config.get("score_required_values") or quality_config.get("score_required_fields"):
                     from ocr_platform.services.field_retries import required_names
 
-                    quality_options["required_fields"] = required_names(profile_config["fields"])
+                    key = "required_value_fields" if quality_config.get("score_required_values") else "required_fields"
+                    quality_options[key] = required_names(profile_config["fields"])
                 scored_fields = ({name: info for name, info in fields.items() if name != "kad_publication_date"}
                                  if profile_id == "rtk3" else fields)
                 technical, semantic, overall = quality_service.compute_quality_scores(text, scored_fields, **quality_options)
@@ -684,6 +690,8 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                             "extraction_method": val.get("extraction_method")
                             if isinstance(val, dict)
                             else None,
+                            **({"evidence": val["evidence"]}
+                               if report_pdf and isinstance(val, dict) and val.get("evidence") else {}),
                         }
                     )
                     for name, val in fields.items()

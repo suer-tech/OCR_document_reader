@@ -1,0 +1,49 @@
+name: OCR Profile Configuration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/ocr-profile-config.yml
+      - OCR-document-parser/src/ocr_platform/config/financial_manager_report_profile.py
+      - OCR-document-parser/src/ocr_platform/config/pipeline_model_changes.py
+      - OCR-document-parser/src/ocr_platform/config/pipelines/**/*.yaml
+  push:
+    branches: ['**']
+    paths:
+      - .github/workflows/ocr-profile-config.yml
+      - OCR-document-parser/src/ocr_platform/config/financial_manager_report_profile.py
+      - OCR-document-parser/src/ocr_platform/config/pipeline_model_changes.py
+      - OCR-document-parser/src/ocr_platform/config/pipelines/**/*.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  model-config:
+    name: OCR model configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PYTHONPATH: OCR-document-parser/src
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install YAML reader
+        run: python -m pip install 'PyYAML>=6.0.1,<7'
+      - name: Validate configuration and show changes by profile and stage
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z "$BASE_SHA" ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            BASE_SHA="$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD)"
+          fi
+          if ! python -m ocr_platform.config.pipeline_model_changes --base "$BASE_SHA"; then
+            echo "::error title=Неверная конфигурация OCR::Проверьте детали в журнале шага."
+            exit 1
+          fi
