@@ -147,7 +147,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
         # for missing required fields. Resolve explicit types before separate OCR.
         initial_resolution = None
         direct_vision = False
-        report_pdf = False
+        report_pages = False
         if requested_document_type:
             initial_resolution = router.resolve_profile(
                 source_type=source_type,
@@ -156,17 +156,17 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 pipeline_run_id=pipeline_run_id,
                 page_type=page_type,
             )
-            report_pdf = initial_resolution.profile_id == "financial_manager_report"
-            direct_vision = passport_vision_service.is_direct_vision_profile(
+            report_pages = initial_resolution.profile_id == "financial_manager_report" and content_type in {"pdf", "image"}
+            direct_vision = content_type in {"pdf", "image"} and passport_vision_service.is_direct_vision_profile(
                 router.load_profile(initial_resolution.profile_id)
             )
         # Сначала проверим, нет ли уже извлеченного текста в БД для этого документа (после предыдущих попыток)
-        extracted_text = "" if direct_vision or report_pdf else None
+        extracted_text = "" if direct_vision or report_pages else None
         ocr_was_used = False
         ocr_latency_ms = None
         text_source = "passport_vision" if direct_vision else "database_cache"
-        if report_pdf:
-            text_source = "financial_manager_report_pdf"
+        if report_pages:
+            text_source = f"financial_manager_report_{content_type}"
 
         with tracer.span(
             "text_extraction",
@@ -183,7 +183,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                     .order_by(models.TextVersion.id.desc())
                     .first()
                 )
-                if (not direct_vision and not report_pdf and existing_txt and existing_txt.text.strip()
+                if (not direct_vision and not report_pages and existing_txt and existing_txt.text.strip()
                         and not (initial_resolution and initial_resolution.profile_id == "bankruptcy_application")):
                     extracted_text = existing_txt.text
                     logger.info(
@@ -193,7 +193,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                         text_length=len(extracted_text),
                     )
 
-            if not extracted_text and not direct_vision and not report_pdf:
+            if not extracted_text and not direct_vision and not report_pages:
                 ocr_config = None
                 if requested_document_type:
                     temp_resolution = router.resolve_profile(
@@ -208,6 +208,8 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                         temp_resolution.profile_id
                     )
                     ocr_config = temp_profile_config.get("models", {}).get("ocr")
+                    if temp_resolution.profile_id == "financial_manager_report" and content_type == "docx":
+                        ocr_config = {**(ocr_config or {}), "preserve_docx_table_rows": True}
 
                 import asyncio
 
@@ -423,16 +425,18 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 pipeline_run_id=pipeline_run_id,
                 document_id=document_id,
                 storage_path=storage_path,
+                content_type=content_type,
             )
             if profile_id == "bankruptcy_application" and (ocr_was_used or text_source == "direct_vision"):
                 fields["passport_number"]["validation_issue"] = (
                     "Шапка прочитана моделью по изображению; требуется сверка с изображением."
                 )
             corrected_text = fields.pop("_raw_text", None)
-            if direct_vision or report_pdf:
+            vision_fallback_used = corrected_text is not None and corrected_text != text and not (direct_vision or report_pages)
+            if direct_vision or report_pages:
                 corrected_text = corrected_text or ""
                 text = corrected_text
-            if corrected_text or direct_vision or report_pdf:
+            if corrected_text or direct_vision or report_pages:
                 logger.info(
                     "direct_vision_text_saved" if direct_vision else "vision_fallback_text_saved",
                     pipeline_run_id=pipeline_run_id,
@@ -451,12 +455,12 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                 extraction_span.update(
                     output={
                         "fields_count": len(fields),
-                        "vision_fallback_used": corrected_text is not None and not (direct_vision or report_pdf),
+                        "vision_fallback_used": vision_fallback_used,
                         "direct_vision": direct_vision,
                     },
                     metadata={
                         "fields_count": len(fields),
-                        "vision_fallback_used": corrected_text is not None and not direct_vision,
+                        "vision_fallback_used": vision_fallback_used,
                         "direct_vision": direct_vision,
                         "profile_id": profile_id,
                     },
@@ -691,7 +695,7 @@ async def _process_pipeline_run_impl(pipeline_run_id: str) -> None:
                             if isinstance(val, dict)
                             else None,
                             **({"evidence": val["evidence"]}
-                               if report_pdf and isinstance(val, dict) and val.get("evidence") else {}),
+                               if profile_id == "financial_manager_report" and isinstance(val, dict) and val.get("evidence") else {}),
                         }
                     )
                     for name, val in fields.items()

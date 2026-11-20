@@ -321,7 +321,8 @@ def extract_text_at_ingest(
     if content_type == "docx":
         from ocr_platform.services.docx_service import read_docx_text
 
-        return read_docx_text(file_path), False, None, "docx"
+        preserve_rows = bool((ocr_config or {}).get("preserve_docx_table_rows"))
+        return read_docx_text(file_path, preserve_table_rows=preserve_rows), False, None, "docx"
 
     return "", False, None, "pdfplumber"
 

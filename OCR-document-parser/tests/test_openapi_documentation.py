@@ -40,6 +40,26 @@ def test_swagger_court_example_matches_response_schema(openapi):
     DocumentResultResponse.model_validate(examples["court_decision"]["value"])
 
 
+def test_swagger_financial_manager_report_documents_table_rows(openapi):
+    from ocr_platform.services.financial_manager_report_schema import (
+        CurrentPaymentRow, PropertyRow, RegisterRow, SaleRow,
+    )
+
+    description = openapi["components"]["schemas"]["DocumentResultResponse"]["properties"]["fields"]["description"]
+    section = description.split("\nДля `financial_manager_report`", 1)[1].split("\nДля `", 1)[0]
+    fields = re.split(r"^\* `([^`]+)` — ", section, flags=re.MULTILINE)
+    field_descriptions = dict(zip(fields[1::2], fields[2::2]))
+    for name, row_model in {
+        "property_inventory": PropertyRow,
+        "property_sales": SaleRow,
+        "creditor_register": RegisterRow,
+        "current_payments": CurrentPaymentRow,
+    }.items():
+        rows = re.findall(r"^  \* `([^`]+)` — \S", field_descriptions[name], re.MULTILINE)
+        assert len(rows) == len(set(rows))
+        assert set(rows) == {*row_model.model_fields, "sources", "null_reasons"}, name
+
+
 @pytest.mark.parametrize("name,review", [("rtk3", False), ("rtk3_review", True)])
 def test_swagger_rtk3_examples_match_current_contract_and_review_rules(openapi, name, review):
     from ocr_platform.services.quality_service import compute_rtk3_quality_scores

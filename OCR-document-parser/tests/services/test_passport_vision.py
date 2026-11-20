@@ -1,7 +1,9 @@
 import json
 from contextlib import contextmanager, nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from zipfile import ZipFile
 
 import httpx
 import pymupdf
@@ -231,8 +233,8 @@ async def test_registration_verifies_index_without_another_model_request(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("page_type,profile_id", [(None,"passport_main"),("registration","passport_registration")])
-@pytest.mark.parametrize("response_kind", ["success", "invalid", "empty", "http_error", "render_error"])
-async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
+@pytest.mark.parametrize("response_kind", ["success", "invalid", "empty", "http_error", "render_error", "text", "docx", "doc"])
+async def test_worker_routes_passport_input_and_saves_results(
     picture, transport, monkeypatch, page_type, profile_id, response_kind
 ):
     engine = create_engine("sqlite:///:memory:")
@@ -243,12 +245,31 @@ async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
         with Session(engine) as session:
             yield session
 
+    from_text = response_kind in {"text", "docx", "doc"}
+    file_type = response_kind if from_text else "image"
+    suffix = {"text": ".txt", "docx": ".docx", "doc": ".doc"}.get(file_type)
+    input_path = picture.with_suffix(suffix) if suffix else picture
+    source_text = "Паспорт РФ. ТЕСТОВ 03 06 001234"
+    if file_type == "text":
+        input_path.write_text(source_text, encoding="utf-8")
+    elif file_type == "docx":
+        with ZipFile(input_path, "w") as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
+            archive.writestr("word/document.xml", f'''<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                <w:body><w:p><w:r><w:t>{source_text}</w:t></w:r></w:p></w:body></w:document>''')
+    elif file_type == "doc":
+        from ocr_platform.services import doc_service
+
+        content = (Path(__file__).parents[1] / "fixtures" / "legacy_doc" / "russian.doc").read_bytes()
+        input_path.write_bytes(content)
+        monkeypatch.setattr(doc_service, "extract_doc_text", MagicMock(return_value=source_text))
     with get_session() as session:
         session.add(models.Document(id="doc", source_type="crm", document_type="passport"))
-        session.add(models.DocumentFile(document_id="doc", storage_path=str(picture), file_type="image"))
+        session.add(models.DocumentFile(document_id="doc", storage_path=str(input_path), file_type=file_type))
         session.add(models.PipelineRun(id="run", document_id="doc", profile_id="passport", status="queued", page_type=page_type,
                                        webhook_url="https://callback.invalid"))
-        session.add(models.TextVersion(document_id="doc", pipeline_run_id="run", text="STALE OCR MUST NOT BE USED"))
+        if not from_text:
+            session.add(models.TextVersion(document_id="doc", pipeline_run_id="run", text="STALE OCR MUST NOT BE USED"))
         session.commit()
     monkeypatch.setattr(run_processor.repository, "get_session", get_session)
     # The real context manager used to swallow extraction exceptions; a plain
@@ -264,13 +285,15 @@ async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
     monkeypatch.setattr(run_processor, "mlflow_run", lambda *args: nullcontext())
     for name in ["mlflow_set_tag","mlflow_log_param","mlflow_log_metric","mlflow_log_text"]:
         monkeypatch.setattr(run_processor, name, MagicMock())
-    ocr = MagicMock(side_effect=AssertionError("Separate OCR must never run"))
+    ocr = (MagicMock(wraps=run_processor.ocr_service.extract_text_at_ingest) if from_text else
+           MagicMock(side_effect=AssertionError("Separate OCR must never run")))
     monkeypatch.setattr(run_processor.ocr_service, "extract_text_at_ingest", ocr)
     monkeypatch.setattr(vision, "search_postal_index_by_address", MagicMock(return_value=""))
     profile = router.load_profile(profile_id)
     client, respond = transport
-    expected_text = "" if response_kind == "empty" else "ТЕСТОВ 03 06 001234"
-    respond("broken JSON" if response_kind == "invalid" else answer(profile, raw_text=expected_text))
+    model_text = "" if response_kind == "empty" else "ТЕСТОВ 03 06 001234"
+    expected_text = source_text if from_text else model_text
+    respond("broken JSON" if response_kind == "invalid" else answer(profile, raw_text=model_text))
     if response_kind == "http_error":
         respond({}, status=503)
     if response_kind == "render_error":
@@ -292,7 +315,14 @@ async def test_worker_skips_ocr_and_cached_text_and_saves_direct_results(
         engine.dispose()
         return
     await run_processor._process_pipeline_run_impl("run")
-    ocr.assert_not_called()
+    if from_text:
+        ocr.assert_called_once()
+        for call in client.post.await_args_list:
+            parts = call.kwargs["json"]["messages"][0]["content"]
+            assert all(part["type"] == "text" for part in parts)
+            assert source_text in parts[-1]["text"]
+    else:
+        ocr.assert_not_called()
     assert client.post.await_count == 4
     webhook.assert_awaited_once()
     assert webhook.await_args.args[1]["raw_text"] == expected_text

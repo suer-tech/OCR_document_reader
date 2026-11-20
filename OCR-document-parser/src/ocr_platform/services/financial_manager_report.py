@@ -44,7 +44,7 @@ logger = get_logger(__name__)
 class ReportPage:
     number: int
     native_text: str | None
-    image: dict
+    image: dict | None
 
 
 @dataclass
@@ -96,9 +96,15 @@ def _parse_report_fields(schema: type[BaseModel], payload: object) -> BaseModel:
 async def _ask(schema, prompt, pages, config, *, task, document_id, pipeline_run_id, attempts=2, targets=None,
                allow_partial_fields=False, retry_empty=False):
     numbers = ", ".join(str(page.number) for page in pages)
-    user_content = f"Физические номера страниц PDF в порядке изображений: {numbers}."
+    images = [page.image for page in pages if page.image is not None]
+    if images:
+        user_content = f"Номера страниц в порядке изображений: {numbers}."
+    else:
+        user_content = "Текст исходного документа. Для ссылок на источник используй номер блока 1."
     if targets:
         user_content += "\n" + json.dumps(targets, ensure_ascii=False, separators=(",", ":"))
+    if not images:
+        user_content += "\n\n[Документ, блок 1]\n" + (pages[0].native_text or "")
     # Argon rejects nested JSON schemas in response_format. Check the contract locally.
     system_prompt = prompt + "\nJSON Schema ответа:\n" + json.dumps(
         schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"),
@@ -112,7 +118,7 @@ async def _ask(schema, prompt, pages, config, *, task, document_id, pipeline_run
             reasoning_effort=config.get("reasoning_effort", "low"), max_tokens=int(config.get("max_tokens", 16384)),
             system_prompt=system_prompt,
             user_content=user_content,
-            image_parts=[page.image for page in pages],
+            image_parts=images or None,
             response_schema={"type": "json_object"},
         )
         if response is None:
@@ -169,46 +175,57 @@ def _fact(fact: Fact, page_count: int) -> tuple[object, dict | None, str | None]
     return value, source, None
 
 
+def _row_money_evidence(
+    row: BaseModel, page_count: int,
+) -> tuple[dict, set[int], list[tuple[str, dict]]]:
+    anchor_fields = {"name", "creditor_name", "claim_type"}
+    context_fields = anchor_fields | {"queue", "queue_part", "outside_register"}
+    context = {}
+    pages = set()
+    uncertain_cells = []
+    for field, fact in row:
+        if isinstance(fact, Fact[Money]):
+            value, source, reason = _fact(fact, page_count)
+            if reason in UNCERTAIN_REASONS:
+                uncertain_cells.append((field, source or {}))
+            elif value is not None:
+                pages.add(source["page"])
+        elif field in context_fields and isinstance(fact, Fact):
+            value, source, _ = _fact(fact, page_count)
+            if value is not None:
+                context[field] = value
+                if field in anchor_fields:
+                    pages.add(source["page"])
+    return context, pages, uncertain_cells
+
+
 def _money_retry_targets(report: FinancialManagerReport, page_count: int) -> list[MoneyRetryTarget]:
     targets = []
     for section_name, section in report:
         if not isinstance(section, Section):
             continue
         section_source = _source(section.source, page_count) or {}
+        section_labels = {"table": section_source["table"]} if "table" in section_source else {}
         for row_index, row in enumerate(section.rows, 1):
             row_source = _source(getattr(row, "source", None), page_count) or {}
-            row_pages = {row_source["page"]} if row_source else set()
-            row_context = {"section": section_name, "row_index": row_index}
+            field_context, row_pages, money_cells = _row_money_evidence(row, page_count)
+            context = {"section": section_name, "row_index": row_index}
             if row_source:
-                row_context["row_source"] = row_source
+                context["row_source"] = row_source
+                row_pages.add(row_source["page"])
             if hasattr(row, "row_kind"):
-                row_context["row_kind"] = row.row_kind
-            money_cells = []
-            for field, fact in row:
-                if isinstance(fact, Fact[Money]):
-                    value, source, reason = _fact(fact, page_count)
-                    if reason in UNCERTAIN_REASONS:
-                        money_cells.append((field, source or {}))
-                    elif value is not None:
-                        row_pages.add(source["page"])
-                elif isinstance(fact, Fact) and field in {
-                    "name", "creditor_name", "claim_type", "queue", "queue_part", "outside_register",
-                }:
-                    value, source, _ = _fact(fact, page_count)
-                    if value is not None:
-                        row_context[field] = value
-                        if field in {"name", "creditor_name", "claim_type"}:
-                            row_pages.add(source["page"])
+                context["row_kind"] = row.row_kind
+            context.update(field_context)
+            row_labels = {**section_labels, **{key: row_source[key] for key in ("table", "row") if key in row_source}}
             for field, cell_source in money_cells:
                 pages = row_pages | ({cell_source["page"]} if cell_source else set())
                 if not pages:
                     continue
                 labels = {
-                    **({"table": section_source["table"]} if "table" in section_source else {}),
-                    **{key: row_source[key] for key in ("table", "row") if key in row_source},
+                    **row_labels,
                     **{key: cell_source[key] for key in CELL_LABELS if key in cell_source},
                 }
-                targets.append(MoneyRetryTarget(row, field, pages, labels, row_context))
+                targets.append(MoneyRetryTarget(row, field, pages, labels, context))
     return targets
 
 
@@ -362,9 +379,24 @@ def _page_text(page: ReportPage, parsed: PageText | None) -> tuple[str, bool]:
     return "[Текст страницы не получен]", False
 
 
-async def extract_fields(storage_path: str, profile: dict, *, document_id=None, pipeline_run_id=None) -> dict:
+def _read_report_pages(storage_path: str, content_type: str, source_text: str | None) -> list[ReportPage]:
+    if source_text is not None:
+        if not source_text.strip():
+            raise ValueError("В документе отчёта нет читаемого текста.")
+        return [ReportPage(1, source_text, None)]
+    if content_type == "image":
+        from ocr_platform.services.passport_vision_service import _document_images
+
+        return [ReportPage(number, None, part) for number, part in enumerate(_document_images(storage_path), 1)]
+    return read_pdf(storage_path)
+
+
+async def extract_fields(
+    storage_path: str, profile: dict, *, document_id=None, pipeline_run_id=None,
+    source_text: str | None = None, content_type: str = "pdf",
+) -> dict:
     config = extraction_config(profile)
-    pages = await asyncio.to_thread(read_pdf, storage_path)
+    pages = await asyncio.to_thread(_read_report_pages, storage_path, content_type, source_text)
     context = {"document_id": document_id, "pipeline_run_id": pipeline_run_id}
     report = await _ask(FinancialManagerReport, EXTRACT_REPORT, pages, config,
                         task="financial_manager_report_fields", allow_partial_fields=True, retry_empty=True, **context)
@@ -391,7 +423,7 @@ async def extract_fields(storage_path: str, profile: dict, *, document_id=None, 
         page_list = ", ".join(map(str, incomplete))
         issue = f"Полный текст не получен для страниц: {page_list}."
         fields["report_text_complete"].update(reasoning=issue, validation_issue=issue)
-    fields["_raw_text"] = "\n\f\n".join(pages_text)
+    fields["_raw_text"] = source_text if source_text is not None else "\n\f\n".join(pages_text)
     return fields
 
 

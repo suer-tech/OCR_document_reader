@@ -10,6 +10,8 @@ async def simple_extract_fields(
     pipeline_run_id: str,
     document_id: str,
     storage_path: str | None = None,
+    *,
+    content_type: str | None = None,
 ) -> Dict[str, dict]:
     """
     Извлечь структурированные поля из текста или оригинальных страниц документа.
@@ -29,8 +31,12 @@ async def simple_extract_fields(
         from ocr_platform.services.financial_manager_report import extract_fields
 
         if not storage_path:
-            raise ValueError("Для отчёта финансового управляющего нужен исходный PDF.")
-        return await extract_fields(storage_path, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id)
+            raise ValueError("Для отчёта финансового управляющего нужен исходный документ.")
+        source_text = text if content_type in {"doc", "docx", "text"} else None
+        return await extract_fields(
+            storage_path, profile_config, document_id=document_id, pipeline_run_id=pipeline_run_id,
+            source_text=source_text, content_type=content_type or "pdf",
+        )
 
     if profile_id == "bankruptcy_application":
         if profile_config.get("extraction_mode") != "llm_header":
@@ -43,6 +49,8 @@ async def simple_extract_fields(
     if passport_vision_service.is_direct_vision_profile(profile_config):
         if not storage_path:
             raise ValueError("Passport direct vision requires the original document")
+        if content_type in {"doc", "docx", "text"}:
+            return await passport_vision_service.extract_passport_fields(storage_path, profile_config, source_text=text)
         return await passport_vision_service.extract_passport_fields(storage_path, profile_config)
 
     if profile_id == "court_decision_ru" and profile_config.get("extraction_mode") == "regex_jev":

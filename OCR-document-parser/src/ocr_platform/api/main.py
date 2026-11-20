@@ -209,8 +209,6 @@ def create_app() -> FastAPI:
         )
         requested_document_type = request.document_type or request.document_type_hint
         initial_profile_id = _resolve_initial_profile_id(requested_document_type)
-        if initial_profile_id == "financial_manager_report" and request.content_type != "pdf":
-            raise HTTPException(status_code=400, detail="financial_manager_report requires a PDF")
 
         with repository.get_session() as session:
             existing = (
@@ -380,8 +378,6 @@ def create_app() -> FastAPI:
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         requested_document_type = document_type.strip()
         initial_profile_id = _resolve_initial_profile_id(requested_document_type)
-        if initial_profile_id == "financial_manager_report" and content_type != "pdf":
-            raise HTTPException(status_code=400, detail="financial_manager_report requires a PDF")
 
         with repository.get_session() as session:
             existing = (

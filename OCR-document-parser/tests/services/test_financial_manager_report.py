@@ -3,13 +3,17 @@
 import asyncio
 import base64
 from contextlib import nullcontext
+from io import BytesIO
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from zipfile import ZipFile
 
 import pymupdf
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -17,6 +21,7 @@ from sqlalchemy.pool import StaticPool
 from ocr_platform.orchestration.router import load_profile
 from ocr_platform.services import financial_manager_report as service
 from ocr_platform.services.financial_manager_report_schema import FinancialManagerReport
+from ocr_platform.services.ocr_service import extract_text_at_ingest
 
 MODEL = load_profile(service.PROFILE_ID)["models"]["llm_extraction"]["model"]
 
@@ -248,14 +253,85 @@ def test_report_pdf_through_api_worker_and_webhook(local_api, monkeypatch, kind,
 
 
 @pytest.mark.parametrize("kind", ["upload", "ingest"])
-def test_report_rejects_non_pdf_before_queue(local_api, kind):
+@pytest.mark.parametrize("content_type", ["docx", "doc", "text", "image"])
+def test_report_accepts_supported_formats_through_api_worker_and_webhook(local_api, monkeypatch, kind, content_type):
+    client, worker, broker, webhook = local_api
+    text = "Отчёт финансового управляющего. Дело А01-42/2026"
+    if content_type == "docx":
+        title = text
+        text = title + "\nПогашено\tОстаток\n25 100,00\t7 608,38"
+        output = BytesIO()
+        with ZipFile(output, "w") as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
+            archive.writestr("word/document.xml", f'''<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                <w:body><w:p><w:r><w:t>{title}</w:t></w:r></w:p>
+                <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Погашено</w:t></w:r></w:p></w:tc>
+                <w:tc><w:p><w:r><w:t>Остаток</w:t></w:r></w:p></w:tc></w:tr>
+                <w:tr><w:tc><w:p><w:r><w:t>25 100,00</w:t></w:r></w:p></w:tc>
+                <w:tc><w:p><w:r><w:t>7 608,38</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+                </w:body></w:document>''')
+        filename, content = "report.docx", output.getvalue()
+    elif content_type == "doc":
+        from ocr_platform.services import doc_service
+
+        content = (Path(__file__).parents[1] / "fixtures" / "legacy_doc" / "russian.doc").read_bytes()
+        filename = "report.doc"
+        reader = Mock(return_value=text)
+        monkeypatch.setattr(doc_service, "extract_doc_text", reader)
+    elif content_type == "image":
+        output = BytesIO()
+        Image.new("RGB", (100, 80), "white").save(output, format="PNG")
+        filename, content = "report.png", output.getvalue()
+    else:
+        filename, content = "report.txt", text.encode()
+
+    def gateway(**kwargs):
+        if kwargs["task_name"] == "financial_manager_report_transcription":
+            assert content_type == "image"
+            return SimpleNamespace(parsed={"pages": [{"page": 1, "status": "readable", "text": text}]})
+        assert kwargs["task_name"] == "financial_manager_report_fields"
+        if content_type == "image":
+            assert len(kwargs["image_parts"]) == 1
+        else:
+            assert kwargs["image_parts"] is None and text in kwargs["user_content"]
+        return SimpleNamespace(parsed=model_report(page=1))
+
+    llm = Mock(side_effect=gateway)
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", llm)
+    if content_type != "image":
+        monkeypatch.setattr(worker.ocr_service, "extract_text_at_ingest", extract_text_at_ingest)
+    meta = dict(source_type="external", document_type=service.PROFILE_ID, idempotency_key="supported-format",
+                webhook_url="https://example.invalid/hook")
+    if kind == "upload":
+        reply = client.post("/documents/upload", data=meta, files={"file": (filename, content, "application/octet-stream")})
+    else:
+        reply = client.post("/documents/ingest", json={**meta, "content_type": content_type,
+                            "content_base64": base64.b64encode(content).decode()})
+    assert reply.status_code == 202, reply.text
+    ids = reply.json()
+    assert broker.call_args.args[0].pipeline_run_id == ids["pipeline_run_id"]
+    asyncio.run(worker._process_pipeline_run_impl(ids["pipeline_run_id"]))
+    result = client.get(f"/documents/{ids['document_id']}/result").json()
+    assert result["fields"]["case_number"]["evidence"]["page"] == 1
+    assert result["fields"]["current_payments"]["value"]["rows"][-1]["unpaid_balance"] == "7608.38"
+    assert result["validation_status"] == "ok" and result["human_review_required"] is False
+    assert result["fields"]["report_text_complete"]["value"] is True
+    assert result["fields"] == webhook.await_args.args[1]["fields"]
+    assert result["raw_text"] == ("[Страница 1]\n" + text if content_type == "image" else text)
+    assert llm.call_count == (2 if content_type == "image" else 1)
+    if content_type == "doc":
+        assert [call.args[0] for call in reader.call_args_list] == [content, content]
+
+
+@pytest.mark.parametrize("kind", ["upload", "ingest"])
+def test_report_rejects_invalid_docx_before_queue(local_api, kind):
     client, _, broker, _ = local_api
     meta = dict(source_type="external", document_type=service.PROFILE_ID, idempotency_key="wrong")
     if kind == "upload":
-        reply = client.post("/documents/upload", data=meta, files={"file": ("report.txt", b"not PDF", "text/plain")})
+        reply = client.post("/documents/upload", data=meta, files={"file": ("report.docx", b"not Word", "application/octet-stream")})
     else:
-        reply = client.post("/documents/ingest", json={**meta, "content_type": "text",
-                            "content_base64": base64.b64encode(b"not PDF").decode()})
+        reply = client.post("/documents/ingest", json={**meta, "content_type": "docx",
+                            "content_base64": base64.b64encode(b"not Word").decode()})
     assert reply.status_code == 400
     broker.assert_not_called()
 

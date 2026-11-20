@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, Field, model_serializer
+from pydantic import BaseModel, Field, field_validator, model_serializer
 
 
 SourceType = Literal["crm", "email", "portal", "external", "other"]
@@ -15,7 +15,7 @@ DOCUMENT_TYPE_DESCRIPTION = (
     "passport_main — главная страница паспорта РФ; passport_registration — страница регистрации; "
     "bankruptcy_application — заявление на банкротство, паспортные данные должника из шапки; "
     "procedure_completion — акт о завершении РИ или РД, включая переход РД → РИ (явный выбор); "
-    "financial_manager_report — отчёт финансового управляющего о результатах РИ или РД (явный выбор, PDF); "
+    "financial_manager_report — отчёт финансового управляющего о результатах РИ или РД (явный выбор); "
     "unknown — явно выбранный неизвестный тип, без автоматической классификации. "
     "Автоопределение доступно через POST /documents/ingest, если не заданы document_type и "
     "document_type_hint. В форме POST /documents/upload поле document_type обязательно."
@@ -125,9 +125,15 @@ class FieldValue(BaseModel):
     )
     evidence: dict[str, Any] | None = Field(
         default=None,
-        description="Для отчёта финансового управляющего: page (физическая страница PDF с 1), "
+        description="Для отчёта финансового управляющего: page (номер страницы PDF или кадра изображения с 1, "
+        "для DOCX, DOC и текста — номер текстового блока 1), "
         "table, row, column или quote. В таблицах источники по ячейкам лежат в value.rows[].sources.",
     )
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def preserve_structured_evidence(cls, value: Any) -> dict[str, Any] | None:
+        return value if isinstance(value, dict) else None
 
     @model_serializer(mode="wrap")
     def serialize_field(self, handler):
@@ -183,24 +189,6 @@ class DocumentResultResponse(BaseModel):
 
 Общее служебное поле для всех профилей:
 * `processing_started_at` — Начало обработки: строка UTC в формате ISO-8601 (без суффикса часового пояса) или null; reasoning, confidence и source равны null.
-
-Для `financial_manager_report` (отчёт финансового управляющего, PDF):
-* `case_number` — номер дела.
-* `debtor_full_name` — ФИО должника одной строкой.
-* `debtor_inn` — ИНН должника, если указан в отчёте.
-* `procedure_type` — РИ или РД.
-* `report_date` — дата отчёта в формате YYYY-MM-DD.
-* `inventory_date` — дата из строки о проведении описи в формате YYYY-MM-DD.
-* `property_inventory` — состав имущества, раздельные оценки, залог, единственное жильё и исключение.
-* `property_sales` — результаты реализации, договорные цены и фактические оплаты.
-* `creditor_register` — требования, промежуточные и общие итоги. `outside_register` отмечает строки за реестром.
-* `current_payments` — обязательства, оплаты и остатки по строкам и итогам.
-* `report_text_complete` — признак получения текста всех страниц. Полный текст с номерами страниц в `raw_text`.
-
-У реквизитов источник находится в `evidence`. Табличные разделы имеют форму `{status, source, rows}`.
-Статусы раздела — listed, none_declared, not_found, unreadable, partial. Источник ячейки хранится в `rows[].sources`,
-причина null в `rows[].null_reasons`. В реестре и текущих платежах `row_kind` различает detail, subtotal и total.
-Суммы передаются строками с двумя знаками после точки.
 
 Для `court_decision` (Судебное решение):
 * `debtor_full_name` — Объект с полями-строками: `debtor_last_name` (Фамилия), `debtor_first_name` (Имя), `debtor_patronymic` (Отчество); компоненты или весь объект могут быть null
@@ -388,6 +376,72 @@ PDF без текста, смешанные PDF и фото отправляют
 корректные 0 и false не запускают повторы пустых полей. Это отдельный механизм от
 сетевых повторов SDK и очереди. После исчерпания попыток недостающее значение
 остаётся null; действующие проверки обязательности/ручной проверки сохраняются.
+
+Для `financial_manager_report` (Отчёт финансового управляющего):
+Тип указывается явно. Для PDF и изображений обрабатываются страницы. Для DOCX, DOC и текстового файла
+используется прочитанный текст как блок 1. Суммы передаются строками с точкой и двумя знаками после неё.
+Реквизиты могут содержать `FieldValue.evidence`. Табличное значение имеет вид `{status, source, rows}`.
+`source` — объект с номером страницы `page` и доступными `table`, `row`, `column`, `quote` или null.
+`status` — `listed` (строки распознаны), `none_declared` (явно заявлено отсутствие строк),
+`not_found` (раздел не найден), `unreadable` (раздел нечитаем), `partial` (результат неполный).
+В каждой строке `sources` хранит источники отдельных полей, а `null_reasons` — причины отсутствующих
+или неподтверждённых значений: `not_stated`, `unreadable`, `ambiguous`, `not_applicable`, `unsupported_source`.
+
+* `case_number` — Номер текущего дела из шапки отчёта.
+* `debtor_full_name` — ФИО должника одной строкой.
+* `debtor_inn` — Напечатанный ИНН должника, строка из 12 цифр с ведущими нулями или null.
+* `procedure_type` — `РИ` (реализация имущества) или `РД` (реструктуризация долгов).
+* `report_date` — Дата составления отчёта в формате YYYY-MM-DD.
+* `inventory_date` — Дата проведения описи в формате YYYY-MM-DD или null.
+* `property_inventory` — Состав имущества по описи. `rows` содержит строки объектов.
+  * `name` — Наименование объекта.
+  * `manager_valuation` — Стоимость по оценке финансового управляющего.
+  * `appraiser_valuation` — Стоимость по оценке оценщика.
+  * `sole_home` — Признак единственного жилья, boolean/null.
+  * `secured_by_pledge` — Признак залога объекта, boolean/null.
+  * `pledgee` — Залогодержатель по строке объекта.
+  * `pledge_details` — Дополнительные сведения о залоге.
+  * `exclusion_text` — Дословная формулировка об исключении имущества.
+  * `exclusion_basis` — Указанное основание или документ об исключении.
+  * `sources` — Источники по полям объекта.
+  * `null_reasons` — Причины пропусков по полям объекта.
+* `property_sales` — Реализация имущества. `rows` содержит строки таблицы продаж.
+  * `name` — Наименование объекта в таблице реализации.
+  * `sale_method` — Указанный способ продажи.
+  * `sale_result` — Исход торгов или продажи по отчёту.
+  * `contract_price` — Стоимость имущества по договору.
+  * `paid_amount` — Фактическая оплата из таблицы реализации.
+  * `unsold_return_text` — Формулировка о несостоявшихся торгах и возврате имущества должнику.
+  * `sources` — Источники по полям строки реализации.
+  * `null_reasons` — Причины пропусков по полям строки реализации.
+* `creditor_register` — Реестр требований и блок за реестром. `rows` содержит требования и напечатанные итоги.
+  * `row_kind` — `detail` (требование), `subtotal` (промежуточный итог) или `total` (общий итог).
+  * `source` — Источник строки целиком или null.
+  * `queue` — Очередь требования.
+  * `queue_part` — Часть очереди.
+  * `creditor_name` — Наименование кредитора.
+  * `claim_type` — Вид требования в формулировке отчёта.
+  * `claim_category` — `secured` (залог), `principal` (основной долг), `sanctions` (санкции),
+    `salary_or_severance` (зарплата или выходное пособие), `procedure_interest` (проценты в ходе процедуры) или `other`.
+  * `secured_by_pledge` — Признак обеспечения требования залогом, boolean/null.
+  * `outside_register` — true за реестром, false внутри реестра, null для смешанного итога или при неопределённости.
+  * `included_amount` — Сумма требования из соответствующей колонки.
+  * `paid_amount` — Сумма погашения требования.
+  * `sources` — Источники по полям строки реестра.
+  * `null_reasons` — Причины пропусков по полям строки реестра.
+* `current_payments` — Текущие платежи и расходы. `rows` содержит обязательства и напечатанные итоги.
+  * `row_kind` — `detail` (обязательство), `subtotal` (промежуточный итог) или `total` (общий итог).
+  * `source` — Источник строки целиком или null.
+  * `queue` — Очередь текущего платежа.
+  * `name` — Наименование обязательства или расхода.
+  * `expense_category` — `manager_remuneration` (вознаграждение), `engaged_services` (привлечённые лица) или `other`.
+  * `obligation_amount` — Размер обязательства из одноимённой колонки.
+  * `paid_amount` — Сумма погашения обязательства.
+  * `unpaid_balance` — Непогашенный остаток на дату отчёта.
+  * `sources` — Источники по полям строки платежа.
+  * `null_reasons` — Причины пропусков по полям строки платежа.
+* `report_text_complete` — Boolean. true, если прочитан текстовый вход или все страницы прочитаны полностью либо подтверждены пустыми.
+  В `raw_text` возвращается прочитанный текст. Для PDF и изображений добавляются номера страниц и отметки о пропусках.
 
 Для `unknown` специализированные поля извлечения не настроены.
         """.strip(),

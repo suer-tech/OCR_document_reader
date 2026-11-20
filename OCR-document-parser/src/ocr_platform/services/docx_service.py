@@ -10,7 +10,7 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 MAX_EXPANDED_BYTES = 32 * 1024 * 1024
 
 
-def extract_docx_text(content: bytes) -> str:
+def extract_docx_text(content: bytes, *, preserve_table_rows: bool = False) -> str:
     try:
         with ZipFile(io.BytesIO(content)) as archive:
             entries = archive.infolist()
@@ -45,6 +45,9 @@ def extract_docx_text(content: bytes) -> str:
         if node.tag == W + "p":
             yield visible(node)
             return
+        if preserve_table_rows and node.tag == W + "tr":
+            yield "\t".join(" ".join(paragraphs(cell)).strip() for cell in node.findall(W + "tc"))
+            return
         for child in node:
             yield from paragraphs(child)
 
@@ -55,5 +58,5 @@ def extract_docx_text(content: bytes) -> str:
     return text
 
 
-def read_docx_text(file_path: str) -> str:
-    return extract_docx_text(Path(file_path).read_bytes())
+def read_docx_text(file_path: str, *, preserve_table_rows: bool = False) -> str:
+    return extract_docx_text(Path(file_path).read_bytes(), preserve_table_rows=preserve_table_rows)
