@@ -25,7 +25,7 @@ LEGAL_FORMS = [
     (r"обществ\w*\s+с\s+ограниченн\w*\s+ответственност\w*", "ООО"),
     (r"профессиональн\w*\s+коллекторск\w*\s+организаци\w*", "ПКО"),
 ]
-GENERIC = {"пао", "ао", "ооо", "ип", "пко", "банк", "кредитор", "заявитель"}
+GENERIC = {"нао", "пао", "ао", "ооо", "ип", "пко", "банк", "кредитор", "заявитель"}
 FEDERAL_TAX_NAME = r"(?:\bФНС(?:\s+России)?|Федеральн\w*\s+налогов\w*\s+служб\w*(?:\s+России)?)"
 TAX_REGION = (r"(?:[а-яё-]+\s+(?:област\w*|кра[юяй])|Республик\w*\s+(?-i:[А-ЯЁ][А-ЯЁа-яё-]+)"
               r"|г\.\s*[а-яё-]+(?:\s+[а-яё-]+\s+област\w*)?)")
@@ -80,7 +80,7 @@ def normalize_creditor(value: str) -> str:
 
 def identity(value: str) -> tuple[str | None, frozenset[str]]:
     value = normalize_creditor(value)
-    form = re.search(r"\b(?:ООО|ПАО|АО|ИП)\b", value)
+    form = re.search(r"\b(?:ООО|НАО|ПАО|АО|ИП)\b", value)
     tokens = frozenset(t for t in re.findall(r"[а-яёa-z0-9]+", value.casefold()) if t not in GENERIC)
     return form.group(0) if form else None, tokens
 
@@ -119,13 +119,16 @@ def creditor_value(value: str | None, quote: str, text: str) -> Requisite:
     normalized = normalize_creditor(value)
     form, tokens = identity(normalized)
     source = normalize_creditor(quote)
+    if form == "НАО":
+        source = normalize_creditor(re.sub(r"\bнепубличн\w*\s+акционерн\w*\s+обществ\w*",
+                                           "НАО", quote, flags=re.I))
     source_tokens = set(re.findall(r"[а-яёa-z0-9]+", source.casefold()))
     # A shared generic word 'банк' cannot prove an invented organization name.
     person_names = list(persons(normalized))
     same_person = bool(form in {None, "ИП"} and len(person_names) == 1
         and compact(re.sub(r"^ИП\s+", "", normalized)) == compact(person_names[0].group(0)) and any(
         person_key(person_names[0]) == person_key(candidate) for candidate in persons(quote)))
-    source_forms = set(re.findall(r"\b(?:ООО|ПАО|АО|ИП)\b", source))
+    source_forms = set(re.findall(r"\b(?:ООО|НАО|ПАО|АО|ИП)\b", source))
     if not tokens or (not tokens <= source_tokens and not same_person and not tax_name_matches(normalized, quote)) or (form and form not in source_forms):
         return Requisite(None, quote, "Наименование кредитора не соответствует организации в цитате.")
     if not form and len(source_forms) == 1 and normalized != "Банк ВТБ":
