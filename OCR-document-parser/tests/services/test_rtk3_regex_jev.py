@@ -26,6 +26,7 @@ ORDER = ACT.split("ОПРЕДЕЛИЛ:\n", 1)[1]
 CREDITOR = {"value": "ПАО «Пример»", "quote": "требование ПАО «Пример»"}
 CREDITOR_INN = {"value": "0123456789", "quote": "требование ПАО «Пример» (ИНН 0123456789)"}
 PENALTY = {"kind": "sanction", "amount": "8 руб.", "quote": "8 руб. пеней"}
+MONEY_KEYS = {f"claim_1_{name}" for name in ("principal_debt", "financial_sanctions", "pau_only_amount", "included_total")}
 MODEL_CLAIM = {
     "priority_queue": {"value": "3 очередь", "quote": "третью очередь"},
     "decision_quote": ORDER,
@@ -45,16 +46,173 @@ MODEL_CLAIM = {
 }
 
 
+@pytest.mark.parametrize("quote,proposed,expected", [
+    ("по кредитному договору № 1", "Кредитный договор", "Кредитный договор"),
+    ("по кредитным договорам № 1 и № 2", "Кредитный договор", "Кредитный договор"),
+    ("по договору о предоставлении потребительского кредита (займа)", "Кредитный договор", "Кредитный договор"),
+    ("проценты за пользование кредитом по договору банковского счета", "Кредитный договор", "Кредитный договор"),
+    ("по договору банковского счета с правом овердрафта", "Кредитный договор", "Кредитный договор"),
+    ("должник получил кредитные денежные средства", "Кредитный договор", "Кредитный договор"),
+    ("Включить требование ПАО «Примербанк»: основной долг и проценты", "Кредитный договор", "Кредитный договор"),
+    ("Включить требование ПАО «Примербанк» в сумме 100 руб.", "Кредитный договор", None),
+    ("Включить основной долг и проценты за пользование чужими денежными средствами в пользу ПАО «Примербанк»",
+     "Кредитный договор", None),
+    ("Включить требование коллектора: основной долг и проценты", "Кредитный договор", None),
+    ("проценты за пользование займом", "Договор займа", "Договор займа"),
+    ("по договору микрозайма", "Кредитный договор", None),
+    ("по уплате обязательных платежей", "Налоговая задолженность", "Налоговая задолженность"),
+    ("по оплате коммунальных услуг", "Оплата коммунальных услуг", "Оплата коммунальных услуг"),
+    ("по судебному приказу № 1", "Кредитный договор", None),
+], ids=["one-contract", "several-contracts", "consumer-credit-loan", "interest-on-credit",
+        "overdraft", "credit-funds", "bank-principal-interest", "bank-only", "civil-interest",
+        "collector-only", "loan-interest", "microloan", "tax", "utilities", "enforcement-order"])
+def test_argon_ground_uses_origin_of_obligation(quote, proposed, expected):
+    fact = service.Fact(value=proposed, quote=quote)
+    assert service._model_fact("grounds", fact, quote, "ПАО «Примербанк»") == expected
+
+
+@pytest.mark.parametrize("mode", ["fixed", "full"])
+@pytest.mark.parametrize("extra,decision,expected", [
+    ("", False, False),
+    ("Упомянут кредитный договор № 222.", False, None),
+    ("Рассмотрена также задолженность по заработной плате.", False, None),
+    ("", None, None),
+])
+def test_argon_salary_evidence_in_single_contract_header(mode, extra, decision, expected):
+    header = MODEL_CLAIM["salary_quote"]
+    order = ORDER.replace(header, "")
+    text = f"Заявление кредитора {header}. {extra}\nОПРЕДЕЛИЛ:\n{order}"
+    response = {"grounds": service.Fact(value="Кредитный договор", quote=header)}
+    if mode == "fixed":
+        response["claim_1_is_salary_or_severance"] = Salary(value=decision, quote=header)
+        result = service._fixed_claims([service.Claim(order, {}, None)], {}, response, text)
+    else:
+        claim = service.ClaimEvidence.model_validate({
+            **MODEL_CLAIM, "decision_quote": order, "is_salary_or_severance": decision,
+        })
+        result = service._model_claims(text, load_profile("rtk3"), {
+            **response, "claims": [claim], "claims_complete": True,
+        }, {})
+    assert result["claims"]["value"][0]["is_salary_or_severance"] is expected
+
+
+@pytest.mark.parametrize("mode", ["fixed", "full"])
+@pytest.mark.parametrize("answer", ["recovered", "empty", "unquoted", "wrong_total", "already_known"])
+@pytest.mark.asyncio
+async def test_targeted_principal_retry(monkeypatch, mode, answer):
+    principal = MODEL_CLAIM["components"][0]
+    known = answer == "already_known"
+    key = "claim_1_principal_debt"
+    calls = []
+
+    def gateway(**request):
+        kind = request["request_type"]
+        calls.append(kind)
+        if kind == "decisions":
+            return SimpleNamespace(parsed={"answers": {
+                name: {"type": "noul", "noul": float(name != "claim_layout" or mode == "fixed")}
+                for name in request["decisions_questions"]
+            }})
+        if kind == "rtk3_principal_retry":
+            assert set(request["response_schema"]["json_schema"]["schema"]["properties"]) == {key}
+            assert "после проверки оно осталось пустым" in request["system_prompt"]
+            body = json.loads(request["user_content"])
+            assert len(body["verified_claims"]) == 1 and body["rows_after_validation"][0]["principal_debt"] is None
+            item = dict(principal)
+            if answer == "unquoted":
+                item["quote"] = "неподтверждённые 100 руб. основного долга"
+            if answer == "wrong_total":
+                item.update(amount="108 руб.", quote=ORDER)
+            return SimpleNamespace(parsed={key: None if answer == "empty" else {
+                "items": [item], "complete": True, "quote": ORDER,
+            }, "claim_1_financial_sanctions": None})
+        if mode == "full":
+            return SimpleNamespace(parsed={"claims_complete": True, "uncertainty": "", "claims": [{
+                **MODEL_CLAIM, "components": [principal, PENALTY] if known else [PENALTY],
+            }]})
+        return SimpleNamespace(parsed={
+            key: {"items": [principal], "complete": True, "quote": ORDER} if known else None,
+            "claim_1_financial_sanctions": {"items": [PENALTY], "complete": True, "quote": ORDER},
+            "claim_1_pau_only_amount": {"items": [], "complete": True, "quote": ORDER},
+            "claim_1_included_total": {"amount": "108 руб.", "scope": "with_duty", "quote": ORDER},
+        })
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    fields = await service.extract_fields(ACT, load_profile("rtk3"))
+    assert calls == ["decisions", "rtk3_components"] + ([] if known else ["rtk3_principal_retry"])
+    row, = fields["claims"]["value"]
+    if known or answer == "recovered":
+        assert (row["principal_debt"], row["financial_sanctions"], row["pau_only_amount"]) == ("100.00", "8.00", "0.00")
+        assert fields["total_claimed_amount"]["value"] == row["total_amount"] == "108.00"
+    else:
+        assert row["principal_debt"] is None
+        if mode == "fixed":
+            assert (row["financial_sanctions"], row["pau_only_amount"], row["total_amount"]) == ("8.00", "0.00", "108.00")
+
+
+@pytest.mark.parametrize("case", ["terminated", "other_applicant", "extra_award", "multiple_rows"])
+def test_separate_order_terminating_fee(case):
+    order = 'Включить требование ООО «Пример» в третью очередь в размере 108 руб., из них 8 руб. пеней.'
+    applicant = "Иной" if case == "other_applicant" else "Пример"
+    fee = f'Производство по заявлению ООО «{applicant}» в части включения в реестр государственной пошлины в размере 5 руб. прекратить.'
+    text = "ОПРЕДЕЛИЛ:\n" + order + " " + fee
+    if case == "extra_award":
+        text += " Взыскать 1 руб. пошлины."
+    layout = [service.Claim(order, {}, None)]
+    if case == "multiple_rows":
+        layout.append(service.Claim("Включить другое требование.", {}, None))
+    model = {
+        "claim_1_principal_debt": None,
+        "claim_1_included_total": service.CourtTotal(amount="108 руб.", scope="with_duty", quote=order, principal_by_remainder=True),
+        "claim_1_pau_only_amount": service.Components(items=[], complete=True, quote=fee),
+        "claim_1_financial_sanctions": service.Components(items=[PENALTY], complete=True, quote=order),
+    }
+    fields = service._fixed_claims(layout, {}, model, text)
+    row = fields["claims"]["value"][0]
+    expected = ("100.00", "0.00") if case == "terminated" else (None, None)
+    assert (row["principal_debt"], row["pau_only_amount"]) == expected
+    assert row["financial_sanctions"] == "8.00"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("foreign_quote", [False, True])
+async def test_principal_retry_preserves_zero_and_binds_the_missing_row(monkeypatch, foreign_quote):
+    orders = ["Включить в третью очередь 0 руб. основного долга и 5 руб. пеней.",
+              "Включить в третью очередь 30 руб. основного долга."]
+    layout = [service.Claim(order, {}, None) for order in orders]
+    monkeypatch.setattr(service, "extract_candidates", lambda _: SimpleNamespace(
+        fields={}, claims=layout, creditor_tax_subject=None))
+    retry_keys = []
+
+    def gateway(**request):
+        if request["request_type"] == "decisions":
+            return SimpleNamespace(parsed={"answers": {"claim_layout": {"type": "noul", "noul": 1.0}}})
+        def component(index, amount):
+            quote = f"{amount} руб. основного долга"
+            return {"complete": True, "quote": orders[index], "items": [
+                {"kind": "principal", "amount": f"{amount} руб.", "quote": quote}]}
+        if request["request_type"] == "rtk3_principal_retry":
+            retry_keys.extend(request["response_schema"]["json_schema"]["schema"]["properties"])
+            return SimpleNamespace(parsed={"claim_2_principal_debt": component(0, 0) if foreign_quote else component(1, 30),
+                                           "claim_1_principal_debt": component(1, 30)})
+        return SimpleNamespace(parsed={"claim_1_principal_debt": component(0, 0), "claim_2_principal_debt": None})
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    result = await service.extract_fields("ОПРЕДЕЛИЛ:\n" + "\n".join(orders), load_profile("rtk3"))
+    assert retry_keys == ["claim_2_principal_debt"]
+    assert [r["principal_debt"] for r in result["claims"]["value"]] == ["0.00", None if foreign_quote else "30.00"]
+
+
 @pytest.mark.parametrize("mode", ["fixed", "full"])
 @pytest.mark.parametrize(
-    "principal,interest,expected",
+    "principal,interest",
     [
-        ("90 руб. основного долга", "10 руб. процентов", False),
-        ("90 руб. основного долга по оплате труда", "10 руб. процентов", None),
-        ("100 руб. основного долга", "", None),
+        ("90 руб. основного долга", "10 руб. процентов"),
+        ("90 руб. основного долга по оплате труда", "10 руб. процентов"),
+        ("100 руб. основного долга", ""),
     ],
 )
-def test_unknown_salary_is_recovered_only_from_itemized_non_wage_debt(mode, principal, interest, expected):
+def test_absent_argon_salary_decision_stays_unknown(mode, principal, interest):
     breakdown = ", ".join(filter(None, (principal, interest, PENALTY["quote"])))
     text = ACT.replace("по кредитному договору № 1406/ПК от 21.11.2025 ", "")
     text = text.replace("100 руб. основного долга и 8 руб. пеней", breakdown)
@@ -77,7 +235,57 @@ def test_unknown_salary_is_recovered_only_from_itemized_non_wage_debt(mode, prin
     [row] = result["claims"]["value"]
     assert row["principal_debt"] == "100.00"
     assert row["total_amount"] == "108.00"
-    assert row["is_salary_or_severance"] is expected
+    assert row["is_salary_or_severance"] is None
+
+
+@pytest.mark.parametrize("mode", ["fixed", "full"])
+@pytest.mark.parametrize("quote,expected", [
+    ("по выплате заработной платы", True),
+    ("выплате выходного пособия", True),
+    ("третью очередь", None),
+])
+def test_argon_salary_true_requires_wage_evidence(mode, quote, expected):
+    order = ORDER.replace(MODEL_CLAIM["salary_quote"], "по выплате заработной платы и выплате выходного пособия")
+    if mode == "fixed":
+        result = service._fixed_claims([service.Claim(order, {}, None)], {}, {
+            "claim_1_is_salary_or_severance": Salary(value=True, quote=quote),
+        }, order)
+    else:
+        claim = service.ClaimEvidence.model_validate({
+            **MODEL_CLAIM, "decision_quote": order, "is_salary_or_severance": True, "salary_quote": quote,
+        })
+        result = service._model_claims(order, load_profile("rtk3"), {"claims": [claim], "claims_complete": True}, {})
+    assert result["claims"]["value"][0]["is_salary_or_severance"] is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("argon_confirms", [True, False])
+async def test_only_argon_supplies_pledge_even_with_a_regex_candidate(monkeypatch, argon_confirms):
+    clause = "как обеспеченное залогом имущества должника"
+    text = ACT.replace("в размере 108", f"{clause} в размере 108")
+    [claim] = extract_candidates(text).claims
+    assert claim.fields["pledge_resolution"].value == "yes"
+    key = "claim_1_pledge_resolution"
+
+    def gateway(**request):
+        if request["request_type"] == "decisions":
+            assert key not in request["decisions_questions"]
+            assert key not in request["decisions_state"]["fields"]
+            return SimpleNamespace(parsed={"answers": {
+                name: {"type": "noul", "noul": 1.0} for name in request["decisions_questions"]
+            }})
+        if request["request_type"] == "rtk3_principal_retry":
+            assert key not in request["response_schema"]["json_schema"]["schema"]["properties"]
+            return SimpleNamespace(parsed={})
+        assert key in request["response_schema"]["json_schema"]["schema"]["properties"]
+        assert key not in json.loads(request["user_content"])["verified_fields"]
+        return SimpleNamespace(parsed={key: {"value": "yes", "quote": clause} if argon_confirms else None})
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    fields = await service.extract_fields(text, load_profile("rtk3"))
+    [row] = fields["claims"]["value"]
+    assert row["pledge_resolution"] == fields["pledge_resolution"]["value"] == ("yes" if argon_confirms else None)
+    assert row["secured_by_pledge"] is fields["secured_by_pledge"]["value"] is (True if argon_confirms else None)
 
 
 @pytest.mark.asyncio
@@ -103,10 +311,16 @@ async def test_reasoning_gateway_routes_and_merges_rtk3_fields(monkeypatch, jev_
                 for name in request["decisions_questions"]
             }})
 
-        parsed = {"creditor": CREDITOR, "creditor_inn": CREDITOR_INN}
+        basis = MODEL_CLAIM["salary_quote"]
+        parsed = {"creditor": CREDITOR, "creditor_inn": CREDITOR_INN,
+                  "grounds": {"value": "Кредитный договор", "quote": basis},
+                  "grounds_ocr": {"value": basis, "quote": basis}}
         if jev_mode == "confirm_layout":
-            parsed.update(claim_1_financial_sanctions={"items": [PENALTY], "complete": True, "quote": ORDER},
-                          claim_1_pledge_resolution=None)
+            parsed.update(claim_1_principal_debt={"items": [MODEL_CLAIM["components"][0]], "complete": True, "quote": ORDER},
+                          claim_1_pau_only_amount={"items": [], "complete": True, "quote": ORDER},
+                          claim_1_included_total={"amount": "108 руб.", "scope": "without_duty", "quote": ORDER},
+                          claim_1_financial_sanctions={"items": [PENALTY], "complete": True, "quote": ORDER},
+                          claim_1_pledge_resolution=None, claim_1_is_salary_or_severance={"value": False, "quote": basis})
         else:
             parsed.update(claims=[MODEL_CLAIM], claims_complete=True, uncertainty="")
         if jev_mode == "timeout":
@@ -115,9 +329,6 @@ async def test_reasoning_gateway_routes_and_merges_rtk3_fields(monkeypatch, jev_
                 document_case_number={"value": "А40-123/2026-1-2Ф", "quote": "А40-123/2026-1-2Ф"},
                 debtor_inn={"value": "012345678901", "quote": "гражданина Петрова Ивана Ивановича (ИНН 012345678901)"},
                 inclusion_date={"value": "19.03.2026", "quote": "Полный текст определения изготовлен 19 марта 2026 года."},
-                grounds={"value": "Кредитный договор", "quote": "по кредитному договору № 1406/ПК от 21.11.2025"},
-                grounds_ocr={"value": "по кредитному договору № 1406/ПК от 21.11.2025",
-                             "quote": "по кредитному договору № 1406/ПК от 21.11.2025"},
             )
         return SimpleNamespace(parsed=parsed)
 
@@ -127,14 +338,22 @@ async def test_reasoning_gateway_routes_and_merges_rtk3_fields(monkeypatch, jev_
     assert list(calls) == ["decisions", "rtk3_components"]
     decisions = calls["decisions"]
     assert set(service.SCALAR_QUESTIONS) <= decisions["decisions_questions"].keys()
-    assert {"claim_layout", "claim_1_financial_sanctions", "claim_1_principal_debt"} <= decisions["decisions_questions"].keys()
+    assert "claim_layout" in decisions["decisions_questions"]
+    assert MONEY_KEYS.isdisjoint(decisions["decisions_questions"])
+    assert MONEY_KEYS.isdisjoint(decisions["decisions_state"]["fields"])
     fallback = calls["rtk3_components"]
     requested = fallback["response_schema"]["json_schema"]["schema"]["properties"].keys()
     inputs = json.loads(fallback["user_content"])
+    direct = {"grounds", "grounds_ocr", "claim_1_is_salary_or_severance"}
+    assert direct.isdisjoint(decisions["decisions_questions"])
+    assert direct.isdisjoint(decisions["decisions_state"]["fields"])
+    assert direct.isdisjoint(inputs["verified_fields"])
+    assert {"grounds", "grounds_ocr"} <= requested
+    assert all(result[key]["extraction_route"] == "gemini_argon" for key in ("grounds", "grounds_ocr"))
     if jev_mode == "confirm_layout":
-        assert requested == {"creditor", "creditor_inn", "claim_1_financial_sanctions", "claim_1_pledge_resolution"}
+        assert requested == {"creditor", "creditor_inn", "claim_1_pledge_resolution"} | MONEY_KEYS | direct
         assert len(inputs["verified_claims"]) == 1
-        assert "claim_1_principal_debt" in inputs["verified_fields"]
+        assert MONEY_KEYS.isdisjoint(inputs["verified_fields"])
     else:
         assert {"claims", "claims_complete", "uncertainty", "creditor", "creditor_inn"} <= requested
         assert inputs["verified_claims"] == []
@@ -144,7 +363,7 @@ async def test_reasoning_gateway_routes_and_merges_rtk3_fields(monkeypatch, jev_
     if jev_mode == "timeout":
         assert "слова, связывающие его с ролью должника" in fallback["system_prompt"]
 
-    assert {name: result[name]["value"] for name in service.SCALAR_QUESTIONS} == {
+    assert {name: result[name]["value"] for name in service.SCALAR_FIELDS} == {
         "case_number": "А40-123/2026",
         "document_case_number": "А40-123/2026-1-2Ф",
         "debtor_inn": "012345678901",
@@ -168,6 +387,82 @@ async def test_reasoning_gateway_routes_and_merges_rtk3_fields(monkeypatch, jev_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("current", [False, True], ids=["embedded-cost", "current-fee"])
+async def test_argon_distinguishes_contract_cost_from_current_fee(monkeypatch, current):
+    principal = "90 руб. основного долга"
+    fee = "10 руб. расходов по оплате государственной пошлины"
+    if current:
+        fee += " за рассмотрение настоящего спора"
+    text = ACT.replace("100 руб. основного долга и 8 руб. пеней", f"{principal}, {fee} и 8 руб. пеней")
+    order = text.split("ОПРЕДЕЛИЛ:\n")[1]
+    def gateway(**request):
+        if request["request_type"] == "decisions":
+            return SimpleNamespace(parsed={"answers": {
+                k: {"type": "noul", "noul": 0.99} for k in request["decisions_questions"]
+            }})
+        # A wrong model classification for a current fee must not inflate debt.
+        return SimpleNamespace(parsed={
+            "claim_1_principal_debt": {"items": [
+                {"kind": "principal", "amount": "90 руб.", "quote": principal},
+                {"kind": "contract_cost", "amount": "10 руб.", "quote": fee},
+            ], "complete": True, "quote": order},
+            "claim_1_financial_sanctions": {"items": [PENALTY], "complete": True, "quote": order},
+            "claim_1_pau_only_amount": None if current else {"items": [], "complete": True, "quote": order},
+            "claim_1_included_total": {"amount": "108 руб.", "scope": "with_duty", "quote": order},
+        })
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    result = await service.extract_fields(text, load_profile("rtk3"))
+    row, = result["claims"]["value"]
+    assert row["principal_debt"] == (None if current else "100.00")
+    assert row["financial_sanctions"] == "8.00"
+    assert row["pau_only_amount"] == (None if current else "0.00")
+    assert row["total_amount"] == "108.00"
+    assert result["total_claimed_amount"]["value"] == (None if current else "108.00")
+
+
+@pytest.mark.parametrize("penalty", [0, 8])
+def test_incomplete_argon_breakdown_retains_printed_gross_and_confirmed_sanction(penalty):
+    order = ORDER.replace("100 руб. основного долга и 8 руб. пеней", f"{penalty} руб. пеней")
+    claim = service.ClaimEvidence.model_validate({
+        **MODEL_CLAIM, "decision_quote": order, "total_scope": "with_duty", "components_complete": False,
+        "complete_categories": ["financial_sanctions"],
+        "components": [{"kind": "sanction", "amount": f"{penalty} руб.", "quote": f"{penalty} руб. пеней"}],
+    })
+    result = service._model_claims(order, load_profile("rtk3"), {"claims": [claim], "claims_complete": True}, {})
+    row, = result["claims"]["value"]
+    assert row["principal_debt"] is row["claimed_amount"] is row["pau_only_amount"] is None
+    assert row["financial_sanctions"] == f"{penalty}.00"
+    assert row["total_amount"] == "108.00"
+    assert result["total_claimed_amount"]["value"] is None
+
+
+def test_gross_repeated_as_principal_keeps_only_supported_amounts():
+    claim = service.Claim(ORDER, {}, None)
+    response = {
+        "claim_1_principal_debt": service.Components(items=[
+            {"kind": "principal", "amount": "108 руб.", "quote": "в размере 108 руб."},
+        ], complete=True, quote=ORDER),
+        "claim_1_financial_sanctions": service.Components(items=[PENALTY], complete=True, quote=ORDER),
+        "claim_1_included_total": service.CourtTotal(amount="108 руб.", quote=ORDER, scope="with_duty"),
+    }
+    fields = service._fixed_claims([claim], {}, response, ACT)
+    row, = fields["claims"]["value"]
+    assert row["principal_debt"] is row["claimed_amount"] is fields["total_claimed_amount"]["value"] is None
+    assert (row["financial_sanctions"], row["total_amount"]) == ("8.00", "108.00")
+
+
+@pytest.mark.parametrize("current", [False, True])
+def test_generic_fee_under_prior_order_requires_current_award(current):
+    fee = "2 руб. государственной пошлины" + (" за рассмотрение настоящего спора" if current else "")
+    order = f"Включить на основании судебного приказа 10 руб. долга, а также {fee}."
+    response = {"claim_1_pau_only_amount": service.Components(
+        items=[{"kind": "duty", "amount": "2 руб.", "quote": fee}], complete=True, quote=order,
+    )}
+    fields = service._fixed_claims([service.Claim(order, {}, None)], {}, response, order)
+    assert fields["claims"]["value"][0]["pau_only_amount"] == ("2.00" if current else None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("layout_verified", [True, False], ids=["fixed-layout", "full-fallback"])
 @pytest.mark.parametrize("partial", [False, True], ids=["empty-argon", "partial-argon"])
 async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
@@ -178,7 +473,7 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
 
     act = ACT.replace("в размере 108 руб.", "как обеспеченное залогом имущества в размере 108 руб.")
     order = act.split("ОПРЕДЕЛИЛ:\n", 1)[1]
-    unconfirmed = {"document_case_number", "inclusion_date", "grounds_ocr", "claim_1_financial_sanctions"}
+    unconfirmed = {"document_case_number", "inclusion_date"}
     calls = []
 
     def gateway(**request):
@@ -198,6 +493,7 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
         }
         if layout_verified:
             facts["claim_1_financial_sanctions"] = {"items": [PENALTY], "complete": True, "quote": order}
+            facts["claim_1_pledge_resolution"] = {"value": "yes", "quote": "как обеспеченное залогом имущества"}
         else:
             facts["claims"] = [{
                 **MODEL_CLAIM, "decision_quote": order, "pledge_resolution": "yes",
@@ -228,7 +524,10 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
             session.commit()
 
         await worker._process_pipeline_run_impl("run-rtk3")
-        assert [call["request_type"] for call in calls] == ["decisions", "rtk3_components"]
+        expected_calls = ["decisions", "rtk3_components"]
+        if layout_verified:
+            expected_calls.append("rtk3_principal_retry")
+        assert [call["request_type"] for call in calls] == expected_calls
         request = calls[1]["response_schema"]["json_schema"]["schema"]["properties"]
         assert {"document_case_number", "inclusion_date", "grounds_ocr"} <= request.keys()
         assert ("claim_1_financial_sanctions" in request) is layout_verified
@@ -237,7 +536,7 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
 
         confirmed = {
             "case_number": "А40-123/2026", "debtor_inn": "012345678901",
-            "creditor": "ПАО «Пример»", "creditor_inn": "0123456789", "grounds": "Кредитный договор",
+            "creditor": "ПАО «Пример»", "creditor_inn": "0123456789",
         }
         with sessions() as session:
             assert session.get(models.PipelineRun, "run-rtk3").status == "done"
@@ -247,21 +546,23 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
                 assert stored[name]["extraction_route"] == "regex_jev"
             assert stored["inclusion_date"]["value"] == ("19.03.2026" if partial else None)
             assert stored["document_case_number"]["value"] is None
+            assert stored["grounds"]["value"] is None
             assert stored["grounds_ocr"]["value"] is None
-            assert stored["secured_by_pledge"]["value"] is (True if layout_verified else None)
-            assert stored["total_claimed_amount"]["value"] == ("108.00" if partial and layout_verified else None)
+            assert stored["secured_by_pledge"]["value"] is (True if layout_verified and partial else None)
+            assert stored["total_claimed_amount"]["value"] is None
             rows = stored["claims"]["value"]
             if layout_verified or partial:
                 row, = rows
                 assert (row["priority_queue"], row["contract_number"], row["principal_debt"],
                         row["pledge_resolution"], row["secured_by_pledge"]) == (
-                            "3 очередь", "1406/ПК", "100.00", "yes", True,
+                            "3 очередь", "1406/ПК", None if layout_verified else "100.00",
+                            "yes" if partial else None, True if partial else None,
                         )
-                assert row["is_salary_or_severance"] is False
-                assert row["pau_only_amount"] == "0.00"
+                assert row["is_salary_or_severance"] is (False if partial and not layout_verified else None)
+                assert row["pau_only_amount"] == (None if layout_verified else "0.00")
                 assert row["financial_sanctions"] == ("8.00" if partial else None)
-                assert row["claimed_amount"] == ("108.00" if partial else None)
-                assert row["total_amount"] == ("108.00" if partial else None)
+                assert row["claimed_amount"] == (None if layout_verified else "108.00")
+                assert row["total_amount"] == (None if layout_verified else "108.00")
             else:
                 assert rows == []
 

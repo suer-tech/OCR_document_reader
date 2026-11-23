@@ -387,8 +387,8 @@ GENERAL_SANCTIONS_NOTICE = re.compile(
 )
 
 
-def explicit_ground_category(quote: str) -> str | None:
-    """Validate a category against the quoted words that describe the basis."""
+def explicit_ground_category(quote: str, creditor: str | None = None) -> str | None:
+    """Classify the quoted origin of the obligation, including how bank financing was used."""
     quote = GENERAL_SANCTIONS_NOTICE.sub(" ", quote)
     categories = {
         category for category, pattern in GROUND_PATTERNS.items()
@@ -399,6 +399,22 @@ def explicit_ground_category(quote: str) -> str | None:
                  rf"|{TAX_NONPAYMENT_GROUND}",
                  quote, re.I):
         categories.add("Налоговая задолженность")
+    credit_use = re.search(
+        r"\b(?:потребительск\w*\s+кредит\w*\s*\(\s*(?:займ|заём|заем)\w*\s*\)|"
+        r"овердрафт\w*|кредитовани\w*\s+(?:банковск\w*\s+)?сч[её]та|"
+        r"кредитн\w*\s+(?:денежн\w*\s+)?средств\w*|"
+        r"(?:пользовани\w*|погашени\w*|возврат\w*|выдач\w*|предоставлени\w*)\s+(?:банковск\w*\s+)?кредит(?:а|ом)\b|"
+        r"(?:предоставлен|выдан|получен)\w*\s+(?:банковск\w*\s+)?кредит\b)", quote, re.I)
+    if credit_use and not NEGATED_GROUND.search(quote[max(0, credit_use.start() - 45):credit_use.start()]):
+        categories.add("Кредитный договор")
+    if categories == {"Кредитный договор", "Договор займа"}:
+        return "Кредитный договор"
+    if (not categories and creditor and re.search(r"банк\b", creditor, re.I)
+            and creditor_value(creditor, quote, quote).value
+            and re.search(r"основн\w*\s+(?:долг|задолженн)", quote, re.I) and re.search(r"\bпроцент", quote, re.I)
+            and not re.search(r"ст\.?\s*395|чужими\s+денежными|неосновательн|неустойк\w*\s+в\s+процент|"
+                              r"аренд|подряд|поставк|оплат\w*\s+услуг|комисси|приобретенн\w*\s+прав|уступк|цессии", quote, re.I)):
+        return "Кредитный договор"
     return next(iter(categories)) if len(categories) == 1 else None
 
 

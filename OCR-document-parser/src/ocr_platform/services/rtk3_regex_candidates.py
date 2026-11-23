@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict
 
 from ocr_platform.services import rtk3_requisites as req
 from ocr_platform.services.rtk3_evidence import (
-    Component, Fact, compact, excluded_component, previous_cost, remove_currency_page_marker, source_case,
+    CATEGORY_FIELDS, OPERATIVE, SEPARATE_SANCTIONS, Component, Fact, compact, excluded_component, previous_cost,
+    remove_currency_page_marker, source_case,
 )
 from ocr_platform.services.rtk3_evidence import rtk3_money as money
 
@@ -33,6 +34,7 @@ class CourtTotal(BaseModel):
     amount: str
     scope: Literal["with_duty", "without_duty", "unknown"]
     quote: str
+    principal_by_remainder: bool = False
 
 
 @dataclass
@@ -56,7 +58,6 @@ class Candidates:
     creditor_tax_subject: str | None = None
 
 
-OPERATIVE = re.compile(r"\bо\s*п\s*р\s*е\s*д\s*[еи]\s*л\s*и\s*л[аи]?\s*(?:[:：]|(?=\r?\n))", re.I)
 ENDING = re.compile(
     r"\b(?:(?:настоящее\s+)?определение(?:\s+суда)?[, ]+(?:может|подлежит|вступает|изготовлено|вынесенное|вынесено|принято)|"
     r"на определение может|в случае подачи апелляционной жалобы|"
@@ -147,15 +148,6 @@ TAX_REPRESENTATION = re.compile(
     + req.TAX_OFFICE + "))", re.IGNORECASE,
 )
 TAX_NAME = re.compile(r"(?P<name>" + req.TAX_OFFICE + "|" + req.FEDERAL_TAX_NAME + ")", re.IGNORECASE)
-CATEGORY_FIELDS = {
-    "principal_debt": {"principal", "interest", "prior_cost"},
-    "financial_sanctions": {"sanction"},
-    "pau_only_amount": {"duty"},
-}
-SEPARATE_SANCTIONS = re.compile(
-    r"учитывающ\w*\s+отдельно(?:\s+в\s+реестре\s+требований\s+кредиторов)?\s+и\s+"
-    r"подлежащ\w*\s+удовлетворению\s+после\s+погашения\s+основной\s+суммы", re.I,
-)
 CURRENT_APPLICATION_DUTY = re.compile(
     r"за\s+(?:рассмотрение|подачу)\s+заявлени\w*\s+о\s+включении\s+требован\w*\s+"
     r"(?:в\s+реестр|кредиторов\s+должника)\b", re.I,

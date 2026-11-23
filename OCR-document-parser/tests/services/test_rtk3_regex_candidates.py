@@ -286,7 +286,7 @@ def test_common_award_includes_court_expense_without_assuming_its_type():
     assert row["contract_number"] is None
     assert (row["financial_sanctions"], row["claimed_amount"], row["total_amount"]) == ("5.00", "105.00", "112.00")
     assert row["pau_only_amount"] is None
-    assert _claim_key(0, "included_total") not in _fallback_schema(extract_candidates(text).claims, {}, set())
+    assert _claim_key(0, "included_total") in _fallback_schema(extract_candidates(text).claims, {}, set())
     assert not extract_candidates(text.replace("105 руб.", "106 руб.", 1)).claims
 
 
@@ -536,14 +536,15 @@ def test_single_admitted_amount_can_reference_the_contract_from_the_reasoning(mo
 
     profile = {"models": {"verification": {}, "llm_extraction": {}}, "fields": {"claims": {}}}
     verified = {
-        _claim_key(0, name): service.Verified(fact, 1.0) for name, fact in _claim_values(claim).items()
+        _claim_key(0, name): service.Verified(fact, 1.0) for name, fact in claim.fields.items()
+        if name in service.CLAIM_QUESTIONS
     }
     verify = AsyncMock(return_value=(verified, True))
     monkeypatch.setattr(service, "_verify", verify)
     monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={}))
     row, = asyncio.run(service.extract_fields(text, profile))["claims"]["value"]
     assert row["contract_number"] is None
-    assert row["principal_debt"] == "100.00"
+    assert row["principal_debt"] is None
     verified[_claim_key(0, "contract_reference")] = service.Verified(claim.contract_reference, 1.0)
     row, = asyncio.run(service.extract_fields(text, profile))["claims"]["value"]
     assert row["contract_number"] == "A-123"
