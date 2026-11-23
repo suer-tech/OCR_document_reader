@@ -23,7 +23,7 @@ from ocr_platform.services.rtk3_evidence import (
     normalize_case,
     notarial_collection_cost, ordinary_admission_without_pledge, previous_cost, principal_from_award,
     separately_accounted_sanction, single_contract_salary_evidence,
-    publication_date_field, quoted, remove_currency_page_marker, row_pledges,
+    publication_date_field, quoted, remove_currency_page_marker, row_pledges, source_case,
 )
 from ocr_platform.services.rtk3_evidence import rtk3_money as money
 from ocr_platform.services.rtk3_regex_candidates import (
@@ -45,14 +45,9 @@ SCALAR_QUESTIONS = {
     "case_number": "Это номер основного дела о банкротстве, без индекса обособленного спора?",
     "document_case_number": "Это полный номер текущего определения со всеми индексами обособленного спора, если они напечатаны?",
     "debtor_inn": "Этот ИНН принадлежит именно должнику текущего дела, а не супругу, поручителю или иному участнику?",
-    "creditor": "Это наименование кредитора, чьё требование суд включил или признал для удовлетворения за реестром? "
-    "Для налогового органа проверь написание наименования в акте, включая формулировку «в лице», если она указана.",
-    "creditor_inn": "Этот ИНН принадлежит надлежащему субъекту текущего требования? Если кредитор налоговый и "
-    "в акте указана инспекция или управление, проверь ИНН этого подразделения. Если указана только ФНС России, "
-    "проверь ИНН федеральной службы. Для остальных кредиторов проверь собственный ИНН кредитора.",
     "inclusion_date": "Это дата текущего определения? Если указана дата изготовления в полном объёме, используй её.",
 }
-SCALAR_FIELDS = (*SCALAR_QUESTIONS, "grounds", "grounds_ocr")
+SCALAR_FIELDS = (*SCALAR_QUESTIONS, "creditor", "creditor_inn", "grounds", "grounds_ocr")
 CLAIM_QUESTIONS = {
     "priority_queue": "Это очередь именно данного включённого требования? Отдельный учёт санкций сам по себе не означает «За реестром».",
 }
@@ -125,10 +120,6 @@ async def _verify(text: str, candidates, config: dict, context: dict) -> tuple[d
     layout_verified = bool(candidates.claims and scores.get("claim_layout", -1) >= threshold)
     accepted = {name: Verified(value, scores[name]) for name, value in values.items()
                 if scores.get(name, -1) >= threshold and (layout_verified or not name.startswith("claim_"))}
-    # The proposed creditor INN was inferred from this exact creditor name.
-    # If the name is unconfirmed, let Gemini resolve the pair together.
-    if "creditor" not in accepted:
-        accepted.pop("creditor_inn", None)
     logger.info("rtk3_jev_finished", **context, accepted=list(accepted), layout_verified=layout_verified,
                 probabilities=scores)
     return accepted, layout_verified
@@ -136,6 +127,8 @@ async def _verify(text: str, candidates, config: dict, context: dict) -> tuple[d
 
 def _fallback_schema(layout: list[Claim], accepted: dict, scalar_names: set[str]) -> dict:
     schema: dict = {name: (Fact, ...) for name in SCALAR_FIELDS if name in scalar_names and name not in accepted}
+    if "pledge_resolution" in scalar_names:
+        schema["document_pledge"] = (PledgeFact, ...)
     if not layout:
         schema.update(claims=(list[ClaimEvidence], ...), claims_complete=(bool, ...), uncertainty=(str, ...))
         return schema
@@ -149,7 +142,7 @@ def _fallback_schema(layout: list[Claim], accepted: dict, scalar_names: set[str]
 
 async def _gemini(
     text: str, config: dict, context: dict, property_types: dict, layout: list[Claim], accepted: dict,
-    *, principal_retry: list[dict] | None = None,
+    *, principal_retry: list[dict] | None = None, document_retry: bool = False,
 ) -> dict:
     if not property_types:
         return {}
@@ -173,7 +166,8 @@ async def _gemini(
     try:
         result = await asyncio.to_thread(
             call_llm_json_with_fallback, task_name="rtk3_gemini_missing_fields", provider=config["provider"],
-            request_type="rtk3_principal_retry" if principal_retry is not None else "rtk3_components",
+            request_type=("rtk3_document_facts_retry" if document_retry else
+                          "rtk3_principal_retry" if principal_retry is not None else "rtk3_components"),
             **context, models=[config["model"]],
             system_prompt=instructions, user_content=json.dumps(body, ensure_ascii=False),
             response_schema={"type": "json_schema", "json_schema": {
@@ -287,18 +281,19 @@ def _scalar_fields(
         fact = approved.value if approved else response.get(name)
         creditor = result.get("creditor", {}).get("value")
         value = fact.value if approved else _model_fact(name, fact, text, creditor, tax_subject)
-        if name == "creditor" and not approved and fact:
+        if name == "creditor" and not approved and fact and fact.value and quoted(fact.quote, text):
             original = proposals.get(name)
-            if original and original.value and req.tax_identity(original.value):
-                cited = tax_claimant_parts(fact.quote)
-                if cited and req.tax_identity(fact.value or "") and (
-                        _same_tax_owner(cited[0], tax_subject)
-                        or req.tax_identity(cited[1]) == "фнс" and _same_tax_owner(original.value, tax_subject)):
-                    value, fact = original.value, original
-            elif (original and original.value and not req.tax_identity(value or "")
-                    and (value is None or req.identity(value)[1] <= req.identity(original.value)[1])
-                    and req.creditor_value(original.value, fact.quote, text).value):
-                value = original.value
+            if original and original.value and quoted(original.quote, text):
+                tax = tax_claimant_parts(original.quote)
+                if (value and req.tax_identity(value) == "фнс" and tax
+                        and "в лице" in tax[0].casefold() and _same_tax_owner(tax[1], tax_subject)):
+                    value, fact = tax[0], original
+                elif value is None and re.fullmatch(r"[А-ЯЁ]{2,8}", fact.value):
+                    name_in_quotes = re.search(r"«([^»]+)»", original.value)
+                    if name_in_quotes:
+                        acronym = "".join(word[0].upper() for word in name_in_quotes[1].split())
+                        if acronym == fact.value and req.creditor_value(original.value, fact.quote, text).value:
+                            value = original.value
         if approved and name == "creditor_inn":
             proposed_creditor = proposals.get("creditor")
             if not creditor or not proposed_creditor or req.identity(creditor) != req.identity(proposed_creditor.value):
@@ -317,7 +312,12 @@ def _scalar_fields(
                 result[name]["external_data_required"] = True
     if "kad_publication_date" in configured:
         result["kad_publication_date"] = publication_date_field()
-    if "document_case_number" in result and "case_number" in result:
+    header_document, header_main, header_quote = source_case(text)
+    if header_document:
+        for name, value in (("document_case_number", header_document), ("case_number", header_main)):
+            if name in result:
+                result[name] = _field(value, quote=header_quote, route="document_header")
+    elif "document_case_number" in result and "case_number" in result:
         document, base = normalize_case(result["document_case_number"]["value"])
         if document and base != result["case_number"]["value"] and result["case_number"]["value"] is not None:
             for name in ("document_case_number", "case_number"):
@@ -769,6 +769,36 @@ def _claim_outputs(rows: list[dict], issues: list[str]) -> dict:
     }
 
 
+def _document_pledge(fact: PledgeFact | None, text: str, rows: list[dict]) -> str | None:
+    if not fact or not fact.value:
+        return None
+    decision = operative_part(text)
+    if not decision or not quoted(fact.quote, decision):
+        return None
+    statuses = row_pledges(rows)
+    known = statuses - {None}
+    if known - {fact.value}:
+        return None
+    if fact.value == "no" and ordinary_admission_without_pledge(fact.quote, decision, text):
+        return "no"
+    quote = compact(fact.quote)
+    if not re.search(r"залог|ипотек", quote):
+        return None
+    if len(statuses) > 1:
+        return None
+    if fact.value == "no" and re.search(
+            r"не\s+обеспеч\w*\s+(?:залог|ипотек)|отказ\w*[^.;]{0,130}(?:залог|ипотек)|"
+            r"(?:залог|ипотек)[^.;]{0,80}\s+отказать", quote):
+        return "no"
+    if fact.value == "separated" and re.search(r"выдел\w*|отлож\w*", quote):
+        return "separated"
+    if (fact.value == "yes" and re.search(r"\b(?:включить|признать|установить|считать)\b", quote)
+            and re.search(r"обеспеченн\w*\s+(?:залог|ипотек)|залогов\w*\s+кредитор", quote)
+            and not re.search(r"отказ|не\s+обеспеч|выдел|отлож", quote)):
+        return "yes"
+    return None
+
+
 def _model_claims(text: str, profile: dict, response: dict, scalar: dict) -> dict:
     claims = response.get("claims") or []
     if not claims:
@@ -847,6 +877,12 @@ async def extract_fields(
             claim.contract_number = None
     types = _fallback_schema(layout, verified, set(profile["fields"]))
     response = await _gemini(text, profile["models"]["llm_extraction"], context, types, layout, verified) if text.strip() else {}
+    if text.strip() and not response:
+        # A truncated list of contracts must not lose the independent document facts.
+        compact_types = {k: v for k, v in types.items() if k in {"creditor", "creditor_inn", "document_pledge"}}
+        if compact_types:
+            response = await _gemini(text, profile["models"]["llm_extraction"], context, compact_types, [], verified,
+                                     document_retry=True)
     fields = _scalar_fields(
         text, profile["fields"], verified, response, candidates.fields, candidates.creditor_tax_subject,
     )
@@ -894,4 +930,10 @@ async def extract_fields(
                     and _fits_award(candidate["claims"]["value"][i], total, anchors[i].quote)):
                 response, claims = updated, candidate
     fields.update(claims)
+    if fields.get("pledge_resolution", {}).get("value") is None:
+        pledge = response.get("document_pledge")
+        status = _document_pledge(pledge, text, claims["claims"]["value"])
+        if status is not None:
+            fields["pledge_resolution"] = _field(status, quote=pledge.quote)
+            fields["secured_by_pledge"] = _field(status == "yes", quote=pledge.quote, route="computed")
     return {name: fields[name] for name in profile["fields"] if name in fields}

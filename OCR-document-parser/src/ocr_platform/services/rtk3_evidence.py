@@ -341,14 +341,13 @@ def source_case(text: str) -> tuple[str | None, str | None, str]:
     heading = re.split(r"\b(?:в\s+составе|рассмотрев|рассмотрел|установил|определил)\b", text, maxsplit=1, flags=re.I)[0][:2000]
     found = {}
     case_label = r"(?:дел[оу]\s*№?\s*|№\s*дела\s*(?:[^\n]{0,80}\n)?[^\n]{0,80}?)"
-    for m in re.finditer(case_label + r"([АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[^\n,;]+)", heading, re.I):
-        # Stop before prose; preserve a separate trailing Ф used by Moscow.
-        token = re.match(r"[АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[0-9]+(?:\s*-\s*[0-9]+)?\s*/\s*[0-9]{2,4}"
-                         r"(?:(?:\s*[-/]\s*[0-9]+)|(?:\s*[-/]?\s*(?:тр\.?[0-9]+|УТ|Б|[«\"]?Ф[»\"]?)(?![а-яё])))*", m[1], re.I)
-        if token:
-            document, main = normalize_case(token[0])
-            if document:
-                found[document] = (main, token[0])
+    # Match only the number, so two labels on a single heading line remain ambiguous.
+    token = (r"[АAаa]\s*[0-9]{1,3}\s*[-–—−]\s*[0-9]+(?:\s*-\s*[0-9]+)?\s*/\s*[0-9]{2,4}"
+             r"(?:(?:[^\S\n]*[-/][^\S\n]*[0-9]+)|(?:[^\S\n]*[-/]?[^\S\n]*(?:тр\.?[0-9]+|УТ|Б|[«\"]?Ф[»\"]?)(?![а-яё])))*")
+    for match in re.finditer(case_label + f"({token})", heading, re.I):
+        document, main = normalize_case(match[1])
+        if document:
+            found[document] = (main, match[1])
     if len(found) == 1:
         document, (main, quote) = next(iter(found.items()))
         return document, main, quote

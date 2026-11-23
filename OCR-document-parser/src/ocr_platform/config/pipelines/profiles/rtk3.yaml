@@ -69,7 +69,7 @@ fields:
   pledge_resolution:
     required: false
     label_ru: "Решение о залоге"
-    description_ru: "Общий статус при совпадении статусов всех требований. Индивидуальные статусы передаются в claims."
+    description_ru: "Общий статус по совпадающим статусам строк или подтверждённому решению суда по всему требованию. Индивидуальные статусы передаются в claims."
     extraction_method: "llm"
   inclusion_date:
     required: true

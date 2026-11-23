@@ -25,7 +25,7 @@ def no_network(monkeypatch):
 
 def schema(layout):
     return create_model("Rtk3Test", __config__=ConfigDict(extra="forbid"),
-                        **service._fallback_schema(layout, {}, set(SCALAR_RULES)))
+                        **service._fallback_schema(layout, {}, set(load_profile("rtk3")["fields"])))
 
 
 def test_full_and_fixed_prompts_follow_their_actual_schemas():

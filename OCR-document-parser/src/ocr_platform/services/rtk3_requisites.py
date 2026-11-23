@@ -51,6 +51,8 @@ def normalize_creditor(value: str) -> str:
     value = re.sub(r"^(?:кредитор[а-яё]*|заявител[а-яё]*|взыскател[а-яё]*)\s*[:—–-]?\s*", "", value, flags=re.I)
     for pattern, replacement in LEGAL_FORMS:
         value = re.sub(pattern, replacement, value, flags=re.I)
+    value = re.sub(r"\bколлекторск(?:ого|ому|им|ом)\s+бюро\b", "коллекторское бюро", value, flags=re.I)
+    value = re.sub(r"\bСБЕРБАНК\b", "Сбербанк", value)
     for form in ["ООО", "ПАО", "АО", "ПКО", "ИП"]:
         value = re.sub(r"\b" + form + r"\b", form, value, flags=re.I)
     if TAX_RECORD_START.search(value):
@@ -61,12 +63,13 @@ def normalize_creditor(value: str) -> str:
     value = re.sub(r",\s*(?:г\.\s*|г\s+|город\s+).*$", "", value, flags=re.I)
     value = re.sub(r'(?<=[»"])\s+г\.\s*[А-ЯЁ][а-яё-]+.*$', '', value)
     # Straight/curly quotation pairs only; keep internal capitalization and ё.
+    value = re.sub(r'^((?:НАО|ПАО|АО|ООО)\s+)["«]ПКО\s+["«]([^"»]+)["»]{1,2}$', r'\1ПКО «\2»', value)
     value = re.sub(r'["“„]([^"“”„]+)["“”]', r"«\1»", value)
     value = re.sub(r"«\s*", "«", value)
     value = re.sub(r"\s*»", "»", value)
     value = re.sub(r"\s+([,;])", r"\1", value).strip(" ,;")
     value = re.sub(r"^«([^»]+)»\s*\((ПАО|АО)\)$", r"\2 «\1»", value)
-    if re.fullmatch(r"(?:ПАО\s+)?Банк(?:а|у|ом)?\s+«?ВТБ»?(?:\s*\(ПАО\))?", value, re.I):
+    if re.fullmatch(r"(?:ПАО\s+)?«?Банк(?:а|у|ом)?\s+«?ВТБ»?(?:\s*\(ПАО\))?", value, re.I):
         return "Банк ВТБ"
     if bank := re.fullmatch(r"Банк(?:а|у|ом)?\s+(?:«([^»]+)»|([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]{1,60}))\s*\((ПАО|АО)\)", value, re.I):
         return bank[3].upper() + ' «Банк ' + (bank[1] or bank[2]) + '»'

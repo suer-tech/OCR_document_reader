@@ -25,6 +25,84 @@ ACT = """Дело № А40-123/2026-1-2Ф
 ORDER = ACT.split("ОПРЕДЕЛИЛ:\n", 1)[1]
 CREDITOR = {"value": "ПАО «Пример»", "quote": "требование ПАО «Пример»"}
 CREDITOR_INN = {"value": "0123456789", "quote": "требование ПАО «Пример» (ИНН 0123456789)"}
+
+
+@pytest.mark.parametrize("heading,document,main", [
+    ("г. Краснодар Дело№А32-321/2026", "А32-321/2026", "А32-321/2026"),
+    ("Дело № А40-219/26-9-325 Ф", "А40-219/2026-9-325Ф", "А40-219/2026"),
+    ("Дело № А56-219/2026/тр.2", "А56-219/2026/тр.2", "А56-219/2026"),
+    ("Дело № А21-219-1/2026", "А21-219-1/2026", "А21-219/2026"),
+    ("Дело № А21-219/2026; дело № А21-220/2026", None, None),
+    ("", None, None),
+])
+def test_current_heading_survives_missing_model_reply(heading, document, main):
+    text = heading + "\nРассмотрев заявление, суд установил: по делу № А13-900/2023 ранее взысканы расходы."
+    fields = service._scalar_fields(text, {"document_case_number": {}, "case_number": {}}, {}, {}, {})
+    assert (fields["document_case_number"]["value"], fields["case_number"]["value"]) == (document, main)
+    if document:
+        assert fields["document_case_number"]["reasoning"] in heading
+
+
+@pytest.mark.parametrize("decision,answer,ending,expected", [
+    ("Включить требование банка в реестр.", "no", "Судья Иванов", "no"),
+    ("Включить требование банка в реестр.", "no", "", None),
+    ("Включить требование банка как обеспеченное залогом квартиры.", "yes", "Судья Иванов", "yes"),
+    ("В признании требования обеспеченным залогом имущества отказать.", "no", "Судья Иванов", "no"),
+    ("Выделить вопрос о залоге в отдельное производство.", "separated", "Судья Иванов", "separated"),
+    ("Включить требование банка в реестр.", "yes", "Судья Иванов", None),
+])
+def test_document_pledge_from_argon_without_amount_rows(decision, answer, ending, expected):
+    text = f"ОПРЕДЕЛИЛ:\n{decision}\n{ending}"
+    evidence = service.PledgeFact(value=answer, quote=decision)
+    assert service._document_pledge(evidence, text, []) == expected
+
+
+def test_document_pledge_does_not_transfer_from_another_claim():
+    decision = "Признать требование банка обеспеченным залогом."
+    evidence = service.PledgeFact(value="yes", quote=decision)
+    assert service._document_pledge(evidence, "Банк просил суд: " + decision + "\nОПРЕДЕЛИЛ: отказать.", []) is None
+    assert service._document_pledge(evidence, "ОПРЕДЕЛИЛ:\n" + decision, [{"pledge_resolution": "no"}]) is None
+
+
+@pytest.mark.parametrize("name,quote,expected", [
+    ("ООО «Профессиональная коллекторская организация «Пример»",
+     "требование ООО «Профессиональная коллекторская организация «Пример»", "ООО ПКО «Пример»"),
+    ("ООО коллекторское бюро «Пример»", "требования ООО коллекторского бюро «Пример»", "ООО коллекторское бюро «Пример»"),
+    ("ПАО СБЕРБАНК", "требование ПАО СБЕРБАНК", "ПАО «Сбербанк»"),
+])
+def test_source_bound_argon_creditor_format(name, quote, expected):
+    assert service._model_fact("creditor", service.Fact(value=name, quote=quote), quote, None) == expected
+
+
+@pytest.mark.asyncio
+async def test_truncated_contracts_retry_independent_document_facts(monkeypatch):
+    decision = "Включить требование ПАО «Пример» в третью очередь реестра требований."
+    text = "Дело № А42-123-2/2026\nОПРЕДЕЛИЛ:\n" + decision + "\nСудья Иванов"
+    calls = []
+
+    def gateway(**args):
+        kind = args["request_type"]
+        calls.append(kind)
+        if kind == "rtk3_document_facts_retry":
+            assert set(args["response_schema"]["json_schema"]["schema"]["properties"]) == {
+                "creditor", "creditor_inn", "document_pledge",
+            }
+            return SimpleNamespace(parsed={
+                "creditor": {"value": "ПАО «Пример»", "quote": decision},
+                "document_pledge": {"value": "no", "quote": decision},
+            })
+        return None
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    monkeypatch.setattr(service, "_enrich_creditor_inn", AsyncMock())
+    fields = await service.extract_fields(text, load_profile("rtk3"))
+    assert calls == ["decisions", "rtk3_components", "rtk3_document_facts_retry"]
+    assert fields["claims"]["value"] == []
+    assert fields["pledge_resolution"]["value"] == "no"
+    assert fields["pledge_resolution"]["extraction_route"] == "gemini_argon"
+    assert fields["creditor"]["value"] == "ПАО «Пример»"
+    assert fields["document_case_number"]["value"] == "А42-123-2/2026"
+
 PENALTY = {"kind": "sanction", "amount": "8 руб.", "quote": "8 руб. пеней"}
 MONEY_KEYS = {f"claim_1_{name}" for name in ("principal_debt", "financial_sanctions", "pau_only_amount", "included_total")}
 MODEL_CLAIM = {
@@ -344,7 +422,7 @@ async def test_reasoning_gateway_routes_and_merges_rtk3_fields(monkeypatch, jev_
     fallback = calls["rtk3_components"]
     requested = fallback["response_schema"]["json_schema"]["schema"]["properties"].keys()
     inputs = json.loads(fallback["user_content"])
-    direct = {"grounds", "grounds_ocr", "claim_1_is_salary_or_severance"}
+    direct = {"creditor", "creditor_inn", "document_pledge", "grounds", "grounds_ocr", "claim_1_is_salary_or_severance"}
     assert direct.isdisjoint(decisions["decisions_questions"])
     assert direct.isdisjoint(decisions["decisions_state"]["fields"])
     assert direct.isdisjoint(inputs["verified_fields"])
@@ -525,6 +603,8 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
 
         await worker._process_pipeline_run_impl("run-rtk3")
         expected_calls = ["decisions", "rtk3_components"]
+        if not partial:
+            expected_calls.append("rtk3_document_facts_retry")
         if layout_verified:
             expected_calls.append("rtk3_principal_retry")
         assert [call["request_type"] for call in calls] == expected_calls
@@ -534,10 +614,7 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
         assert ("claims" in request) is not layout_verified
         assert "case_number" not in request
 
-        confirmed = {
-            "case_number": "А40-123/2026", "debtor_inn": "012345678901",
-            "creditor": "ПАО «Пример»", "creditor_inn": "0123456789",
-        }
+        confirmed = {"debtor_inn": "012345678901"}
         with sessions() as session:
             assert session.get(models.PipelineRun, "run-rtk3").status == "done"
             stored = session.scalar(select(models.StructuredVersion)).data
@@ -545,7 +622,11 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
                 assert stored[name]["value"] == value
                 assert stored[name]["extraction_route"] == "regex_jev"
             assert stored["inclusion_date"]["value"] == ("19.03.2026" if partial else None)
-            assert stored["document_case_number"]["value"] is None
+            assert stored["document_case_number"]["value"] == "А40-123/2026-1-2Ф"
+            assert stored["case_number"]["value"] == "А40-123/2026"
+            assert stored["document_case_number"]["extraction_route"] == "document_header"
+            assert stored["creditor"]["value"] is None
+            assert stored["creditor_inn"]["value"] is None
             assert stored["grounds"]["value"] is None
             assert stored["grounds_ocr"]["value"] is None
             assert stored["secured_by_pledge"]["value"] is (True if layout_verified and partial else None)
@@ -579,7 +660,7 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
             assert payload["human_review_required"] is True
             assert payload["human_review_reason"] == "rtk3_requires_review"
             issues = {issue["field_name"] for issue in payload["validation_issues"]}
-            assert "document_case_number" in issues
+            assert "document_case_number" not in issues
             assert ("inclusion_date" in issues) is not partial
             for name in (*confirmed, "claims", "document_case_number", "inclusion_date",
                          "total_claimed_amount", "secured_by_pledge"):
