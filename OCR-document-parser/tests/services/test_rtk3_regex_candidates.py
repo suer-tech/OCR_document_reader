@@ -823,6 +823,8 @@ def test_decimal_sanction_repeated_in_separate_accounting_is_counted_once():
         "Учесть требования в размере 20,15. – неустойки отдельно в реестре требований кредиторов "
         "после погашения основной суммы задолженности."
     )
+    claim, = extract_candidates(text).claims
+    assert claim.quote == text.split("\n", 1)[1]
     row, = fields(text)["claims"]["value"]
     assert row["financial_sanctions"] == "20.15"
     assert row["pau_only_amount"] is None

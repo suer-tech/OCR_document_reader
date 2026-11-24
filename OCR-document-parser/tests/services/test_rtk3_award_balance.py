@@ -35,7 +35,7 @@ def test_argon_no_pledge_for_complete_ordinary_admission(mode, kind):
 
 
 @pytest.mark.parametrize("mode", ["fixed", "full"])
-@pytest.mark.parametrize("case", ["separate", "duty", "wrong_amount", "queue_only"])
+@pytest.mark.parametrize("case", ["separate", "kopecks", "duty", "wrong_amount", "queue_only"])
 def test_priced_separate_accounting_of_third_priority_sanction(mode, case):
     balance = "90 руб. – требования кредиторов третьей очереди."
     clause = "10 руб. требования кредиторов третьей очереди"
@@ -43,10 +43,15 @@ def test_priced_separate_accounting_of_third_priority_sanction(mode, case):
         clause += (", учитывающиеся отдельно в реестре требований кредиторов и подлежащие удовлетворению "
                    "после погашения основной суммы задолженности и причитающихся процентов")
     order = "Включить требования в третью очередь в сумме 100 руб. " + balance + " " + clause
+    if case == "kopecks":
+        clause = clause.replace("10 руб.", "10 руб. 00 коп.").replace(" и причитающихся процентов", ".")
+        order = "Включить требования в третью очередь в сумме 100 руб. " + balance + " " + clause
     if case == "duty":
         order += " Так учитываются расходы по госпошлине."
     item = {"kind": "sanction", "amount": "90 руб." if case == "wrong_amount" else "10 руб.",
             "quote": balance + " " + clause if case == "wrong_amount" else clause}
+    if case == "kopecks":
+        item["amount"] = "10 руб. 00 коп."
     if mode == "fixed":
         reply = {"claim_1_principal_debt": None, "claim_1_included_total": service.CourtTotal(
             amount="100 руб.", quote=order, scope="with_duty", principal_by_remainder=True),
@@ -64,7 +69,7 @@ def test_priced_separate_accounting_of_third_priority_sanction(mode, case):
         result = service._model_claims(order, load_profile("rtk3"), {"claims": [claim], "claims_complete": True}, {})
     row, = result["claims"]["value"]
     amounts = row["principal_debt"], row["financial_sanctions"], result["total_claimed_amount"]["value"]
-    assert amounts == (("90.00", "10.00", "100.00") if case == "separate" else (None, None, None))
+    assert amounts == (("90.00", "10.00", "100.00") if case in {"separate", "kopecks"} else (None, None, None))
 
 
 @pytest.mark.parametrize("mode", ["fixed", "full"])

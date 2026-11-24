@@ -136,7 +136,7 @@ def creditor_value(value: str | None, quote: str, text: str) -> Requisite:
     return Requisite(normalized, quote)
 
 
-INN = re.compile(r"\bИНН\s*[:№]?\s*([0-9]{12}|[0-9]{10})(?![0-9])", re.I)
+INN = re.compile(r"\b(?:ИНН|идентификационный\s+номер\s+налогоплательщика)\s*[:№]?\s*([0-9]{12}|[0-9]{10})(?![0-9])", re.I)
 WORD = r"[А-ЯЁ][А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)*"
 PERSON = re.compile(
     rf"\b(?!(?:ИП|ПАО|АО|ООО|ПКО)\b)({WORD})"
@@ -191,7 +191,8 @@ def debtor_anchors(text: str) -> set[tuple[str, str, str]]:
                 anchors.add(person_key(match))
                 continue
         if re.search(
-            r"\bв\s+рамках\s+дела\s*№\s*[АAаa][0-9/-]+(?:\s+FORMTEXT\s+\d{4})?\s+о\s+признании\s*$",
+            r"\bв\s+рамках\s+дела\s*№\s*[АAаa][0-9/-]+(?:\s+FORMTEXT\s+\d{4})?"
+            r"\s+(?:по\s+заявлению\s+)?о\s+признании\s*$",
             prefix, re.I,
         ) and re.match(
             r"\s*(?:\([^()]{0,450}\)\s*)?несостоятельн\w*\s*\(банкрот\w*\)", intro[match.end():], re.I,
@@ -356,7 +357,7 @@ def publication_date(text: str) -> Requisite:
 
 TAX_KIND = r"(?:транспортн\w*|земельн\w*|имущественн\w*)\s+налог\w*"
 TAX_NONPAYMENT_GROUND = (
-    r"\bкотор\w*\s+возник\w*\s+в\s+результате\s+неисполнения\s+"
+    r"\b(?:котор\w*\s+)?(?<!не\s)возник\w*\s+в\s+результате\s+неисполнения\s+"
     r"должник\w*\s+обязательств\s+по\s+уплате\s+налог(?:а|ов)\b"
 )
 GROUND_PATTERNS = {
@@ -395,7 +396,7 @@ GENERAL_SANCTIONS_NOTICE = re.compile(
 
 def explicit_ground_category(quote: str, creditor: str | None = None) -> str | None:
     """Classify the quoted origin of the obligation, including how bank financing was used."""
-    quote = GENERAL_SANCTIONS_NOTICE.sub(" ", quote)
+    quote = GENERAL_SANCTIONS_NOTICE.sub(" ", re.sub(r"\s+", " ", quote))
     categories = {
         category for category, pattern in GROUND_PATTERNS.items()
         for match in re.finditer(pattern, quote, re.I)

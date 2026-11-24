@@ -39,6 +39,22 @@ CATEGORY_FIELDS = {
 }
 
 
+DUPLICATED_RUBLE_UNIT = r"(?:[0-9]{1,3}(?: [0-9]{3})+|[0-9]+)\s+руб\.\s+[0-9]{2}\s+руб\."
+AMOUNT = (
+    r"(?<!\w)(?<!\d[,.])(?:"
+    rf"{DUPLICATED_RUBLE_UNIT}(?=\s*[-–—]\s*процент\w*\b)|"
+    r"[0-9]{1,3}(?:\.[0-9]{3})+(?:, ?[0-9]{1,2})?\s*(?:руб(?:лей|ля|ль)?\b\.?|р\.)|"
+    r"(?:(?<=в размере )|(?<=в сумме ))[0-9]{1,3} [0-9]{4}, ?[0-9]{2}\s*(?:руб(?:лей|ля|ль)?\b\.?|р\.)|"
+    r"(?<=в размере )\d+(?: \d{3})*[.,]\d{2}(?=,\s*из\s+(?:которых|них)\s*:)|"
+    r"(?:[0-9]{1,3}(?: [0-9]{3})+|[0-9]+)"
+    r"(?:(?:[.,] ?[0-9]{2}\s*,(?=\s*(?:руб(?:лей|ля|ль)?\b|р\.))|[.,] ?[0-9]{1,2})?"
+    r"(?:\s*\([а-яё -]{3,200}\))?\s*(?:руб(?:лей|ля|ль)?\.?\b\.?|р\.)"
+    r"(?:\s*[0-9]{1,2}\s*(?:коп(?:еек|ейки|ейка)?\.?\b\.?|к\.))?"
+    r"|[.,] ?[0-9]{1,2}(?=\.?\s+(?:[-–—]\s*)?(?:основн\w*\s+долг|процент\w*|неустойк\w*|пени)\b)))"
+)
+AMOUNTS = re.compile(AMOUNT, re.I)
+
+
 def is_duty_only(row: dict) -> bool:
     fee = money(row.get("pau_only_amount"))
     return fee is not None and fee > 0 and money(row.get("claimed_amount")) == 0
@@ -186,17 +202,60 @@ SEPARATE_SANCTIONS = re.compile(
 )
 
 
+def commission_item(item: Component) -> bool:
+    """Only the priced commission itself, never a neighbouring amount in a list."""
+    quote = compact(item.quote).strip(" ;,:–—-")
+    label = (r"(?:(?:банковск\w*\s+)?комисси(?:я|и|ю|й|е|ям|ями|ях)(?:\s+банка)?|"
+             r"комиссионн\w*\s+вознаграждени\w*)(?:\s+за\s+[а-яё -]+)?")
+    tokens = list(AMOUNTS.finditer(quote))
+    if len(tokens) > 1 or rtk3_money(item.amount) is None:
+        return False
+    literal = tokens[0][0] if tokens else compact(item.amount)
+    if rtk3_money(literal) != rtk3_money(item.amount):
+        return False
+    value = re.escape(literal)
+    return bool(value and re.fullmatch(
+        rf"(?:{value}\s*[-–—:]?\s*{label}|{label}\s*(?:в (?:размере|сумме)\s*)?[-–—:]?\s*{value})\.?", quote
+    ))
+
+
 def separately_accounted_sanction(item: Component, decision: str) -> bool:
     """A priced third-priority allocation must carry the separate-payment wording itself."""
     if not quoted(item.quote, decision) or re.search(r"пошлин|судебн\w*\s+расход|издержк", decision, re.I):
         return False
     match = re.search(
-        r"(?<![\d.,])(?P<amount>\d+(?: \d{3})*(?:[.,]\d{1,2})?\s*руб(?:лей|ля|ль)?\.?)"
+        rf"(?P<amount>{AMOUNT})"
         r"\s*[-–—]?\s*требован\w*\s+кредитор\w*\s+третьей\s+очереди\s*,?\s*"
-        + SEPARATE_SANCTIONS.pattern + r"\s+(?:долга|задолженности)\s+и\s+причитающихся\s+процентов",
+        + SEPARATE_SANCTIONS.pattern + r"\s+(?:долга|задолженности)"
+        r"(?:\s+и\s+причитающихся\s+процентов\b|(?=[.;]|$))",
         compact(item.quote),
     )
-    return bool(match and rtk3_money(match["amount"]) == rtk3_money(item.amount))
+    amount = rtk3_money(item.amount)
+    return bool(match and amount is not None and rtk3_money(match["amount"]) == amount)
+
+
+def _sanctions_complete_except_cost(claim: ClaimEvidence) -> bool:
+    """All printed items reconcile; only the category of one court expense is unresolved."""
+    text = compact(claim.decision_quote)
+    printed = list(AMOUNTS.finditer(text))
+    if (len(printed) != len(claim.components) + 2 or not claim.included_total.value
+            or rtk3_money(printed[0][0]) != rtk3_money(claim.included_total.value)
+            or not re.match(r"\s*[,;:]?\s*(?:в том числе|из которых)\b", text[printed[0].end():])):
+        return False
+    items = printed[1:]
+    total = [rtk3_money(m[0]) for m in items]
+    if None in total or sum(total) != rtk3_money(claim.included_total.value):
+        return False
+    remaining = list(items)
+    for item in claim.components:
+        citation = compact(item.quote)
+        start = text.find(citation)
+        matches = [m for m in remaining if rtk3_money(m[0]) == rtk3_money(item.amount)
+                   and start >= 0 and start <= m.start() < start + len(citation)]
+        if len(matches) != 1:
+            return False
+        remaining.remove(matches[0])
+    return bool(re.match(r"\s*[-–—]\s*судебн\w*\s+расход\w*\s*(?:[.;]|$)", text[remaining[0].end():]))
 
 
 def money(value: object) -> Decimal | None:
@@ -222,8 +281,10 @@ def money(value: object) -> Decimal | None:
 
 
 def rtk3_money(value: object) -> Decimal | None:
-    """Read a redundant comma between two printed kopeck digits and the ruble unit."""
+    """Accept printed punctuation following two unambiguous kopeck digits."""
     if isinstance(value, str):
+        if re.fullmatch(r"\s*(?:\d{1,3}(?:\s\d{3})+|\d+)[.,]\d{2}\.\s*", value):
+            value = value.rstrip()[:-1]
         value = re.sub(r"([.,]\s*[0-9]{2})\s*,(?=\s*(?:руб(?:лей|ля|ль)?\.?|р\.)\s*$)", r"\1", value, flags=re.I)
     return money(value)
 
@@ -270,6 +331,47 @@ def single_contract_salary_evidence(quote: str, grounds: Fact | None, text: str)
         return False
     contracts = requisites.contract_numbers(quote)
     return len(contracts) == 1 and contracts.keys() == requisites.contract_numbers(text).keys()
+
+
+def nonwage_application(quote: str, order: str, text: str, creditor: str | None) -> bool:
+    """Link a literal non-wage basis in the sole applicant's heading to its admission."""
+    markers = list(OPERATIVE.finditer(text))
+    if len(markers) != 1 or not quoted(order, text[markers[0].end():]):
+        return False
+    header = text[:markers[0].start()]
+    if not quoted(quote, header) or re.search(r"зарплат|заработн\w*\s+плат|выходн\w*\s+пособ|оплат\w*\s+труд", text, re.I):
+        return False
+    applications = list(re.finditer(r"\bзаявлени[еюя]\s+(.{1,220}?)\s+о\s+включении\b", header, re.I | re.S))
+    if len(applications) != 1:
+        return False
+    applicant = applications[0][1].split("(")[0].strip()
+    creditor = creditor or applicant
+    if re.search(r"в\s+интересах|от\s+имени|в\s+пользу", applications[0][1], re.I):
+        return False
+    if requisites.tax_identity(creditor):
+        return bool(requisites.tax_identity(applicant) == requisites.tax_identity(creditor)
+                    and quoted(applications[0][0], quote) and re.search(r"\bНК\s+РФ\b", quote, re.I))
+    if requisites.identity(applicant) != requisites.identity(creditor) or not requisites.creditor_value(creditor, order, text).value:
+        return False
+    return bool(requisites.explicit_ground_category(quote) in {"Кредитный договор", "Договор займа"}
+                and re.search(r"по\s+задолженности\s+по\s+договору\b.{1,100}\bот\s+\d{2}\.\d{2}\.\d{4}", quote, re.I | re.S)
+                and not requisites.contract_numbers(text)
+                and len(re.findall(r"\bдоговор\w*\b", header, re.I)) == 1
+                and quoted(quote, header[applications[0].end():]))
+
+
+def shared_queue_order(claim: ClaimEvidence, text: str) -> bool:
+    from ocr_platform.services.rtk3_regex_candidates import operative_part, queue_candidates
+
+    quote = claim.priority_queue.quote
+    if (not quoted(quote, operative_part(text)) or not quoted(claim.decision_quote, quote)
+            or not requisites.contract_numbers(claim.decision_quote)
+            or len(requisites.contract_numbers(quote)) < 2):
+        return False
+    commands = re.findall(r"\b(?:включить|признать|установить|учесть|отказать|отложить|взыскать|выделить)\b", quote, re.I)
+    return bool(len(commands) == 1 and commands[0].casefold() == "включить"
+                and re.search(r"\b(?:в\s+общем\s+размере|в\s+общей\s+сумме|по\s+обоим\s+договорам)\b", quote, re.I)
+                and {fact.value for fact in queue_candidates(quote)} == {claim.priority_queue.value})
 
 
 def itemized_debt_excludes_salary(quote: str, components: list[Component]) -> bool:
@@ -427,6 +529,18 @@ def fee_in_prior_order(item: Component, decision: str) -> bool:
                 and not re.search(r"настоящ\w*\s+(?:спор|заявлен)|за\s+(?:рассмотрение|подачу)", commands[-1]))
 
 
+# A fee can have its own disposition immediately after a completed debt
+# breakdown. Match the fee subject, amount and predicate together so a
+# later award cannot change the treatment of an earlier item of equal value.
+_FEE_DISPOSITION = re.compile(
+    r"(?<=[.;])\s+(?:\d+[.)]\s*)?(?:(?:судебные\s+)?расходы\s+[^.;]{0,200}?по\s+уплате\s+)?"
+    r"(?P<label>государственн\w*\s+пошлин\w*)\s+(?:по\s+настоящему\s+требованию\s+)?"
+    rf"в\s+(?:размере|сумме)\s+(?P<amount>{AMOUNT})"
+    r"\s*,?\s*(?:признать\s+)?(?:подлежа\w*\s+(?:уч[её]ту|возмещению|взысканию)|учитыва\w*\s+в\s+реестре)",
+    re.I,
+)
+
+
 def included_contract_cost(item: Component, breakdown: str) -> bool:
     """An item in the court's breakdown of contractual debt, before any separate award."""
     quote, source = compact(item.quote), compact(breakdown)
@@ -447,8 +561,18 @@ def included_contract_cost(item: Component, breakdown: str) -> bool:
         r"(?:в\s+том\s+числе|из\s+котор(?:ой|ых))", before))
     if not heading:
         return False
+    fee_label = re.search(r"пошлин", clauses[0])
+    if fee_label:
+        position = start + fee_label.start()
+        for award in _FEE_DISPOSITION.finditer(source, heading[-1].end()):
+            if not (award.start("label") <= position < award.end("label") and amount_supported(item.amount, award["amount"])):
+                continue
+            printed = list(AMOUNTS.finditer(heading[-1][0]))
+            parts = [rtk3_money(match[0]) for match in AMOUNTS.finditer(source, heading[-1].end(), award.start())]
+            if len(printed) == 1 and parts and None not in parts and sum(parts) == rtk3_money(printed[0][0]):
+                return False
     commands = r"\b(?:взыскать|признать|включить|возвратить)\b"
-    if re.search(commands, before[heading[-1].end():]):
+    if re.search(commands, before[heading[-1].end():]) or re.match(r"\s*(?:\d+[.)]\s*)?взыскать\b", source[start:]):
         return False
     clause = re.split(commands, source[start:], maxsplit=1)[0]
     return not re.search(r"настоящ\w*\s+(?:дел|спор|заявлен)|текущ\w*\s+спор|"
@@ -459,6 +583,7 @@ def included_contract_cost(item: Component, breakdown: str) -> bool:
 
 def build_fields(
     evidence: DocumentEvidence, text: str, profile: dict, *, recover_from_source: bool = True,
+    confirmed_absence: set[tuple[int, str]] | None = None,
 ) -> dict:
     fields = {name: {"value": None, "confidence": None, "reasoning": "Не установлено по документу.",
                      "source": VERSION} for name in profile["fields"]}
@@ -563,7 +688,7 @@ def build_fields(
     if not evidence.claims_complete or evidence.uncertainty:
         problems.append(evidence.uncertainty or "Не подтверждена полнота требований.")
     seen = set()
-    for claim in evidence.claims:
+    for claim_index, claim in enumerate(evidence.claims):
         contracts = requisites.contract_numbers(claim.decision_quote)
         scoped_breakdown = len(contracts) > 1
         if scoped_breakdown:
@@ -588,16 +713,25 @@ def build_fields(
         if not (re.search(r"включ|признать|учесть", claim.decision_quote, re.IGNORECASE)
                 or duty_award or inherited_order(claim.decision_quote, text)):
             errors.append("Цитата не содержит команды суда о требовании.")
-        if not quoted(claim.priority_queue.quote, claim.decision_quote) or claim.priority_queue.value not in QUEUES:
-            errors.append("Не установлена очередь требования.")
-        if claim.priority_queue.value == "За реестром" and not re.search(
+        queue = claim.priority_queue.value
+        queue_issues = errors if recover_from_source else problems
+        if queue not in QUEUES or not (quoted(claim.priority_queue.quote, claim.decision_quote)
+                                      or not recover_from_source and shared_queue_order(claim, text)):
+            queue_issues.append("Не установлена очередь требования.")
+            queue = None
+        if queue == "За реестром" and not re.search(
                 r"за\s+реестр|после\s+(?:полного\s+)?удовлетворения\s+требований\s+кредиторов.{0,100}(?:включ[её]н|реестр)",
                 compact(claim.priority_queue.quote), re.I):
-            errors.append("Отдельный учёт санкций не подтверждает требование за реестром.")
+            queue_issues.append("Отдельный учёт санкций не подтверждает требование за реестром.")
+            queue = None
         complete = claim.components_complete and (bool(claim.components) or claim.principal_by_remainder)
         if not complete:
             problems.append("Не подтверждена полнота денежных компонентов.")
         breakdown = claim.breakdown_quote
+        if (breakdown and not scoped_breakdown and claim.components
+                and all(quoted(item.quote, claim.decision_quote) for item in claim.components)
+                and (not claim.included_total.value or not amount_supported(claim.included_total.value, breakdown))):
+            breakdown = ""
         if breakdown:
             # Earlier reasons may explain an admitted gross sum, but cannot
             # replace the court's final disposition. Require independent totals
@@ -605,7 +739,11 @@ def build_fields(
             if (not quoted(breakdown, text) or not claim.included_total.value
                     or not amount_supported(claim.included_total.value, breakdown)
                     or excluded_component(breakdown, text)):
-                errors.append("Разбивка не связана с итоговой включённой суммой.")
+                if scoped_breakdown:
+                    errors.append("Разбивка не связана с итоговой включённой суммой.")
+                else:
+                    problems.append("Разбивка не связана с итоговой включённой суммой.")
+                    breakdown = ""
             ledger_reasons.append("Разбивка включённого требования: " + breakdown)
         if claim.uncertainty:
             # Preserve independently supported arithmetic while still requiring
@@ -613,20 +751,25 @@ def build_fields(
             problems.append(claim.uncertainty)
         amounts = {kind: Decimal(0) for kind in ["principal", "interest", "sanction", "duty", "prior_cost", "contract_cost"]}
         supported_kinds = set()
+        invalid_categories = set()
         for component in claim.components:
             # The model may call an old order's fee 'duty'; its explicitly
             # quoted origin determines the accounting category, not the label.
             if component.kind == "duty" and previous_cost(component.quote):
                 component = component.model_copy(update={"kind": "prior_cost"})
                 ledger_reasons.append("Расходы по прежнему судебному акту учтены в составе долга, не как пошлина текущего включения: " + component.quote)
+            if commission_item(component):
+                component = component.model_copy(update={"kind": "sanction"})
+            category = next(name for name, kinds in CATEGORY_FIELDS.items() if component.kind in kinds)
             amount = rtk3_money(component.amount)
             key = ((number or "").casefold(), compact(component.quote), amount)
             if (amount is None or not (quoted(component.quote, claim.decision_quote)
                                       or (breakdown and quoted(component.quote, breakdown)))
                     or not amount_supported(component.amount, component.quote) or key in seen):
-                errors.append("Неподтверждённый, повторный или некорректный денежный компонент.")
+                invalid_categories.add(category)
+                problems.append("Неподтверждённый, повторный или некорректный денежный компонент.")
                 continue
-            seen.add(key)
+            component_errors = []
             patterns = {"principal": r"долг|задолжен|требован", "interest": r"процент",
                         "sanction": r"неустойк|пен[ияеь]|штраф|санкц|мораторн",
                         "duty": r"(?:гос[–-]?)?пошлин", "prior_cost": r"пошлин|судебн\w*\s+расход|издерж|исполнительн\w*\s+надпис",
@@ -638,49 +781,59 @@ def build_fields(
                 kind_quote = claim.decision_quote
             if not (re.search(patterns[component.kind], kind_quote, re.IGNORECASE)
                     or component.kind == "principal" and public_payment_principal(kind_quote)
-                    or component.kind == "sanction" and separately_accounted_sanction(component, claim.decision_quote)):
-                errors.append("В цитате не подтверждён вид денежного компонента.")
+                    or component.kind == "sanction" and (commission_item(component) or separately_accounted_sanction(component, claim.decision_quote))):
+                component_errors.append("В цитате не подтверждён вид денежного компонента.")
             if component.kind == "contract_cost" and not included_contract_cost(component, breakdown or claim.decision_quote):
-                errors.append("Не подтверждено включение расходов в состав задолженности по договору.")
+                component_errors.append("Не подтверждено включение расходов в состав задолженности по договору.")
             if component.kind == "interest" and re.search(patterns["sanction"], component.quote, re.IGNORECASE):
-                errors.append("Неустойка за проценты не является обычными процентами.")
+                component_errors.append("Неустойка за проценты не является обычными процентами.")
             if component.kind == "duty" and re.search(r"вернуть|возврат|возвращ", component.quote, re.IGNORECASE):
-                errors.append("Возвращаемая пошлина не является включённым требованием.")
+                component_errors.append("Возвращаемая пошлина не является включённым требованием.")
             if component.kind == "duty" and fee_in_prior_order(component, claim.decision_quote):
-                errors.append("Не установлено, относится ли пошлина по судебному приказу к текущему включению.")
+                component_errors.append("Не установлено, относится ли пошлина по судебному приказу к текущему включению.")
             if component.kind == "duty" and not recover_from_source and included_contract_cost(component, breakdown or claim.decision_quote):
-                errors.append("Пошлина внутри состава долга ошибочно отнесена к отдельной пошлине.")
+                component_errors.append("Пошлина внутри состава долга ошибочно отнесена к отдельной пошлине.")
             if excluded_component(component.quote, text):
-                errors.append("Денежный компонент относится к прекращённой, отказанной или возвращаемой части/текущему платежу.")
+                component_errors.append("Денежный компонент относится к прекращённой, отказанной или возвращаемой части/текущему платежу.")
             if component.kind == "principal" and (re.search(patterns["sanction"], component.quote, re.IGNORECASE)
                     or public_payment_principal(component.quote) is False):
-                errors.append("Общая сумма с санкциями не является целиком основным долгом.")
+                component_errors.append("Общая сумма с санкциями не является целиком основным долгом.")
             if component.kind == "prior_cost" and not notarial_collection_cost(component.quote) and not re.search(
                     r"судебн\w*\s+приказ|решени|ранее|установлен\w*\s+судебн",
                     claim.decision_quote + " " + breakdown, re.IGNORECASE):
                 problems.append("Не подтверждено происхождение ранее присуждённых судебных расходов.")
+            if component_errors:
+                problems.extend(component_errors)
+                invalid_categories.add(category)
+                continue
+            seen.add(key)
             amounts[component.kind] += amount
             supported_kinds.add(component.kind)
         principal = amounts["principal"] + amounts["interest"] + amounts["prior_cost"] + amounts["contract_cost"]
         stated = claim.included_total
         explicit = rtk3_money(stated.value)
+        invalid_total = bool(stated.value and (explicit is None or not quoted(stated.quote, claim.decision_quote)
+                                               or not amount_supported(stated.value, stated.quote)))
+        if invalid_total:
+            problems.append("Явный итог требования не подтверждён окончательным решением.")
         if claim.principal_by_remainder and complete:
             balance = principal_from_award(explicit, claim.total_scope, amounts["sanction"], amounts["duty"])
-            if (balance is None or supported_kinds.intersection(CATEGORY_FIELDS["principal_debt"])
+            if invalid_total or invalid_categories:
+                invalid_categories.add("principal_debt")
+            elif (balance is None or supported_kinds.intersection(CATEGORY_FIELDS["principal_debt"])
                     or scoped_breakdown and not quoted(stated.quote, breakdown)):
-                errors.append("Не подтверждён расчёт основного долга из итога этой строки.")
+                invalid_categories.add("principal_debt")
+                problems.append("Не подтверждён расчёт основного долга из итога этой строки.")
             else:
                 principal = balance
         net = principal + amounts["sanction"]
         total = net + amounts["duty"]
-        if stated.value:
-            if not quoted(stated.quote, claim.decision_quote) or not amount_supported(stated.value, stated.quote):
-                errors.append("Явный итог требования не подтверждён окончательным решением.")
+        if stated.value and not invalid_total:
             allowed = {"with_duty": {total}, "without_duty": {net}, "unknown": {net, total}}
             lower_bound = total if claim.total_scope == "with_duty" else net
-            if explicit is None or explicit < lower_bound or (complete and explicit not in allowed[claim.total_scope]):
+            if explicit is None or explicit < lower_bound or (complete and not invalid_categories and explicit not in allowed[claim.total_scope]):
                 errors.append("Компоненты не совпадают с явно указанным судом итогом.")
-        else:
+        elif not stated.value:
             problems.append("Нет независимого явно указанного итога требования; нужна проверка полноты сумм.")
         duty_only = amounts["duty"] > 0 and net == 0
         pledge = claim.pledge_resolution
@@ -717,7 +870,8 @@ def build_fields(
         salary_supported = quoted(claim.salary_quote, claim.decision_quote) or (
             bool(breakdown) and quoted(claim.salary_quote, breakdown))
         if salary is False and not salary_supported and not recover_from_source and len(evidence.claims) == 1:
-            salary_supported = single_contract_salary_evidence(claim.salary_quote, grounds, text)
+            salary_supported = single_contract_salary_evidence(claim.salary_quote, grounds, text) or (
+                evidence.claims_complete and nonwage_application(claim.salary_quote, claim.decision_quote, text, creditor.value))
         if salary is not None and (not salary_supported or salary is True and not re.search(
                 r"заработн|зарплат|выходн", claim.salary_quote, re.IGNORECASE)):
             salary = None
@@ -730,9 +884,16 @@ def build_fields(
         # Unknown salary status must not erase independently supported money.
         # Hold uncertain amounts instead of exporting a partial sum as complete.
         known = set(claim.complete_categories) if not recover_from_source else set()
+        if (not complete and not invalid_categories and not errors and "sanction" in supported_kinds
+                and not scoped_breakdown and _sanctions_complete_except_cost(claim)):
+            known.add("financial_sanctions")
 
         def fmt(amount, category):
-            if errors or not complete and (category not in known or not supported_kinds.intersection(CATEGORY_FIELDS[category])):
+            absent = confirmed_absence and (claim_index, category) in confirmed_absence and amount == 0
+            supported = supported_kinds.intersection(CATEGORY_FIELDS[category])
+            if errors or category in invalid_categories or (invalid_categories and not supported and not absent):
+                return None
+            if not complete and not absent and (category not in known or not supported):
                 return None
             return format(amount, ".2f")
         principal_value = fmt(principal, "principal_debt")
@@ -740,9 +901,11 @@ def build_fields(
         duty_value = fmt(amounts["duty"], "pau_only_amount")
         net_value = format(net, ".2f") if principal_value is not None and sanctions_value is not None else None
         total_value = format(total, ".2f") if net_value is not None and duty_value is not None else None
-        if not complete and not errors and not recover_from_source and stated.value and claim.total_scope == "with_duty":
+        if invalid_total:
+            net_value = total_value = None
+        if not complete and not errors and not invalid_total and not invalid_categories and not recover_from_source and stated.value and claim.total_scope == "with_duty":
             total_value = format(explicit, ".2f")
-        rows.append({"priority_queue": claim.priority_queue.value if claim.priority_queue.value in QUEUES else None,
+        rows.append({"priority_queue": queue,
                      "contract_number": number, "pledge_resolution": pledge,
                      "secured_by_pledge": pledge == "yes" if pledge else None,
                      "principal_debt": principal_value, "financial_sanctions": sanctions_value,
@@ -760,7 +923,8 @@ def build_fields(
         payer = payers[0]
         extra = sum((money(r["pau_only_amount"]) for r in duties), Decimal(0))
         payer["pau_only_amount"] = format(money(payer["pau_only_amount"]) + extra, ".2f")
-        payer["total_amount"] = format(money(payer["total_amount"]) + extra, ".2f")
+        if payer["total_amount"] is not None:
+            payer["total_amount"] = format(money(payer["total_amount"]) + extra, ".2f")
         rows = [r for r in rows if r not in duties]
     # Recover a model-omitted standalone fee only with a single admitted row,
     # a literal art.137(3) award and a shared named creditor. No guessed allocation.

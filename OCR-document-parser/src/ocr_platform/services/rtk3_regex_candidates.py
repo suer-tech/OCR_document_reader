@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ocr_platform.services import rtk3_requisites as req
 from ocr_platform.services.rtk3_evidence import (
-    CATEGORY_FIELDS, OPERATIVE, SEPARATE_SANCTIONS, Component, Fact, compact, excluded_component, previous_cost,
+    AMOUNT, AMOUNTS, DUPLICATED_RUBLE_UNIT, CATEGORY_FIELDS, OPERATIVE, SEPARATE_SANCTIONS, Component, Fact, compact, excluded_component, previous_cost,
     remove_currency_page_marker, source_case,
 )
 from ocr_platform.services.rtk3_evidence import rtk3_money as money
@@ -97,20 +97,6 @@ QUEUE = re.compile(
     r"\s*,?\s*включ[её]н\w*\s+в\s+реестр|оставш\w*\s+после\s+погашения\s+требований\s+кредиторов"
     r"\s*,?\s*включ[её]н\w*\s+в\s+реестр|" + EXPIRED_REGISTRY_ACCOUNTING.pattern + ")", re.I,
 )
-DUPLICATED_RUBLE_UNIT = r"(?:[0-9]{1,3}(?: [0-9]{3})+|[0-9]+)\s+руб\.\s+[0-9]{2}\s+руб\."
-AMOUNT = (
-    r"(?<!\w)(?<!\d[,.])(?:"
-    rf"{DUPLICATED_RUBLE_UNIT}(?=\s*[-–—]\s*процент\w*\b)|"
-    r"[0-9]{1,3}(?:\.[0-9]{3})+(?:, ?[0-9]{1,2})?\s*(?:руб(?:лей|ля|ль)?\b\.?|р\.)|"
-    r"(?:(?<=в размере )|(?<=в сумме ))[0-9]{1,3} [0-9]{4}, ?[0-9]{2}\s*(?:руб(?:лей|ля|ль)?\b\.?|р\.)|"
-    r"(?<=в размере )\d+(?: \d{3})*[.,]\d{2}(?=,\s*из\s+(?:которых|них)\s*:)|"
-    r"(?:[0-9]{1,3}(?: [0-9]{3})+|[0-9]+)"
-    r"(?:(?:[.,] ?[0-9]{2}\s*,(?=\s*(?:руб(?:лей|ля|ль)?\b|р\.))|[.,] ?[0-9]{1,2})?"
-    r"(?:\s*\([а-яё -]{3,200}\))?\s*(?:руб(?:лей|ля|ль)?\.?\b\.?|р\.)"
-    r"(?:\s*[0-9]{1,2}\s*(?:коп(?:еек|ейки|ейка)?\.?\b\.?|к\.))?"
-    r"|[.,] ?[0-9]{1,2}(?=\.?\s+(?:[-–—]\s*)?(?:основн\w*\s+долг|процент\w*|неустойк\w*|пени)\b)))"
-)
-AMOUNTS = re.compile(AMOUNT, re.I)
 GROSS = re.compile(r"(?:в\s+(?:(?:общем\s+)?размере|(?:общей\s+)?сумме)|на\s+(?:общую\s+)?сумму)\s*$", re.I)
 BREAKDOWN = re.compile(r"\b(?:в\s+том\s+числе|в\s*т\s*\.\s*ч\s*\.|а\s+именно(?=\s*:)|"
                        r"из\s+(?:них|которых|которой)|в\s+составе\s*:)\s*[:—–,-]?", re.I)
@@ -178,6 +164,14 @@ INLINE_ACCOUNTED_DUTY = re.compile(
     r"Требования\s+в\s+части\s+неустойки\s+и\s+государственной\s+пошлины\s+учитываются\s+отдельно\s+"
     r"в\s+реестре\s+требований\s+кредиторов\b[^.]{0,150}\bпосле\s+погашения\s+основной\s+суммы",
     re.I,
+)
+# A conjunction can join two awards within a single admission. The amount before
+# the comma and the fee after it belong to the same source passage.
+_ADDITIONAL_DUTY = re.compile(
+    rf",\s*а\s+также\s+(?:(?:расход\w*\s+по\s+(?:уплате|оплате)\s+)?"
+    rf"(?:государственн\w*\s+пошлин\w*|госпошлин\w*)\s+в\s+(?:сумме|размере)\s+{AMOUNT}|"
+    rf"{AMOUNT}\s*(?:[-–—]\s*)?(?:расход\w*\s+по\s+(?:уплате|оплате)\s+)?"
+    r"(?:государственн\w*\s+пошлин\w*|госпошлин\w*))", re.I,
 )
 SECTION_ACCOUNTED_DUTY = re.compile(
     r"\bа\s+также\s+государственн\w*\s+пошлин\w*\s+в\s+сумме\s+"
@@ -308,6 +302,27 @@ def operative_part(text: str) -> str:
     if len(markers) != 1:
         return ""
     return ENDING.split(text[markers[0].end():].strip(), maxsplit=1)[0].strip()
+
+
+def inline_duty_passages(text: str) -> list[str]:
+    operative = re.sub(r"\s+", " ", operative_part(text)).strip()
+    starts = list(COMMAND.finditer(operative))
+    passages = []
+    for index, command in enumerate(starts):
+        if command["verb"].casefold() not in {"включить", "признать", "установить"}:
+            continue
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(operative)
+        block = operative[command.start():end].strip()
+        fee = _ADDITIONAL_DUTY.search(block)
+        if not fee:
+            continue
+        amounts = list(AMOUNTS.finditer(block))
+        fee_clause = block[fee.start():]
+        if (len(amounts) != 2 or amounts[0].end() > fee.start() or block[amounts[0].end():fee.start()].strip()
+                or QUEUE.search(fee_clause) or re.search(r"в\s+пользу|в\s+доход|\bдоговор\w*\b", fee_clause, re.I)):
+            continue
+        passages.append(block)
+    return passages
 
 
 def queue_candidates(text: str) -> list[Fact]:
@@ -1333,6 +1348,8 @@ def claim_candidates(operative: str, creditor: Fact | None, *, body: str = "") -
               for i, m in enumerate(starts)]
     admitted, fees, separate_pledges, unknown_fees = [], [], [], []
     fee_queues = {}
+    inline_fee_sources = {}
+    sanction_sources = {}
     allocated = None
     collateral_confirmation = None
     restoration_refusal = None
@@ -1342,7 +1359,11 @@ def claim_candidates(operative: str, creditor: Fact | None, *, body: str = "") -
     for match, block in zip(starts, blocks):
         command = compact(match["verb"])
         if command in {"включить", "признать", "установить"}:
-            block = _trim_accounting_notice(block)
+            admission = _trim_accounting_notice(block)
+            if admission != block and AMOUNTS.search(block[len(admission):]):
+                # The notice repeats a priced sanction already in the admission.
+                sanction_sources[admission] = block
+            block = admission
         if registry_refusal:
             if (command != "признать" or not re.match(
                     r"признать\s+данные\s+требования\s+подлежащими\s+удовлетворению\b", block, re.I)
@@ -1354,6 +1375,7 @@ def claim_candidates(operative: str, creditor: Fact | None, *, body: str = "") -
             admitted[0] = operative[start:end]
             registry_refusal = False
             continue
+        source_block = block
         accounting = FEE_ACCOUNTING.search(block)
         if accounting and command in {"включить", "признать"}:
             fee_quote = accounting[0].strip()
@@ -1381,6 +1403,8 @@ def claim_candidates(operative: str, creditor: Fact | None, *, body: str = "") -
             if fee:
                 fees.append(fee)
                 block = block[:embedded.start()].strip()
+        if block != source_block:
+            inline_fee_sources[block] = source_block
         if command in {"признать", "включить", "взыскать", "учитывать"} and (fee := _separate_fee(block)):
             if command == "взыскать" and refunded_duty and len(fees) == 1:
                 fee_basis = re.search(
@@ -1434,6 +1458,9 @@ def claim_candidates(operative: str, creditor: Fact | None, *, body: str = "") -
                 sanctions = known.get("financial_sanctions")
                 if sanctions and sanctions.items and money(repeated[0][0]) == sum(
                         money(item.amount) for item in sanctions.items):
+                    if (not queue_candidates(block) and not req.contract_numbers(block)
+                            and operative[:match.start()].rstrip().endswith(admitted[0])):
+                        sanction_sources[admitted[0]] = admitted[0] + " " + block
                     continue
         if command == "установить" and len(admitted) == 1 and allocated is None:
             allocated = _queue_allocation(admitted[0], block)
@@ -1783,7 +1810,9 @@ def claim_candidates(operative: str, creditor: Fact | None, *, body: str = "") -
                 rf"(?:возобновляем\w*\s+)?кредитн\w*\s+лини\w*\s+пут[её]м\s+подписани\w*\s+"
                 rf"эмиссионн\w*\s+контракт\w*(?:{BASIS_DATE})?{BASIS_NUMBER}", quote, re.I):
             number = None
-        rows.append(Claim(quote, fields, total, number, parent_total_conflict=quote in inconsistent_parts,
+        source_quote = inline_fee_sources.get(quote, quote) if single_fee else quote
+        source_quote = sanction_sources.get(source_quote, source_quote)
+        rows.append(Claim(source_quote, fields, total, number, parent_total_conflict=quote in inconsistent_parts,
                           itemized_admission=itemized_admission, itemized_gross=itemized_gross))
     if other_expense and len(partitions) > 1:
         if any(not row.contract_number for row in rows):

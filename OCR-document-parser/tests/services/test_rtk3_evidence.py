@@ -278,9 +278,14 @@ def test_exact_money_no_rounding_or_lost_thousands(value, expected):
     assert (format(actual, ".2f") if actual is not None else None) == expected
 
 
-@pytest.mark.parametrize("literal", ["1 000,123,руб.", "1 000,12,,руб.", "1 000,1,руб."])
+@pytest.mark.parametrize("literal", ["1 000,123,руб.", "1 000,12,,руб.", "1 000,1,руб.",
+                                     "3 122,63..", "3 122,630.", "3 12,63.", "3.12.63."])
 def test_rtk3_rejects_ambiguous_punctuation_and_fractional_digits(literal):
     assert service.rtk3_money(literal) is None
+
+
+def test_sanction_amount_with_sentence_period():
+    assert str(service.rtk3_money("3 122,63.")) == "3122.63"
 
 
 def test_full_argon_ledger_accepts_literal_comma_before_rubles():
@@ -333,8 +338,15 @@ def test_ambiguous_or_unsupported_components_are_held_for_review(bad_kind):
         claim["included_total"]["quote"] = claim["decision_quote"]
         claim["components"][-1]["quote"] = quote
     fields = build(payload, text)
-    assert fields["total_claimed_amount"]["value"] is None
-    assert fields["claims"]["value"][0]["principal_debt"] is None
+    row, = fields["claims"]["value"]
+    if bad_kind in {"refund", "wrong_total"}:
+        assert row["principal_debt"] == "213845.18"
+        assert row["financial_sanctions"] == "13220.58"
+        assert row["total_amount"] is None
+        assert fields["total_claimed_amount"]["value"] == ("227065.76" if bad_kind == "refund" else None)
+    else:
+        assert fields["total_claimed_amount"]["value"] is None
+        assert row["principal_debt"] is None
     assert review_requirement(0.99, profile_field_issues(fields, "rtk3"))[0]
 
 
@@ -632,7 +644,11 @@ def test_unknown_pledge_does_not_relax_money_or_completeness_guards(bad_kind):
         claim["priority_queue"] = fact("Иное", "Несуществующая очередь")
     fields = build(payload, text)
     assert fields["total_claimed_amount"]["value"] is None
-    if bad_kind != "claims_incomplete":
+    if bad_kind == "wrong_total":
+        row, = fields["claims"]["value"]
+        assert row["principal_debt"] == "213845.18" and row["financial_sanctions"] == "13220.58"
+        assert row["claimed_amount"] is row["total_amount"] is None
+    elif bad_kind != "claims_incomplete":
         assert fields["claims"]["value"][0]["principal_debt"] is None
     assert review_requirement(1.0, profile_field_issues(fields, "rtk3"))[0]
 

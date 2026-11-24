@@ -106,6 +106,27 @@ async def test_truncated_contracts_retry_independent_document_facts(monkeypatch)
     assert fields["document_case_number"]["value"] == "А42-123-2/2026"
 
 PENALTY = {"kind": "sanction", "amount": "8 руб.", "quote": "8 руб. пеней"}
+
+
+@pytest.mark.parametrize("disposition", [
+    "подлежат учету в третьей очереди",
+    "подлежащие взысканию в пользу кредитора, учитываются в реестре",
+    "признать подлежащими взысканию с должника",
+], ids=["accounting", "recovery", "verb-after-amount"])
+def test_complete_breakdown_with_subsequent_fee_award(disposition):
+    citation = "государственной пошлины в размере 5 руб."
+    order = ORDER + f" Судебные расходы по уплате {citation}, {disposition}."
+    claim = service.ClaimEvidence.model_validate({
+        **MODEL_CLAIM, "decision_quote": order, "components": [
+            *MODEL_CLAIM["components"], {"kind": "duty", "amount": "5 руб.", "quote": citation},
+        ],
+    })
+    result = service._model_claims(order, load_profile("rtk3"), {"claims": [claim], "claims_complete": True}, {})
+    row, = result["claims"]["value"]
+    assert (row["principal_debt"], row["financial_sanctions"], row["pau_only_amount"],
+            row["claimed_amount"], row["total_amount"]) == ("100.00", "8.00", "5.00", "108.00", "113.00")
+
+
 MONEY_KEYS = {f"claim_1_{name}" for name in ("principal_debt", "financial_sanctions", "pau_only_amount", "included_total")}
 MODEL_CLAIM = {
     "priority_queue": {"value": "3 очередь", "quote": "третью очередь"},
@@ -641,3 +662,218 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
                 assert payload["fields"][name]["value"] == stored[name]["value"]
     finally:
         engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["confirmed", "unrelated", "unknown", "empty", "incomplete"])
+async def test_targeted_sanction_confirmation_preserves_known_money(monkeypatch, mode):
+    claim = {**MODEL_CLAIM, "components_complete": False, "complete_categories": ["principal_debt"]}
+    queries = []
+
+    def gateway(**request):
+        if request["request_type"] == "decisions":
+            return SimpleNamespace(parsed={"answers": {}})
+        if request["request_type"] == "rtk3_components":
+            return SimpleNamespace(parsed={"claims": [claim], "claims_complete": True})
+        if request["request_type"] == "rtk3_creditor_inn":
+            return SimpleNamespace(parsed={})
+        assert request["request_type"] == "rtk3_money_clarification"
+        body = json.loads(request["user_content"])
+        questions = body["clarifications"]
+        assert body["document"] == ACT
+        assert set(questions) == {"claim_1_financial_sanctions", "claim_1_pau_only_amount"}
+        assert questions["claim_1_financial_sanctions"]["validated_row"]["principal_debt"] == "100.00"
+        queries.append(questions)
+        answer = {"quote": PENALTY["quote"] if mode != "unrelated" else "другая очередь",
+                  "items": [PENALTY], "complete": mode != "incomplete",
+                  "relation": "unknown" if mode == "unknown" else "sanctions"}
+        return SimpleNamespace(parsed={"claim_1_financial_sanctions": None if mode == "empty" else answer})
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    monkeypatch.setattr(service, "_enrich_creditor_inn", AsyncMock(return_value=None))
+    result = await service.extract_fields(ACT, load_profile("rtk3"))
+    row, = result["claims"]["value"]
+    assert len(queries) == 1
+    assert row["principal_debt"] == "100.00"
+    assert row["financial_sanctions"] == ("8.00" if mode == "confirmed" else None)
+    assert row["claimed_amount"] == ("108.00" if mode == "confirmed" else None)
+    assert row["pau_only_amount"] is row["total_amount"] is None
+
+
+@pytest.mark.parametrize("kind", ["contract_cost", "sanction"])
+def test_commission_and_penalty_are_sanctions(kind):
+    order = ORDER.replace("108 руб.", "113 руб.") + " 5 руб. – комиссии."
+    claim = service.ClaimEvidence.model_validate({
+        **MODEL_CLAIM, "decision_quote": order, "included_total": {"value": "113 руб.", "quote": "113 руб."},
+        "components": [*MODEL_CLAIM["components"], {"kind": kind, "amount": "5 руб.", "quote": "5 руб. – комиссии"}],
+    })
+    result = service._model_claims(order, load_profile("rtk3"), {"claims": [claim], "claims_complete": True}, {})
+    row, = result["claims"]["value"]
+    assert (row["principal_debt"], row["financial_sanctions"], row["total_amount"]) == ("100.00", "13.00", "113.00")
+
+
+@pytest.mark.parametrize("expense,expected", [("судебные расходы", "8.00"), ("штраф", None)])
+def test_unclassified_cost_preserves_only_independently_complete_sanctions(expense, expected):
+    order = ORDER.replace("108 руб.", "113 руб.").replace("8 руб. пеней.", f"8 руб. пеней, 5 руб. – {expense}.")
+    claim = service.ClaimEvidence.model_validate({
+        **MODEL_CLAIM, "decision_quote": order, "components_complete": False, "complete_categories": [],
+        "included_total": {"value": "113 руб.", "quote": "113 руб."},
+    })
+    result = service._model_claims(order, load_profile("rtk3"), {"claims": [claim], "claims_complete": True}, {})
+    row, = result["claims"]["value"]
+    assert row["financial_sanctions"] == expected
+    assert row["principal_debt"] is row["pau_only_amount"] is row["total_amount"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["separate_duty", "absent", "included_total"])
+async def test_targeted_duty_or_total_question(monkeypatch, target):
+    fee = "Взыскать госпошлину 5 руб."
+    order = ORDER + (" Госпошлина не взыскивается." if target == "absent" else " " + fee)
+    current = {**MODEL_CLAIM, "decision_quote": order}
+    if target == "included_total":
+        current["included_total"] = {"value": "999 руб.", "quote": "изначально заявлено 999 руб."}
+    else:
+        current.update(components_complete=False, complete_categories=["principal_debt", "financial_sanctions"])
+    calls = []
+
+    def gateway(**req):
+        if req["request_type"] == "rtk3_components":
+            return SimpleNamespace(parsed={"claims": [current], "claims_complete": True})
+        assert req["request_type"] == "rtk3_money_clarification"
+        questions = json.loads(req["user_content"])["clarifications"]
+        calls.append(list(questions))
+        if target == "included_total":
+            return SimpleNamespace(parsed={"claim_1_included_total": {"amount": "108 руб.", "quote": "в размере 108 руб.",
+                                                                      "scope": "without_duty"}})
+        items = [{"kind": "duty", "amount": "5 руб.", "quote": fee}] if target == "separate_duty" else []
+        return SimpleNamespace(parsed={"claim_1_pau_only_amount": {"items": items, "complete": True,
+            "relation": target, "quote": fee if items else "Госпошлина не взыскивается.", "total_scope": "without_duty"}})
+
+    monkeypatch.setattr(service, "_verify", AsyncMock(return_value={}))
+    monkeypatch.setattr(service, "_enrich_creditor_inn", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    fields = await service.extract_fields("ОПРЕДЕЛИЛ:\n" + order, load_profile("rtk3"))
+    row, = fields["claims"]["value"]
+    assert calls == [["claim_1_included_total" if target == "included_total" else "claim_1_pau_only_amount"]]
+    assert row["financial_sanctions"] == "8.00"
+    assert row["principal_debt"] == "100.00"
+    assert row["total_amount"] == ("113.00" if target == "separate_duty" else "108.00")
+
+
+@pytest.mark.parametrize("label", ["ИНН:", "идентификационный номер налогоплательщика"])
+def test_debtor_identified_at_start_of_registry_record(label):
+    quote = f"Петровой Анны Ивановны (адрес регистрации: г. Омск, {label} 123456789012)"
+    fact = service.Fact(value="123456789012", quote=quote)
+    assert service._model_fact("debtor_inn", fact, "в реестр требований кредиторов\n" + quote, None) == fact.value
+    assert service._model_fact("debtor_inn", fact, "в деле о банкротстве рассмотрены сведения поручителя " + quote, None) is None
+
+
+def test_literal_tax_nonpayment_origin():
+    q = "возникли в результате неисполнения должником обязательств по уплате налога"
+    assert service._model_fact("grounds", service.Fact(value="Налоговая задолженность", quote=q), q, None) == "Налоговая задолженность"
+
+
+@pytest.mark.parametrize("scope", ["shared", "other", "conflict"])
+def test_queue_scope_preserves_separately_supported_money(scope):
+    order = "Включить требование банка по кредитному договору № 111 в размере 108 руб., из них 100 руб. основного долга и 8 руб. неустойки"
+    queue = order + ", а также по кредитному договору № 222, по обоим договорам в третью очередь."
+    if scope == "other":
+        queue = "Включить требование другого банка по кредитному договору № 222 в третью очередь."
+    elif scope == "conflict":
+        queue = order + " во вторую очередь, по договору № 222 в третью очередь, в общем размере 200 руб."
+    text = "ОПРЕДЕЛИЛ: " + (order + ". " if scope == "other" else "") + queue
+    claim = service.ClaimEvidence.model_validate({**MODEL_CLAIM, "decision_quote": order,
+        "priority_queue": {"value": "3 очередь", "quote": queue},
+        "components": [{"kind": "principal", "amount": "100 руб.", "quote": "100 руб. основного долга"},
+                       {"kind": "sanction", "amount": "8 руб.", "quote": "8 руб. неустойки"}]})
+    result = service._model_claims(text, load_profile("rtk3"), {"claims": [claim], "claims_complete": True}, {})
+    row, = result["claims"]["value"]
+    assert row["priority_queue"] == ("3 очередь" if scope == "shared" else None)
+    assert (row["principal_debt"], row["claimed_amount"]) == ("100.00", "108.00")
+
+
+@pytest.mark.parametrize("extra,want", [("", False), (" Рассмотрено также требование о выплате зарплаты.", None)])
+def test_dated_credit_line_binds_to_sole_applicant(extra, want):
+    salary_quote = "по задолженности по договору на предоставление возобновляемой кредитной линии от 22.09.2023"
+    order = "Включить требование ПАО «Примербанк» в третью очередь в размере 108 руб."
+    text = "Рассмотрев заявление ПАО «Примербанк» о включении в реестр " + salary_quote + "." + extra + " ОПРЕДЕЛИЛ: " + order
+    claim = service.ClaimEvidence.model_validate({**MODEL_CLAIM, "decision_quote": order, "salary_quote": salary_quote})
+    result = service._model_claims(text, load_profile("rtk3"), {"claims": [claim], "claims_complete": True},
+                                   {"creditor": {"value": "ПАО «Примербанк»"}})
+    assert result["claims"]["value"][0]["is_salary_or_severance"] is want
+
+
+def test_debtor_named_in_bankruptcy_petition_with_other_inn():
+    record = "Кузнецовой Анны Павловны (дата рождения 05.01.1980, ИНН: 123456789012"
+    text = ("Кредитор ООО Альфа (ИНН 1111111111). В рамках дела №А60-123/2026 по заявлению о признании "
+            + record + ", СНИЛС 001-002-003 04) несостоятельной (банкротом).")
+    assert service._model_fact("debtor_inn", service.Fact(value="123456789012", quote=record), text, None) == "123456789012"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["confirmed", "request_only", "empty"])
+async def test_clarify_rejected_evidence_only_once(monkeypatch, answer):
+    application = "Банк просил признать требование обеспеченным залогом."
+    tax = "возникли в результате неисполнения должником обязательств по уплате налога"
+    denial = "В признании требования обеспеченным залогом отказать."
+    order = ORDER + " " + denial
+    source = application + " Обязательства " + tax + ". ОПРЕДЕЛИЛ: " + order + " Судья."
+    calls = []
+
+    def gateway(**req):
+        route = req["request_type"]
+        if route == "rtk3_components":
+            response = {"claims_complete": True, "grounds": {"value": "Налоговая задолженность", "quote": application},
+                        "claims": [{**MODEL_CLAIM, "decision_quote": order, "pledge_resolution": "no",
+                                    "pledge_quote": ORDER, "salary_quote": "неверная цитата"}]}
+        elif route == "rtk3_evidence_clarification":
+            calls.append(json.loads(req["user_content"])["clarifications"])
+            response = {"document_pledge": {"value": "no", "quote": denial if answer == "confirmed" else application},
+                        "grounds": {"value": "Налоговая задолженность", "quote": tax if answer == "confirmed" else application},
+                        "claim_1_is_salary_or_severance": {"value": False, "quote": MODEL_CLAIM["salary_quote"]
+                                                           if answer == "confirmed" else application}}
+            if answer == "empty":
+                response = {}
+        else:
+            response = {}
+        return SimpleNamespace(parsed=response)
+
+    monkeypatch.setattr(service, "call_llm_json_with_fallback", gateway)
+    monkeypatch.setattr(service, "_verify", AsyncMock(return_value={}))
+    monkeypatch.setattr(service, "_enrich_creditor_inn", AsyncMock(return_value=None))
+    fields = await service.extract_fields(source, load_profile("rtk3"))
+    row, = fields["claims"]["value"]
+    assert len(calls) == 1 and set(calls[0]) == {"document_pledge", "grounds", "claim_1_is_salary_or_severance"}
+    assert row["principal_debt"] == "100.00" and row["financial_sanctions"] == "8.00"
+    assert fields["grounds"]["value"] == ("Налоговая задолженность" if answer == "confirmed" else None)
+    assert row["is_salary_or_severance"] is (False if answer == "confirmed" else None)
+    assert row["pledge_resolution"] == fields["pledge_resolution"]["value"] == ("no" if answer == "confirmed" else None)
+
+
+def test_full_inn_label_after_guarantor_belongs_to_guarantor():
+    quote = ("Петровой Анны Ивановны, поручителя Иванова Ивана Сергеевича "
+             "(идентификационный номер налогоплательщика 123456789012)")
+    text = "В рамках дела о несостоятельности (банкротстве) Петровой Анны Ивановны. Реквизиты " + quote
+    assert service._model_fact("debtor_inn", service.Fact(value="123456789012", quote=quote), text, None) is None
+
+
+def test_negated_tax_nonpayment_does_not_establish_tax_ground():
+    quote = "Обязательства не возникли в результате неисполнения должником обязательств по уплате налога."
+    fact = service.Fact(value="Налоговая задолженность", quote=quote)
+    assert service._model_fact("grounds", fact, quote, None) is None
+
+
+@pytest.mark.parametrize("applicant,expected", [
+    ("УФНС России по Кировской области", False),
+    ("УФНС России по Кировской области в интересах работников", None),
+    ("УФНС России по Омской области", None),
+])
+def test_salary_scoped_to_tax_authoritys_own_application(applicant, expected):
+    q = f"заявление {applicant} о включении в реестр требований кредиторов, руководствуясь ст. 23 НК РФ"
+    order = "Включить требование в третью очередь в размере 108 руб."
+    text = q + ". ОПРЕДЕЛИЛ: " + order
+    claim = service.ClaimEvidence.model_validate({**MODEL_CLAIM, "decision_quote": order, "salary_quote": q})
+    fields = service._model_claims(text, load_profile("rtk3"), {"claims": [claim], "claims_complete": True},
+                                   {"creditor": {"value": "УФНС России по Кировской области"}})
+    assert fields["claims"]["value"][0]["is_salary_or_severance"] is expected
