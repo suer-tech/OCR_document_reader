@@ -87,7 +87,7 @@ async def test_truncated_contracts_retry_independent_document_facts(monkeypatch)
         calls.append(kind)
         if kind == "rtk3_document_facts_retry":
             assert set(args["response_schema"]["json_schema"]["schema"]["properties"]) == {
-                "creditor", "creditor_inn", "document_pledge",
+                "creditor", "document_pledge",
             }
             return SimpleNamespace(parsed={
                 "creditor": {"value": "ПАО «Пример»", "quote": decision},
@@ -415,7 +415,8 @@ async def test_reasoning_gateway_routes_and_merges_rtk3_fields(monkeypatch, jev_
     assert direct.isdisjoint(inputs["verified_fields"])
     assert {"grounds", "grounds_ocr"} <= requested
     assert all(result[key]["extraction_route"] == "gemini_argon" for key in ("grounds", "grounds_ocr"))
-    assert {"claims", "claims_complete", "uncertainty", "creditor", "creditor_inn"} <= requested
+    assert {"claims", "claims_complete", "uncertainty", "creditor"} <= requested
+    assert "creditor_inn" not in requested
     assert inputs["document"] == ACT
     assert set(inputs) == {"document", "verified_fields"}
     assert not any(name.startswith("claim_") for name in inputs["verified_fields"])
@@ -599,7 +600,7 @@ async def test_argon_incomplete_reply_keeps_rtk3_evidence_and_requests_review(
             assert stored["case_number"]["value"] == "А40-123/2026"
             assert stored["document_case_number"]["extraction_route"] == "document_header"
             assert stored["creditor"]["value"] is None
-            assert stored["creditor_inn"]["value"] is None
+            assert stored["creditor_inn"]["value"] == "0123456789"
             assert stored["grounds"]["value"] is None
             assert stored["grounds_ocr"]["value"] is None
             assert stored["secured_by_pledge"]["value"] is None

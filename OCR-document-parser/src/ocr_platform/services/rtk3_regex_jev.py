@@ -29,7 +29,6 @@ from ocr_platform.services.rtk3_evidence import rtk3_money as money
 from ocr_platform.services.rtk3_regex_candidates import (
     AMOUNTS, BREAKDOWN, CATEGORY_FIELDS, CREDITOR, CURRENT_APPLICATION_DUTY, CURRENT_DUTY, EXPIRED_REGISTRY_ACCOUNTING,
     EXPIRED_REGISTRY_ORDER, GROSS,
-    LEGAL_NAME,
     SALARY_WORDS, SECTION_ACCOUNTED_DUTY, SEPARATE_SANCTIONS, STANDALONE_FEE_ACCOUNTING,
     Claim, Components, CourtTotal, Salary, extract_candidates, interest_with_repeated_unit, penalty_from_itemized_total,
     operative_part, tax_claimant_parts,
@@ -38,7 +37,6 @@ from ocr_platform.services.rtk3_regex_candidates import (
 from ocr_platform.services.rtk3_gemini_prompts import build_gemini_prompt
 
 logger = get_logger(__name__)
-_tax_office_registrations: dict[tuple[str, bool], list[tuple[str, dict]]] = {}
 _NAME_DASH = re.compile(r"\s*[-–—−]\s*")
 
 SCALAR_QUESTIONS = {
@@ -119,7 +117,7 @@ def _fallback_schema(layout: list[Claim], accepted: dict, scalar_names: set[str]
 
 async def _gemini(
     text: str, config: dict, context: dict, property_types: dict, layout: list[Claim], accepted: dict,
-    *, principal_retry: list[dict] | None = None, document_retry: bool = False,
+    *, principal_retry: list[dict] | None = None, document_retry: bool = False, creditor_subject: str | None = None,
 ) -> dict:
     if not property_types:
         return {}
@@ -129,6 +127,9 @@ async def _gemini(
         "document": text,
         "verified_fields": {name: candidate.value.model_dump() for name, candidate in accepted.items()},
     }
+    if creditor_subject:
+        body["creditor_subject"] = creditor_subject
+        instructions += "\nНайди в документе ИНН именно указанного creditor_subject. Дай цитату с владельцем и ИНН."
     if principal_retry is not None:
         body["previous_argon_row_quotes"] = [claim.quote for claim in layout]
         body["rows_after_validation"] = principal_retry
@@ -143,7 +144,7 @@ async def _gemini(
     try:
         result = await asyncio.to_thread(
             call_llm_json_with_fallback, task_name="rtk3_gemini_missing_fields", provider=config["provider"],
-            request_type=("rtk3_document_facts_retry" if document_retry else
+            request_type=("rtk3_creditor_inn" if creditor_subject else "rtk3_document_facts_retry" if document_retry else
                           "rtk3_principal_retry" if principal_retry is not None else "rtk3_components"),
             **context, models=[config["model"]],
             system_prompt=instructions, user_content=json.dumps(body, ensure_ascii=False),
@@ -226,7 +227,14 @@ def _model_fact(
                 if _same_tax_owner(creditor, tax_subject) and req.source_inn(fact.quote, name, tax_subject).value == fact.value:
                     return fact.value
                 return None
-            return fact.value if req.creditor_value(creditor, fact.quote, text).value else None
+            if req.creditor_value(creditor, fact.quote, text).value:
+                return fact.value
+            # Reversed requisites can explicitly name the owner after the tax ID.
+            owner = re.search(rf"\bИНН\s*[:№]?\s*{fact.value}\s+принадлежит\s+кредитору\s+(.+)$",
+                              fact.quote, re.I | re.S)
+            if owner and req.identity(owner[1]) == req.identity(creditor or ""):
+                return fact.value
+            return None
         anchors = req.debtor_anchors(text)
         if anchors:
             quoted_names = {req.person_key(match) for match in req.persons(fact.quote)}
@@ -323,9 +331,6 @@ def _registry_suggestions(subject: str) -> list[dict]:
 
 def _tax_registrations(subject: str, identity: str) -> list[tuple[str, dict]]:
     numbered_fns = bool(re.match(req.FEDERAL_TAX_NAME + r"\s*№", subject, re.I))
-    cache_key = (identity, numbered_fns)
-    if cache_key in _tax_office_registrations:
-        return _tax_office_registrations[cache_key]
     query = subject
     identities = {identity}
     if identity == "фнс":
@@ -353,8 +358,6 @@ def _tax_registrations(subject: str, identity: str) -> list[tuple[str, dict]]:
             ) if isinstance(name, str)
         ):
             registrations.append((inn, state))
-    if registrations:
-        _tax_office_registrations[cache_key] = registrations
     return registrations
 
 
@@ -394,6 +397,8 @@ def registered_tax_inn(subject: str, act_date: str | None = None) -> str | None:
 
 
 def _registry_company_name(name: str) -> str:
+    name = re.sub(r"^(.+?)\s*\((ООО|ПАО|НАО|АО|ИП)\)$", r"\2 \1", name.strip(), flags=re.I)
+    name = re.sub(r"^индивидуальн\w*\s+предпринимател\w*\b", "ИП", name, flags=re.I)
     name = req.normalize_creditor(_NAME_DASH.sub("-", name))
     name = re.sub(r"^НАО\b", "АО", name, flags=re.I)
     return compact(re.sub(r'[«»"“”„]', " ", name))
@@ -402,59 +407,56 @@ def _registry_company_name(name: str) -> str:
 def registered_company_inn(subject: str, act_date: str | None) -> str | None:
     identity = _registry_company_name(subject)
     registrations = []
+    entrepreneur = identity.startswith("ип ")
     for suggestion in _registry_suggestions(_NAME_DASH.sub("-", subject)):
         data = suggestion.get("data")
-        if not isinstance(data, dict) or data.get("type") != "LEGAL" or data.get("branch_type") != "MAIN":
+        if not isinstance(data, dict):
             continue
-        ogrn = data.get("ogrn")
-        if not isinstance(ogrn, str) or not re.fullmatch(r"[0-9]{13}", ogrn):
-            continue
-        inn, names, state = data.get("inn"), data.get("name"), data.get("state")
+        if entrepreneur:
+            if data.get("type") != "INDIVIDUAL":
+                continue
+            inn_length, ogrn_length = 12, 15
+        else:
+            if data.get("type") != "LEGAL" or data.get("branch_type") != "MAIN":
+                continue
+            inn_length, ogrn_length = 10, 13
+        inn, ogrn, names, state = data.get("inn"), data.get("ogrn"), data.get("name"), data.get("state")
         names = names if isinstance(names, dict) else {}
-        if (isinstance(inn, str) and re.fullmatch(r"[0-9]{10}", inn) and isinstance(state, dict)
-                and any(_registry_company_name(name) == identity for name in (
+        if (isinstance(inn, str) and re.fullmatch(rf"[0-9]{{{inn_length}}}", inn)
+                and isinstance(ogrn, str) and re.fullmatch(rf"[0-9]{{{ogrn_length}}}", ogrn)
+                and isinstance(state, dict) and any(_registry_company_name(name) == identity for name in (
                     suggestion.get("value"), names.get("full_with_opf"), names.get("short_with_opf"),
                 ) if isinstance(name, str))):
             registrations.append((inn, state))
     return _unique_registered_inn(registrations, act_date)
 
 
-async def _enrich_tax_inn(fields: dict, text: str, subject: str | None) -> None:
-    creditor_inn = fields.get("creditor_inn")
-    if (not subject or creditor_inn is None or creditor_inn["value"]
-            or not _same_tax_owner(fields.get("creditor", {}).get("value") or "", subject)):
-        return
+async def _enrich_creditor_inn(fields: dict, text: str, tax_subject: str | None, *, candidate: Fact | None = None) -> str | None:
+    """Resolve the named party. Return its name only when a model lookup is still needed."""
+    if "creditor_inn" not in fields:
+        return None
+    creditor = fields.get("creditor", {}).get("value") or (candidate.value if candidate else None)
+    if not creditor:
+        return None
+    subject, lookup = creditor, registered_company_inn
+    if req.tax_identity(creditor):
+        parts = tax_claimant_parts(creditor)
+        subject = tax_subject if tax_subject and _same_tax_owner(creditor, tax_subject) else (parts[1] if parts else creditor)
+        lookup = registered_tax_inn
+
     source = req.source_inn(text, "creditor_inn", subject)
-    if source.value or source.ambiguous:
-        return
     act_date = fields.get("inclusion_date", {}).get("value") or req.ruling_date(text).value
-    inn = await asyncio.to_thread(registered_tax_inn, subject, act_date)
-    if inn:
-        fields["creditor_inn"] = _field(
-            inn, quote=f"ИНН найден в DaData по полному наименованию «{subject}».",
-            route="dadata_party_registry",
-        )
-
-
-async def _enrich_creditor_inn(fields: dict, text: str, tax_subject: str | None) -> None:
-    creditor = fields.get("creditor", {}).get("value")
-    if req.tax_identity(creditor or ""):
-        await _enrich_tax_inn(fields, text, tax_subject)
-        return
-    creditor_inn = fields.get("creditor_inn")
-    if (not creditor or creditor_inn is None or creditor_inn["value"] or req.tax_identity(creditor)
-            or not re.fullmatch(LEGAL_NAME, creditor, re.I)):
-        return
-    source = req.source_inn(text, "creditor_inn", creditor)
-    if source.value or source.ambiguous:
-        return
-    act_date = fields.get("inclusion_date", {}).get("value") or req.ruling_date(text).value
-    inn = await asyncio.to_thread(registered_company_inn, creditor, act_date)
-    if inn:
-        fields["creditor_inn"] = _field(
-            inn, quote=f"ИНН найден в DaData по наименованию кредитора «{creditor}».",
-            route="dadata_party_registry",
-        )
+    registry = await asyncio.to_thread(lookup, subject, act_date)
+    if registry:
+        reason = f"ИНН найден в DaData по наименованию кредитора «{subject}»."
+        if source.value and source.value != registry:
+            reason += f" В акте указан ИНН {source.value}."
+        fields["creditor_inn"] = _field(registry, quote=reason, route="dadata_party_registry")
+    elif source.value:
+        fields["creditor_inn"] = _field(source.value, quote=source.quote, route="document_creditor_inn")
+    else:
+        return subject
+    return None
 
 
 def _terminated_fee(quote: str, claim: Claim, text: str) -> bool:
@@ -843,18 +845,26 @@ async def extract_fields(
     candidates = extract_candidates(text, include_claims=False)
     context = {"profile_id": "rtk3", "document_id": document_id, "pipeline_run_id": pipeline_run_id}
     verified = await _verify(text, candidates, profile["models"]["verification"], context)
-    types = _fallback_schema([], verified, set(profile["fields"]))
+    types = _fallback_schema([], verified, set(profile["fields"]) - {"creditor_inn"})
     response = await _gemini(text, profile["models"]["llm_extraction"], context, types, [], verified) if text.strip() else {}
     if text.strip() and not response:
         # A truncated list of contracts must not lose the independent document facts.
-        compact_types = {k: v for k, v in types.items() if k in {"creditor", "creditor_inn", "document_pledge"}}
+        compact_types = {k: v for k, v in types.items() if k in {"creditor", "document_pledge"}}
         if compact_types:
             response = await _gemini(text, profile["models"]["llm_extraction"], context, compact_types, [], verified,
                                      document_retry=True)
     fields = _scalar_fields(
         text, profile["fields"], verified, response, candidates.fields, candidates.creditor_tax_subject,
     )
-    await _enrich_creditor_inn(fields, text, candidates.creditor_tax_subject)
+    unresolved = await _enrich_creditor_inn(fields, text, candidates.creditor_tax_subject,
+                                            candidate=candidates.fields.get("creditor"))
+    if unresolved and req.INN.search(text):
+        answer = await _gemini(text, profile["models"]["llm_extraction"], context, {"creditor_inn": (Fact, ...)},
+                               [], {}, creditor_subject=unresolved)
+        fact = answer.get("creditor_inn")
+        value = _model_fact("creditor_inn", fact, text, unresolved, unresolved)
+        if value and value != fields.get("debtor_inn", {}).get("value"):
+            fields["creditor_inn"] = _field(value, quote=fact.quote)
 
     claims = _model_claims(text, profile, response, fields)
     rows = claims["claims"]["value"]

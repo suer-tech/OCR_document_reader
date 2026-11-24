@@ -1142,7 +1142,6 @@ def test_tax_registry_checks_exact_office_and_registration_period(monkeypatch):
             entry("Федеральная налоговая служба", "7707329152", "ACTIVE", 2004),
         ]
 
-    monkeypatch.setattr(service, "_tax_office_registrations", {})
     monkeypatch.setattr(service, "dadata_party_suggestions", suggestions)
     assert service.registered_tax_inn("МИФНС России №7 по Омской области", "18.11.2026") == "2222222299"
     assert service.registered_tax_inn(office, "01.01.2018") == "1111111199"
@@ -1151,10 +1150,10 @@ def test_tax_registry_checks_exact_office_and_registration_period(monkeypatch):
     assert service.registered_tax_inn("Федеральной налоговой службы России", "18.11.2026") == "7707329152"
     assert service.registered_tax_inn("ФНС России", "01.01.2003") is None
     assert service.registered_tax_inn("МИФНС России №7", "18.11.2026") is None
-    assert queries == ["Межрайонная ИФНС России № 7 по омской области", "ИФНС № 7 по омской области", "ФНС России"]
+    assert queries == ["Межрайонная ИФНС России № 7 по омской области"] * 2 + ["ИФНС № 7 по омской области"] + ["ФНС России"] * 3
 
 
-def test_tax_registry_enrichment_yields_to_document_inns_and_marks_the_route(monkeypatch):
+def test_tax_registry_checks_printed_and_ambiguous_inns_and_marks_the_route(monkeypatch):
     import asyncio
     from ocr_platform.services import rtk3_regex_jev as service
 
@@ -1169,11 +1168,11 @@ def test_tax_registry_enrichment_yields_to_document_inns_and_marks_the_route(mon
     result = {"creditor": {"value": f"ФНС России в лице {office}"}, "creditor_inn": {"value": None},
               "inclusion_date": {"value": "18.11.2026"}}
     printed = f"{office} (ИНН 2222222299)"
-    asyncio.run(service._enrich_tax_inn(result, printed, office))
-    asyncio.run(service._enrich_tax_inn(result, f"{printed}. {office} (ИНН 3333333399)", office))
-    assert not calls
-    asyncio.run(service._enrich_tax_inn(result, office, office))
-    assert calls == [(office, "18.11.2026")]
+    asyncio.run(service._enrich_creditor_inn(result, printed, office))
+    asyncio.run(service._enrich_creditor_inn(result, f"{printed}. {office} (ИНН 3333333399)", office))
+    assert calls == [(office, "18.11.2026")] * 2
+    asyncio.run(service._enrich_creditor_inn(result, office, office))
+    assert calls == [(office, "18.11.2026")] * 3
     assert result["creditor_inn"]["value"] == "1111111199"
     assert result["creditor_inn"]["extraction_route"] == "dadata_party_registry"
 
@@ -1204,7 +1203,8 @@ def test_extract_fields_preserves_tax_spelling_and_looks_up_the_named_authority(
     printed = federal.replace("ФНС России в третью", "ФНС России (ИНН 7707329152) в третью")
     fields = asyncio.run(service.extract_fields(printed, profile))
     assert fields["creditor_inn"]["value"] == "7707329152"
-    lookup.assert_not_called()
+    lookup.assert_called_once_with("ФНС России", None)
+    lookup.reset_mock()
 
     representation = f"Рассмотрев заявление ФНС России (ИНН 7707329152) в лице {office}.\n{federal}"
     monkeypatch.setattr(service, "_verify", AsyncMock(return_value={}))
@@ -1256,7 +1256,7 @@ def test_company_registry_checks_exact_legal_name_registration_dates_and_ambigui
     assert service.registered_company_inn("ООО ПКО «Финтраст»", "18.11.2026") == "4444444444"
 
 
-def test_extract_fields_looks_up_only_the_company_without_a_document_inn(monkeypatch):
+def test_extract_fields_queries_company_with_printed_ambiguous_and_missing_inns(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock, Mock
     from ocr_platform.services import rtk3_regex_jev as service
@@ -1274,14 +1274,14 @@ def test_extract_fields_looks_up_only_the_company_without_a_document_inn(monkeyp
 
     printed = text.replace(company, f"{company} (ИНН 2222222222)")
     result = asyncio.run(service.extract_fields(printed, profile))
-    assert result["creditor_inn"]["value"] == "2222222222"
+    assert result["creditor_inn"]["value"] == "1111111111"
+    assert "2222222222" in result["creditor_inn"]["reasoning"]
     ambiguous = f"{printed}\n{company} (ИНН 3333333333)."
     result = asyncio.run(service.extract_fields(ambiguous, profile))
-    assert result["creditor_inn"]["value"] is None
-    lookup.assert_not_called()
-
+    assert result["creditor_inn"]["value"] == "1111111111"
     result = asyncio.run(service.extract_fields(text, profile))
-    lookup.assert_called_once_with(company, None)
+    assert lookup.call_count == 3
+    lookup.assert_called_with(company, None)
     assert result["creditor_inn"]["value"] == "1111111111"
     assert result["creditor_inn"]["extraction_route"] == "dadata_party_registry"
     assert "external_data_required" not in result["creditor_inn"]
