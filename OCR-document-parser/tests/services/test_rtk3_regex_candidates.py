@@ -535,19 +535,9 @@ def test_single_admitted_amount_can_reference_the_contract_from_the_reasoning(mo
     assert ambiguous.contract_number is None
 
     profile = {"models": {"verification": {}, "llm_extraction": {}}, "fields": {"claims": {}}}
-    verified = {
-        _claim_key(0, name): service.Verified(fact, 1.0) for name, fact in claim.fields.items()
-        if name in service.CLAIM_QUESTIONS
-    }
-    verify = AsyncMock(return_value=(verified, True))
-    monkeypatch.setattr(service, "_verify", verify)
+    monkeypatch.setattr(service, "_verify", AsyncMock(return_value={}))
     monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={}))
-    row, = asyncio.run(service.extract_fields(text, profile))["claims"]["value"]
-    assert row["contract_number"] is None
-    assert row["principal_debt"] is None
-    verified[_claim_key(0, "contract_reference")] = service.Verified(claim.contract_reference, 1.0)
-    row, = asyncio.run(service.extract_fields(text, profile))["claims"]["value"]
-    assert row["contract_number"] == "A-123"
+    assert asyncio.run(service.extract_fields(text, profile))["claims"]["value"] == []
 
 
 def test_written_admission_and_separately_awarded_current_duty_survive_unknown_breakdown():
@@ -955,8 +945,9 @@ def test_numbered_contracts_are_preserved_when_the_printed_parent_total_disagree
         "models": {"verification": {}, "llm_extraction": {}},
         "fields": {"claims": {}, "total_claimed_amount": {}},
     }
-    monkeypatch.setattr(service, "_verify", AsyncMock(return_value=({}, False)))
-    monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={}))
+    monkeypatch.setattr(service, "_verify", AsyncMock(return_value={}))
+    monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={"claims_complete": True, "document_included_total": service.CourtTotal(
+        amount="121 руб.", scope="without_duty", quote="в сумме 121 руб., в том числе")}))
     monkeypatch.setattr(service, "_model_claims", lambda *args: balanced)
     fallback = asyncio.run(service.extract_fields(text, profile))
     assert fallback["total_claimed_amount"]["value"] is None
@@ -1195,7 +1186,7 @@ def test_extract_fields_preserves_tax_spelling_and_looks_up_the_named_authority(
     from ocr_platform.services.rtk3_evidence import Fact
 
     async def verify(text, candidates, config, context):
-        return {name: service.Verified(value, .99) for name, value in candidates.fields.items()}, False
+        return {name: service.Verified(value, .99) for name, value in candidates.fields.items()}
 
     profile = {"models": {"verification": {}, "llm_extraction": {}}, "fields": {"creditor": {}, "creditor_inn": {}}}
     office = "МИФНС России №7 по Омской области"
@@ -1216,7 +1207,7 @@ def test_extract_fields_preserves_tax_spelling_and_looks_up_the_named_authority(
     lookup.assert_not_called()
 
     representation = f"Рассмотрев заявление ФНС России (ИНН 7707329152) в лице {office}.\n{federal}"
-    monkeypatch.setattr(service, "_verify", AsyncMock(return_value=({}, False)))
+    monkeypatch.setattr(service, "_verify", AsyncMock(return_value={}))
     monkeypatch.setattr(service, "_gemini", AsyncMock(return_value={
         "creditor": Fact(value="ФНС России", quote="требования ФНС России в третью очередь"),
     }))
@@ -1271,7 +1262,7 @@ def test_extract_fields_looks_up_only_the_company_without_a_document_inn(monkeyp
     from ocr_platform.services import rtk3_regex_jev as service
 
     async def verify(text, candidates, config, context):
-        return {name: service.Verified(value, .99) for name, value in candidates.fields.items()}, False
+        return {name: service.Verified(value, .99) for name, value in candidates.fields.items()}
 
     company = "ООО «Пример»"
     text = f"ОПРЕДЕЛИЛ:\nВключить требования {company} в третью очередь в размере 100 руб. основного долга."

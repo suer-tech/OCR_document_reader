@@ -23,7 +23,7 @@ from ocr_platform.services.rtk3_evidence import (
     normalize_case,
     notarial_collection_cost, ordinary_admission_without_pledge, previous_cost, principal_from_award,
     separately_accounted_sanction, single_contract_salary_evidence,
-    publication_date_field, quoted, remove_currency_page_marker, row_pledges, source_case,
+    public_payment_principal, publication_date_field, quoted, remove_currency_page_marker, row_pledges, source_case,
 )
 from ocr_platform.services.rtk3_evidence import rtk3_money as money
 from ocr_platform.services.rtk3_regex_candidates import (
@@ -48,9 +48,6 @@ SCALAR_QUESTIONS = {
     "inclusion_date": "Это дата текущего определения? Если указана дата изготовления в полном объёме, используй её.",
 }
 SCALAR_FIELDS = (*SCALAR_QUESTIONS, "creditor", "creditor_inn", "grounds", "grounds_ocr")
-CLAIM_QUESTIONS = {
-    "priority_queue": "Это очередь именно данного включённого требования? Отдельный учёт санкций сам по себе не означает «За реестром».",
-}
 CLAIM_TYPES = {
     "priority_queue": PriorityFact,
     **dict.fromkeys(CATEGORY_FIELDS, Components),
@@ -81,30 +78,12 @@ def _question(prompt: str) -> dict:
     )}
 
 
-async def _verify(text: str, candidates, config: dict, context: dict) -> tuple[dict, bool]:
+async def _verify(text: str, candidates, config: dict, context: dict) -> dict:
     values = {name: value for name, value in candidates.fields.items() if name in SCALAR_QUESTIONS}
     questions = {name: _question(SCALAR_QUESTIONS[name]) for name in values}
     state = {"document": text, "fields": {name: fact.model_dump() for name, fact in values.items()}}
-    if candidates.claims:
-        state["claim_layout"] = [claim.quote for claim in candidates.claims]
-        questions["claim_layout"] = _question(
-            "Каждый фрагмент claim_layout соответствует одному самостоятельному включённому требованию "
-            "с однородной очередью? Каждый договор выделен отдельно, в том числе в одной очереди? "
-            "Все ли окончательно признанные требования охвачены без повторов?"
-        )
-        for index, claim in enumerate(candidates.claims):
-            for name, candidate in _claim_values(claim).items():
-                key = _claim_key(index, name)
-                values[key] = candidate
-                state["fields"][key] = {"claim": index + 1, **candidate.model_dump()}
-                questions[key] = _question(CLAIM_QUESTIONS[name])
-            if claim.contract_reference:
-                key = _claim_key(index, "contract_reference")
-                values[key] = claim.contract_reference
-                state["fields"][key] = {"claim": index + 1, **claim.contract_reference.model_dump()}
-                questions[key] = _question("Подтверждает ли цитата номер договора именно для этой включённой строки?")
     if not questions:
-        return {}, False
+        return {}
     try:
         response = await asyncio.to_thread(
             call_llm_json_with_fallback, task_name="rtk3_regex_verification", provider=config["provider"],
@@ -114,15 +93,13 @@ async def _verify(text: str, candidates, config: dict, context: dict) -> tuple[d
         )
     except (ValueError, TypeError, httpx.HTTPError) as exc:
         logger.warning("rtk3_jev_failed", error=type(exc).__name__, **context)
-        return {}, False
+        return {}
     scores = decision_probabilities(response.parsed, list(questions)) if response else {}
     threshold = float(config.get("threshold", 0.6))
-    layout_verified = bool(candidates.claims and scores.get("claim_layout", -1) >= threshold)
     accepted = {name: Verified(value, scores[name]) for name, value in values.items()
-                if scores.get(name, -1) >= threshold and (layout_verified or not name.startswith("claim_"))}
-    logger.info("rtk3_jev_finished", **context, accepted=list(accepted), layout_verified=layout_verified,
-                probabilities=scores)
-    return accepted, layout_verified
+                if scores.get(name, -1) >= threshold}
+    logger.info("rtk3_jev_finished", **context, accepted=list(accepted), probabilities=scores)
+    return accepted
 
 
 def _fallback_schema(layout: list[Claim], accepted: dict, scalar_names: set[str]) -> dict:
@@ -130,7 +107,7 @@ def _fallback_schema(layout: list[Claim], accepted: dict, scalar_names: set[str]
     if "pledge_resolution" in scalar_names:
         schema["document_pledge"] = (PledgeFact, ...)
     if not layout:
-        schema.update(claims=(list[ClaimEvidence], ...), claims_complete=(bool, ...), uncertainty=(str, ...))
+        schema.update(document_included_total=(CourtTotal | None, ...), claims=(list[ClaimEvidence], ...), claims_complete=(bool, ...), uncertainty=(str, ...))
         return schema
     for index in range(len(layout)):
         for name, kind in CLAIM_TYPES.items():
@@ -151,9 +128,9 @@ async def _gemini(
     body = {
         "document": text,
         "verified_fields": {name: candidate.value.model_dump() for name, candidate in accepted.items()},
-        "verified_claims": [claim.quote for claim in layout],
     }
     if principal_retry is not None:
+        body["previous_argon_row_quotes"] = [claim.quote for claim in layout]
         body["rows_after_validation"] = principal_retry
         instructions += (
             "\nПовторная проверка обязательного поля principal_debt: после проверки оно осталось пустым. "
@@ -525,6 +502,8 @@ def _amount_sum(
                                 and amount_supported(total.amount, value.quote) and quoted(total.quote, claim.quote))
             if not separate_duty and not linked_breakdown:
                 return None
+        if kind == "principal" and public_payment_principal(item.quote) is False:
+            return None
         if kind == "interest" and re.search(r"пен[ияеь]|неустойк|штраф", item.quote, re.I):
             return None
         if kind == "sanction" and not (re.search(r"пен[ияеь]|неустойк|штраф|санкц|мораторн", item.quote, re.I)
@@ -739,11 +718,11 @@ def _fixed_claims(layout: list[Claim], verified: dict, response: dict, text: str
         row["pledge_resolution"] = pledge_value
         row["secured_by_pledge"] = pledge_value == "yes" if pledge_value else None
         rows.append(row)
-    return _flag_parent_total_conflict(_claim_outputs(rows, issues), layout)
+    return _flag_parent_total_conflict(_claim_outputs(rows, issues), any(c.parent_total_conflict for c in layout))
 
 
-def _flag_parent_total_conflict(fields: dict, claims: list[Claim]) -> dict:
-    if not any(claim.parent_total_conflict for claim in claims):
+def _flag_parent_total_conflict(fields: dict, conflict_detected: bool) -> dict:
+    if not conflict_detected:
         return fields
     conflict = "Общий итог в акте расходится с суммой по договорам."
     summary = fields.get("claims")
@@ -827,7 +806,8 @@ def _itemized_principal(patch: Components | None, claim: Claim, text: str) -> bo
     }
     for item in patch.items:
         quote = compact(item.quote)
-        if (item.kind not in labels or not re.search(labels[item.kind], quote)
+        fiscal = public_payment_principal(quote) if item.kind == "principal" else None
+        if (item.kind not in labels or fiscal is False or not (fiscal or re.search(labels[item.kind], quote))
                 or not quoted(item.quote, claim.quote) or not amount_supported(item.amount, claim.quote)
                 or not amount_supported(item.amount, item.quote)
                 or {money(match[0]) for match in AMOUNTS.finditer(quote)} != {money(item.amount)}):
@@ -860,23 +840,11 @@ async def extract_fields(
     text: str, profile: dict, *, document_id: str | None = None, pipeline_run_id: str | None = None,
 ) -> dict:
     text = remove_currency_page_marker(text)
-    candidates = extract_candidates(text)
-    # Regex candidates also support the offline regex evaluator. On the live
-    # path JEV checks row identity and queue. Argon classifies each row's payments.
-    candidates.claims = [
-        Claim(quote=row.quote, fields={k: v for k, v in row.fields.items() if k in CLAIM_QUESTIONS},
-              total=None, contract_number=row.contract_number, contract_reference=row.contract_reference,
-              parent_total_conflict=row.parent_total_conflict, standalone_expense=row.standalone_expense)
-        for row in candidates.claims
-    ]
+    candidates = extract_candidates(text, include_claims=False)
     context = {"profile_id": "rtk3", "document_id": document_id, "pipeline_run_id": pipeline_run_id}
-    verified, layout_verified = await _verify(text, candidates, profile["models"]["verification"], context)
-    layout = candidates.claims if layout_verified else []
-    for index, claim in enumerate(layout):
-        if claim.contract_reference and _claim_key(index, "contract_reference") not in verified:
-            claim.contract_number = None
-    types = _fallback_schema(layout, verified, set(profile["fields"]))
-    response = await _gemini(text, profile["models"]["llm_extraction"], context, types, layout, verified) if text.strip() else {}
+    verified = await _verify(text, candidates, profile["models"]["verification"], context)
+    types = _fallback_schema([], verified, set(profile["fields"]))
+    response = await _gemini(text, profile["models"]["llm_extraction"], context, types, [], verified) if text.strip() else {}
     if text.strip() and not response:
         # A truncated list of contracts must not lose the independent document facts.
         compact_types = {k: v for k, v in types.items() if k in {"creditor", "creditor_inn", "document_pledge"}}
@@ -888,16 +856,11 @@ async def extract_fields(
     )
     await _enrich_creditor_inn(fields, text, candidates.creditor_tax_subject)
 
-    def validated(answer):
-        if layout:
-            return _fixed_claims(layout, verified, answer, text)
-        return _flag_parent_total_conflict(_model_claims(text, profile, answer, fields), candidates.claims)
-
-    claims = validated(response)
+    claims = _model_claims(text, profile, response, fields)
     rows = claims["claims"]["value"]
     # Keep the original row indices. A full-schema answer can contain discarded or merged rows.
     evidence = response.get("claims") or []
-    anchors = layout or [Claim(c.breakdown_quote or c.decision_quote, {}, None) for c in evidence]
+    anchors = [Claim(c.breakdown_quote or c.decision_quote, {}, None) for c in evidence]
     missing = [i for i, row in enumerate(rows) if row["principal_debt"] is None]
     if missing and len(anchors) == len(rows):
         retry_types = {_claim_key(i, "principal_debt"): (Components | None, ...) for i in missing}
@@ -909,26 +872,27 @@ async def extract_fields(
             if not _itemized_principal(patch, anchors[i], text):
                 continue
             updated = dict(response)
-            if layout:
-                total_key = _claim_key(i, "included_total")
-                total = response.get(total_key)
-                updated[key] = patch
-                if total:
-                    updated[total_key] = total.model_copy(update={"principal_by_remainder": False})
-            else:
-                current = response["claims"][i]
-                total = (CourtTotal(amount=current.included_total.value, quote=current.included_total.quote,
-                                   scope=current.total_scope) if current.included_total.value else None)
-                kept = [c for c in current.components if c.kind not in CATEGORY_FIELDS["principal_debt"]]
-                updated["claims"] = list(response["claims"])
-                updated["claims"][i] = current.model_copy(update={
-                    "components": [*kept, *patch.items], "principal_by_remainder": False,
-                    "complete_categories": list(dict.fromkeys([*current.complete_categories, "principal_debt"])),
-                })
-            candidate = validated(updated)
+            current = response["claims"][i]
+            total = (CourtTotal(amount=current.included_total.value, quote=current.included_total.quote,
+                               scope=current.total_scope) if current.included_total.value else None)
+            kept = [c for c in current.components if c.kind not in CATEGORY_FIELDS["principal_debt"]]
+            updated["claims"] = list(response["claims"])
+            updated["claims"][i] = current.model_copy(update={
+                "components": [*kept, *patch.items], "principal_by_remainder": False,
+                "complete_categories": list(dict.fromkeys([*current.complete_categories, "principal_debt"])),
+            })
+            candidate = _model_claims(text, profile, updated, fields)
             if (all(preserves_values(info["value"], candidate[k]["value"]) for k, info in claims.items())
                     and _fits_award(candidate["claims"]["value"][i], total, anchors[i].quote)):
                 response, claims = updated, candidate
+    printed = response.get("document_included_total")
+    final_rows = claims["claims"]["value"]
+    if (printed and len(final_rows) > 1 and response.get("claims_complete") is True
+            and printed.scope != "unknown" and quoted(printed.quote, text) and amount_supported(printed.amount, printed.quote)):
+        column = "total_amount" if printed.scope == "with_duty" else "claimed_amount"
+        values = [money(row[column]) for row in final_rows]
+        if all(n is not None for n in values):
+            _flag_parent_total_conflict(claims, sum(values) != money(printed.amount))
     fields.update(claims)
     if fields.get("pledge_resolution", {}).get("value") is None:
         pledge = response.get("document_pledge")

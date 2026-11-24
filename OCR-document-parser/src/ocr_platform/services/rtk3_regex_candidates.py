@@ -1976,7 +1976,7 @@ def _recover_embedded_cost(body: str, claim: Claim, order: Fact | None) -> None:
         claim.fields["is_salary_or_severance"] = Salary(value=False, quote=claim.quote)
 
 
-def extract_candidates(text: str) -> Candidates:
+def extract_candidates(text: str, *, include_claims: bool = True) -> Candidates:
     text = remove_currency_page_marker(text)
     source = re.sub(r"\s+", " ", text).strip()
     operative = re.sub(r"\s+", " ", operative_part(text))
@@ -2013,6 +2013,8 @@ def extract_candidates(text: str) -> Candidates:
     ):
         if result.value:
             fields[name] = Fact(value=result.value, quote=result.quote)
+    if not include_claims:
+        return Candidates(fields=fields, claims=[], creditor_tax_subject=tax_subject)
     body_end = source.rfind(operative)
     body = source[:body_end] if body_end >= 0 else ""
     claims = claim_candidates(operative, creditor, body=body)

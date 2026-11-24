@@ -121,6 +121,27 @@ def compact(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
+# Fiscal principal may be itemized by payment type without the words "основной долг".
+_PUBLIC_PAYMENT = re.compile(
+    r"\b(?:страхов(?:ые|ых|ым|ыми|ый|ого|ому)\s+взнос\w*|недоимк\w*|"
+    r"(?:транспортн|земельн|имущественн)\w*\s+налог(?:а|у|ом)?|"
+    r"сумм\w*\s+налога|налог(?:а|у|ом)?\s+на\s+(?:имущество|доходы|прибыль|добавленную\s+стоимость))\b", re.I,
+)
+_PUBLIC_PAYMENT_DEDUCTIONS = re.compile(
+    r"\b(?:пен(?:и|я|ей|ям|ями|ях|ю)|штраф\w*|неустойк\w*|санкци\w*|процент\w*|"
+    r"(?:гос)?пошлин\w*|судебн\w*\s+расход\w*)\b", re.I,
+)
+
+
+def public_payment_principal(quote: str) -> bool | None:
+    """Classify explicit fiscal labels; leave other debt to the existing checks."""
+    if _PUBLIC_PAYMENT.search(quote):
+        return not _PUBLIC_PAYMENT_DEDUCTIONS.search(quote)
+    if re.search(r"\bналог(?:а|у|ом|ов|ам|ами|ах)?\b", quote, re.I) and _PUBLIC_PAYMENT_DEDUCTIONS.search(quote):
+        return False
+    return None
+
+
 def remove_currency_page_marker(text: str) -> str:
     """A stand-alone page number can split a decimal amount from its currency."""
     return re.sub(
@@ -616,6 +637,7 @@ def build_fields(
                 # operative paragraph then supplies the kind, not another claim.
                 kind_quote = claim.decision_quote
             if not (re.search(patterns[component.kind], kind_quote, re.IGNORECASE)
+                    or component.kind == "principal" and public_payment_principal(kind_quote)
                     or component.kind == "sanction" and separately_accounted_sanction(component, claim.decision_quote)):
                 errors.append("В цитате не подтверждён вид денежного компонента.")
             if component.kind == "contract_cost" and not included_contract_cost(component, breakdown or claim.decision_quote):
@@ -630,7 +652,8 @@ def build_fields(
                 errors.append("Пошлина внутри состава долга ошибочно отнесена к отдельной пошлине.")
             if excluded_component(component.quote, text):
                 errors.append("Денежный компонент относится к прекращённой, отказанной или возвращаемой части/текущему платежу.")
-            if component.kind == "principal" and re.search(patterns["sanction"], component.quote, re.IGNORECASE):
+            if component.kind == "principal" and (re.search(patterns["sanction"], component.quote, re.IGNORECASE)
+                    or public_payment_principal(component.quote) is False):
                 errors.append("Общая сумма с санкциями не является целиком основным долгом.")
             if component.kind == "prior_cost" and not notarial_collection_cost(component.quote) and not re.search(
                     r"судебн\w*\s+приказ|решени|ранее|установлен\w*\s+судебн",
